@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { detect } from "../src/core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../src/core/parsers/claude-code.ts";
 import { ATTR, type Step } from "../src/core/types.ts";
 
@@ -90,3 +91,20 @@ console.log(
 	outTok.toLocaleString(),
 );
 console.log("cache-read tok :", cacheRead.toLocaleString());
+
+const findings = detect(trace);
+console.log("\n=== ranked findings (where it went wrong) ===");
+if (findings.length === 0) {
+	console.log("(none — clean run)");
+} else {
+	const mark = {
+		critical: "[CRIT]",
+		warning: "[WARN]",
+		info: "[INFO]",
+	} as const;
+	for (const f of findings) {
+		console.log(
+			`${mark[f.severity]} ${f.title}  (${f.step_ids.length} step${f.step_ids.length === 1 ? "" : "s"})`,
+		);
+	}
+}
