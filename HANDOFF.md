@@ -23,8 +23,12 @@ transcript never leaves the machine.
   Code parser** with forensic signal extraction. Validated on real transcripts
   (a 19MB / 6177-step session, an evals session with real subagent sidechains).
 - `ea3afaf feat(detect)` — **ranked findings engine** (THIS is the "build detector
-  next" item — DONE). 29/29 tests pass, zero deps. Validated on real data
-  (a 538-step session surfaces 3 CRITICAL mcp-guard clusters + a tool-error spike).
+  next" item — DONE). Validated on real data (a 538-step session surfaces 3
+  CRITICAL mcp-guard clusters + a tool-error spike).
+- `841d106 feat(codex)` — **Codex rollout parser + cross-tool dispatcher** (DONE).
+  Emits the same plumbline Trace; `parse.ts` sniffs CC vs Codex and routes.
+  Validated on a real Codex rollout (280 steps, gpt-5.3-codex, 14.9M input tokens,
+  a compaction-thrash finding). 48/48 tests pass, zero deps.
 
 ### What's on disk
 - `src/core/jsonl.ts` — defensive JSONL line parser.
@@ -53,20 +57,11 @@ Dependency-free TypeScript core, tested via `npm test` (`node --test
 later layer that needs an **approval-gated** install. `@types/node` is intentionally
 absent — `node:fs`/`process` editor diagnostics are expected, runtime is the gate.
 
-## Next concrete step: Codex parser parity
+## Next concrete step: the Vite + React UI (first approval-gated install)
 
-Build `src/core/parsers/codex.ts` (+ `codex.test.ts`), TDD'd, emitting the **same
-plumbline Trace schema** so the detector engine and future UI work unchanged across
-both tools. Reverse-engineered Codex schema (from the other chat, verify against a
-real file first — READ-ONLY):
-- Files: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` and `~/.codex/archived_sessions/rollout-*.jsonl` (both exist; ~140–380KB each).
-- Envelope: `{ timestamp, type, payload }`.
-- `type:"response_item"` payload `function_call` / `function_call_output` = tool calls.
-- `type:"event_msg"` payload `token_count` = usage.
-- `compacted` = compaction boundary.
-- Reference adapter: `~/Projects/agent-flight-recorder-local/.../adapters/codex.py`.
-
-Then the **Vite + React UI** slice. First approval-gated install (print + PAUSE):
+The cross-tool core is done (CC + Codex parsers → same Trace → detector engine,
+all real-data validated). The headline viewer is the remaining piece. First
+approval-gated install (print + PAUSE for operator approval):
 ```
 cd ~/Projects/agent-session-replay && pnpm add -D vite @vitejs/plugin-react typescript && pnpm add react react-dom
 ```
