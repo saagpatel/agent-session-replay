@@ -29,6 +29,16 @@ transcript never leaves the machine.
   Emits the same plumbline Trace; `parse.ts` sniffs CC vs Codex and routes.
   Validated on a real Codex rollout (280 steps, gpt-5.3-codex, 14.9M input tokens,
   a compaction-thrash finding). 48/48 tests pass, zero deps.
+- `0c608e5 feat(view)` — **proportional waterfall view-model** (DONE). Pure
+  Trace -> TimelineView (lanes, positioned bars, finding markers). 57/57 tests.
+- `1a94f28 feat(ui)` — **the viewer** (DONE). Vite + React 19 SPA. Drag-drop a
+  session folder (recursively merges CC subagents/*.jsonl sidechains) or a Codex
+  rollout -> in-browser parse + detect + waterfall + ranked findings + step
+  inspector. Diagnostic-instrument design, one tokenized CSS file, no Tailwind.
+  **THE CORE VIEWER WORKS END TO END.** Verified via `pnpm build` + headless SSR
+  render (`pnpm render:smoke`) on real data: Codex -> 280 bars; CC -> 538 bars /
+  11 lanes / 4 findings. Reviewed by nextjs-react-reviewer (memo, input reset,
+  error surfacing, aria all fixed).
 
 ### What's on disk
 - `src/core/jsonl.ts` — defensive JSONL line parser.
@@ -57,17 +67,26 @@ Dependency-free TypeScript core, tested via `npm test` (`node --test
 later layer that needs an **approval-gated** install. `@types/node` is intentionally
 absent — `node:fs`/`process` editor diagnostics are expected, runtime is the gate.
 
-## Next concrete step: the Vite + React UI (first approval-gated install)
+## Next concrete step: pick a slice (core viewer is DONE)
 
-The cross-tool core is done (CC + Codex parsers → same Trace → detector engine,
-all real-data validated). The headline viewer is the remaining piece. First
-approval-gated install (print + PAUSE for operator approval):
-```
-cd ~/Projects/agent-session-replay && pnpm add -D vite @vitejs/plugin-react typescript && pnpm add react react-dom
-```
-UI = drag-drop a transcript → run the existing core in-browser → Grotto-style
-proportional waterfall (`~/Projects/Grotto/internal/render/layout.go`) + ranked
-findings panel.
+The end-to-end product ships: drop a CC/Codex session → waterfall + findings,
+local-first. Candidate next slices, roughly highest-value first:
+1. **Cost analytics** — price tokens per model ($ in/out, cache-read ~0.1×,
+   cache-creation ~1.25×) into a per-run + per-subagent cost view and a
+   `cost_runaway` $ detector (current detector is token-count based).
+2. **Live visual QA** — verified via SSR, not a real browser yet. Run `pnpm dev`,
+   drive a headless browser, screenshot, tune spacing/contrast/alignment.
+3. **@types/react + tsc typecheck** — approval-gated dev install
+   (`pnpm add -D @types/react @types/react-dom`); then a `typecheck` script over a
+   tsconfig.app.json (include src/ui + src/core, exclude *.test.ts + scripts).
+4. **Waterfall virtualization** — big sessions render thousands of bars; windowing
+   keeps it smooth (the 19MB CC session is ~6177 steps).
+5. **Tauri 2 packaging** — wrap the SPA as a desktop app for offline distribution.
+
+## Open follow-ups (deferred)
+- `parseJsonl` malformed-line count so the UI can warn "N unparseable lines".
+- `readEntry` (DropZone) silently resolves on per-entry I/O error — acceptable
+  graceful-degrade for v1; surface a count if it bites.
 
 ## Open follow-ups (deferred, not yet done)
 - Surface a **malformed-line count** from `parseJsonl` so the UI can warn "N
