@@ -1,15 +1,17 @@
 /**
- * Read-only smoke: run the Claude Code parser against a real transcript and print
- * a derived summary. Never mutates the transcript; reads only. Used to verify the
- * parser survives the messy reality of a full session before we trust it.
+ * Read-only smoke: auto-detect the harness (Claude Code or Codex), parse a real
+ * transcript, and print a derived summary + ranked findings. Never mutates the
+ * transcript; reads only. Verifies the parsers survive the messy reality of a
+ * full session before we trust them.
  *
  *   npm run parse:real -- ~/.claude/projects/<encoded>/<session>.jsonl
+ *   npm run parse:real -- ~/.codex/archived_sessions/rollout-*.jsonl
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { detect } from "../src/core/detect/engine.ts";
-import { parseClaudeCodeTranscript } from "../src/core/parsers/claude-code.ts";
+import { parseTranscript } from "../src/core/parse.ts";
 import { ATTR, type Step } from "../src/core/types.ts";
 
 const path = process.argv[2];
@@ -26,7 +28,7 @@ const subTexts = existsSync(subDir)
 			.map((f) => readFileSync(join(subDir, f), "utf8"))
 	: [];
 
-const trace = parseClaudeCodeTranscript(mainText, subTexts);
+const { harness, trace } = parseTranscript(mainText, subTexts);
 
 const num = (s: Step, k: string): number =>
 	typeof s.attributes[k] === "number" ? (s.attributes[k] as number) : 0;
@@ -62,6 +64,7 @@ for (const s of trace.steps) {
 
 console.log("=== Agent Session Replay :: real transcript smoke ===");
 console.log("file           :", path.split("/").slice(-2).join("/"));
+console.log("harness sniff  :", harness);
 console.log("run_id         :", trace.run.run_id);
 console.log(
 	"harness/version:",
