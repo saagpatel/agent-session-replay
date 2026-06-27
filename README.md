@@ -1,0 +1,39 @@
+# Agent Session Replay
+
+Local-first failure-forensics for coding-agent sessions. Drop in a Claude Code or
+Codex transcript and find out *exactly where the run went wrong*: which guard trip,
+Read-to-Edit race, runaway subagent, or cost spike broke it.
+
+The transcript never leaves the machine. Parsing and rendering happen entirely
+locally.
+
+## Why this exists
+
+Generic local-first session viewers already exist (Mantra, claude-replay). They
+render the timeline; they do not understand the harness. Agent Session Replay is a
+**diagnostic engine first, viewer second**: it knows what `Blocked (bash-egress)`
+means, that a `staleReadFileStateHint` is a Read-to-Edit race, and that a subagent
+burning 200k tokens is a cost runaway. The scrubbable timeline is the evidence
+panel; the ranked findings are the product.
+
+## Design
+
+- **Data model:** the [plumbline](https://github.com/saagpatel/plumbline) trace
+  schema (`{ run, steps[] }`, an OTel-shaped decision DAG). Our parser output is
+  drop-in compatible, and we enrich it through plumbline's open `attributes` bag
+  rather than forking the schema.
+- **Cross-tool:** one schema for Claude Code (`~/.claude/projects/**/*.jsonl`) and
+  Codex (`~/.codex/sessions/**/rollout-*.jsonl`).
+- **Core is dependency-free TypeScript.** The parser and detector engine run under
+  `node --test` with native type-stripping, no toolchain install required. The
+  browser UI (Vite + React) is a separate, later layer.
+
+## Status
+
+Phase 0: TDD transcript parser. See `src/core/`.
+
+## Develop
+
+```bash
+npm test          # run the core test suite (zero dependencies, Node >= 22.6)
+```
