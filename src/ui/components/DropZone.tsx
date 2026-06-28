@@ -1,6 +1,17 @@
 import { useRef, useState } from "react";
 
+import type { AfrInput } from "../../core/afr/parse.ts";
+
 const JSONL = /\.jsonl?$/i;
+const AFR_TRACE = "trace.afr.jsonl";
+const AFR_PRIVACY = "privacy-report.afr.json";
+const AFR_VALIDATION = "validation-report.afr.json";
+const AFR_RECONCILIATION = "reconciliation-report.afr.json";
+const AFR_MANIFEST = "manifest.afr.json";
+
+export type DropPayload =
+	| { kind: "transcript"; name: string; text: string }
+	| { kind: "afr"; input: AfrInput };
 
 /** Recursively collect files from a dropped entry (so a session folder picks up
  * its subagents/ sidechains). Entries must be read synchronously from the drop. */
@@ -66,11 +77,40 @@ async function combine(
 	return { name, text: texts.join("\n") };
 }
 
+function fileKey(file: File): string {
+	return file.webkitRelativePath || file.name;
+}
+
+function archiveNameFor(trace: File): string {
+	const key = fileKey(trace);
+	const parts = key.split("/").filter(Boolean);
+	if (parts.length > 1) return parts[parts.length - 2] ?? trace.name;
+	return trace.name;
+}
+
+async function afrInput(files: File[]): Promise<AfrInput | null> {
+	const byName = new Map(files.map((file) => [file.name, file]));
+	const trace = byName.get(AFR_TRACE);
+	if (!trace) return null;
+	const read = async (name: string): Promise<string | undefined> => {
+		const file = byName.get(name);
+		return file ? file.text() : undefined;
+	};
+	return {
+		name: archiveNameFor(trace),
+		traceText: await trace.text(),
+		privacyReportText: await read(AFR_PRIVACY),
+		validationReportText: await read(AFR_VALIDATION),
+		reconciliationReportText: await read(AFR_RECONCILIATION),
+		manifestText: await read(AFR_MANIFEST),
+	};
+}
+
 export function DropZone({
 	onLoad,
 	onError,
 }: {
-	onLoad: (name: string, text: string) => void;
+	onLoad: (payload: DropPayload) => void;
 	onError: (message: string) => void;
 }) {
 	const [over, setOver] = useState(false);
@@ -78,14 +118,19 @@ export function DropZone({
 
 	async function take(files: File[]): Promise<void> {
 		try {
+			const afr = await afrInput(files);
+			if (afr) {
+				onLoad({ kind: "afr", input: afr });
+				return;
+			}
 			const merged = await combine(files);
 			if (!merged) {
 				onError(
-					"No .jsonl files found. Drop a transcript or its session folder.",
+					"No transcript or AFR trace found. Drop a session folder, .jsonl files, or an AFR archive.",
 				);
 				return;
 			}
-			onLoad(merged.name, merged.text);
+			onLoad({ kind: "transcript", name: merged.name, text: merged.text });
 		} catch (e) {
 			onError(e instanceof Error ? e.message : String(e));
 		}
@@ -134,11 +179,11 @@ export function DropZone({
 				<h1 className="drop__title">Replay an agent session</h1>
 				<p className="drop__desc">
 					Drop a Claude Code session folder (or its .jsonl files), or a Codex
-					rollout, to see exactly where the run went wrong — guard trips,
-					Read-to-Edit races, cost runaways, runaway subagents.
+					rollout, to see exactly where the run went wrong. Drop an AFR archive
+					to rank local control-plane findings across sources.
 				</p>
 				<span className="chip">
-					Drop a session folder / .jsonl files, or click to choose
+					Drop a session folder / AFR archive / .jsonl files
 				</span>
 				<input
 					ref={inputRef}

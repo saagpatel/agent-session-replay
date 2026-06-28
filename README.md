@@ -2,7 +2,9 @@
 
 Local-first failure-forensics for coding-agent sessions. Drop in a Claude Code or
 Codex transcript and find out *exactly where the run went wrong*: which guard trip,
-Read-to-Edit race, runaway subagent, or cost spike broke it.
+Read-to-Edit race, runaway subagent, or cost spike broke it. Drop in an Agent
+Flight Recorder local metadata archive and switch into a Decision Flight Deck for
+ranked control-plane findings across local agent evidence.
 
 The transcript never leaves the machine. Parsing and rendering happen entirely
 locally.
@@ -30,10 +32,22 @@ panel; the ranked findings are the product.
 
 ## Status
 
-Phase 0: TDD transcript parser. See `src/core/`.
+Shipped v1 local replay plus a v0 Decision Flight Deck for AFR metadata archives.
+The deck parses `trace.afr.jsonl` with optional privacy, validation,
+reconciliation, and manifest reports, then ranks privacy, validation, freshness,
+reconciliation, boundary, cost-quality, bridge handoff, eval outcome, and failure
+findings without uploading data.
+
+The AFR path has been smoke-tested against a real metadata-only all-source local
+archive. It supports the local collector's reconciliation source rows and treats
+stale per-source evidence as ranked decision findings rather than passive
+summary data. Ranked findings also feed a compact action rail that groups safe
+next commands into route, inspect, refresh, and repair moves.
 
 ## Develop
 
 ```bash
-npm test          # run the core test suite (zero dependencies, Node >= 22.6)
+pnpm test         # run the full test suite
+pnpm typecheck    # TypeScript gate
+pnpm build        # browser build
 ```

@@ -5,11 +5,11 @@
 > wrong" findings. Cross-tool (one plumbline Trace schema), everything parses and
 > renders in the browser; the transcript never leaves the machine.
 
-## Status: SHIPPED (v1) — private on GitHub
+## Status: SHIPPED (v1) + Decision Flight Deck v0 — private on GitHub
 
 - **Repo:** `github.com/saagpatel/agent-session-replay` (private), branch `main`.
-- Net-new this session; built end to end, code-reviewed clean, MIT-licensed,
-  packaged as a desktop app, pushed. Working tree clean.
+- Base replay app built end to end, code-reviewed clean, MIT-licensed, packaged as
+  a desktop app, pushed.
 
 ## Completed
 
@@ -25,6 +25,14 @@
 - **UI** — Vite 8 + React 19 SPA, one tokenized CSS file, no Tailwind. Drag-drop →
   waterfall + findings + step inspector. Kind-color legend, centered band,
   `⚠ N unparsed` integrity chip. Verified in a real browser (headless screenshots).
+- **Decision Flight Deck v0** — drag-drop AFR archives (`trace.afr.jsonl` plus
+  optional privacy, validation, reconciliation, manifest reports) → ranked
+  control-plane findings with freshness, privacy tier, boundary/cost/outcome
+  signals, bridge handoff/eval outcome checks, evidence refs, and safe next
+  commands. Pure parser + engine, no new collector or daemon. Real all-source
+  smoke confirmed reconciliation row support and stale per-source evidence
+  findings. The deck now derives a compact action rail from ranked findings,
+  grouping safe next commands by route/inspect/refresh/repair.
 - **Quality** — 66 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
@@ -41,6 +49,10 @@
   ready. Distribute the DMG via a GitHub *Release* (binaries are gitignored under `target/`).
 - **Minor:** `parseJsonl` already counts malformed lines; `readEntry` (DropZone) still
   silently resolves on per-entry I/O error (graceful-degrade, acceptable for v1).
+- **Flight Deck polish:** add richer grouping around bridge-db, ccq,
+  cost-tracker, notification-hub, hook/MCP configs, and collector follow-up
+  commands once source-specific contracts are stable enough to make the controls
+  prescriptive.
 
 ## Blocked
 

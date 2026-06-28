@@ -1,17 +1,23 @@
 import { useCallback, useMemo, useState } from "react";
 
+import { parseAfrBundle } from "../core/afr/parse.ts";
+import type { AfrBundle } from "../core/afr/types.ts";
+import { analyzeControlBundle } from "../core/control/engine.ts";
+import type { ControlReport } from "../core/control/types.ts";
 import { detect } from "../core/detect/engine.ts";
 import type { Finding } from "../core/detect/types.ts";
 import { type Harness, parseTranscript } from "../core/parse.ts";
 import type { Step, Trace } from "../core/types.ts";
 import { buildTimeline, type TimelineView } from "../core/view/timeline.ts";
-import { DropZone } from "./components/DropZone.tsx";
+import { DecisionFlightDeck } from "./components/DecisionFlightDeck.tsx";
+import { DropZone, type DropPayload } from "./components/DropZone.tsx";
 import { FindingsPanel } from "./components/FindingsPanel.tsx";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { StepInspector } from "./components/StepInspector.tsx";
 import { Waterfall } from "./components/Waterfall.tsx";
 
-interface Loaded {
+interface LoadedSession {
+	mode: "session";
 	fileName: string;
 	harness: Harness;
 	trace: Trace;
@@ -19,22 +25,52 @@ interface Loaded {
 	timeline: TimelineView;
 }
 
+interface LoadedControl {
+	mode: "control";
+	fileName: string;
+	bundle: AfrBundle;
+	report: ControlReport;
+}
+
+type Loaded = LoadedSession | LoadedControl;
+
 export function App() {
 	const [loaded, setLoaded] = useState<Loaded | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
 	const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
 
-	const load = useCallback((fileName: string, text: string) => {
+	const load = useCallback((payload: DropPayload) => {
 		try {
-			const { harness, trace } = parseTranscript(text);
+			if (payload.kind === "afr") {
+				const bundle = parseAfrBundle(payload.input);
+				const report = analyzeControlBundle(bundle);
+				setLoaded({
+					mode: "control",
+					fileName: payload.input.name,
+					bundle,
+					report,
+				});
+				setSelectedStepId(null);
+				setFocusedFindingId(null);
+				setError(null);
+				return;
+			}
+			const { harness, trace } = parseTranscript(payload.text);
 			if (trace.steps.length === 0) {
 				setError("No steps parsed. Is this a Claude Code or Codex transcript?");
 				return;
 			}
 			const findings = detect(trace);
 			const timeline = buildTimeline(trace, findings);
-			setLoaded({ fileName, harness, trace, findings, timeline });
+			setLoaded({
+				mode: "session",
+				fileName: payload.name,
+				harness,
+				trace,
+				findings,
+				timeline,
+			});
 			setSelectedStepId(null);
 			setFocusedFindingId(null);
 			setError(null);
@@ -44,7 +80,7 @@ export function App() {
 	}, []);
 
 	const selectedStep = useMemo<Step | null>(() => {
-		if (!loaded || !selectedStepId) return null;
+		if (!loaded || loaded.mode !== "session" || !selectedStepId) return null;
 		return loaded.trace.steps.find((s) => s.step_id === selectedStepId) ?? null;
 	}, [loaded, selectedStepId]);
 
@@ -62,12 +98,20 @@ export function App() {
 				</div>
 				{loaded ? (
 					<div className="topbar__meta">
-						<span className="chip chip--harness">{loaded.harness}</span>
-						<span>{loaded.trace.run.model ?? "—"}</span>
-						<span title={loaded.fileName}>
-							{loaded.trace.run.run_id.slice(0, 12)}
+						<span className="chip chip--harness">
+							{loaded.mode === "session" ? loaded.harness : "AFR"}
 						</span>
-						{loaded.trace.malformed_lines ? (
+						{loaded.mode === "session" ? (
+							<span>{loaded.trace.run.model ?? "—"}</span>
+						) : (
+							<span>{loaded.report.summary.sourceSystems.length} source(s)</span>
+						)}
+						<span title={loaded.fileName}>
+							{loaded.mode === "session"
+								? loaded.trace.run.run_id.slice(0, 12)
+								: loaded.bundle.name}
+						</span>
+						{loaded.mode === "session" && loaded.trace.malformed_lines ? (
 							<span
 								className="chip chip--warn"
 								title={`${loaded.trace.malformed_lines} transcript line(s) could not be parsed and were skipped — this view may under-report`}
@@ -89,7 +133,7 @@ export function App() {
 				) : null}
 			</header>
 
-			{loaded ? (
+			{loaded?.mode === "session" ? (
 				<>
 					<RunHeader
 						trace={loaded.trace}
@@ -118,6 +162,8 @@ export function App() {
 						/>
 					) : null}
 				</>
+			) : loaded?.mode === "control" ? (
+				<DecisionFlightDeck bundle={loaded.bundle} report={loaded.report} />
 			) : (
 				<DropZone onLoad={load} onError={setError} />
 			)}
