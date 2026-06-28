@@ -9,6 +9,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
+		"typecheck": "tsc -p tsconfig.app.json",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
 		"render:smoke": "node scripts/ssr-run.mjs"
@@ -17,6 +18,8 @@
 		"node": ">=22.6"
 	},
 	"devDependencies": {
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3",
 		"@vitejs/plugin-react": "^6.0.3",
 		"typescript": "^6.0.3",
 		"vite": "^8.1.0"

@@ -1,0 +1,6 @@
+{
+	"//": "Typecheck gate for shippable app code (src/ui + src/core). esbuild/vite strip types without checking them; this is the real type gate. Scoped to src and excludes tests + node scripts, which intentionally run without @types/node (verified by actually running them: test, render:smoke, parse:real).",
+	"extends": "./tsconfig.json",
+	"include": ["src"],
+	"exclude": ["**/*.test.ts"]
+}
