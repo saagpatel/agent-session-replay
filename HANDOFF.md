@@ -39,6 +39,24 @@ transcript never leaves the machine.
   render (`pnpm render:smoke`) on real data: Codex -> 280 bars; CC -> 538 bars /
   11 lanes / 4 findings. Reviewed by nextjs-react-reviewer (memo, input reset,
   error surfacing, aria all fixed).
+- `d0f3501 feat(ui)` — **visual-QA polish** (DONE). Eyeballed the real UI in a
+  headless browser on real CC + Codex sessions; killed a top-stuck dead-space void
+  (ruler + lanes + fault-lines now a vertically-centered connected band via
+  `justify-content: safe center`) and added a step-kind color legend. Technique:
+  old `--headless` one-shot screenshot (NOT `=new`, which hangs) + a JSON-fixture
+  harness under `qa/` (gitignored; pre-parses real transcripts, renders the real
+  components). See memory `reference-headless-visual-qa`.
+- `965db10 build` — **tsc typecheck gate** (DONE). `pnpm typecheck` (`tsc -p
+  tsconfig.app.json` over `src`, excluding `*.test.ts` + node scripts) catches type
+  errors esbuild strips silently. Added `@types/react` + `@types/react-dom`
+  (dev-only; core stays zero-dep) + `src/vite-env.d.ts` for CSS side-effect imports.
+- `be1f3a7 fix(parser)` — **CC run-window fix** (DONE). `buildRun` set started/ended
+  from the first/last event in ARRAY order; subagent sidechains concat in size order
+  so the chronologically-latest event isn't last → the run window collapsed (a real
+  session showed 25.5s instead of its true 14h27m span) and later steps clamped to
+  the right edge, blanking the subagent lanes. Now min/max of parsed event
+  timestamps, order-independent. Caught by an operator drag of a real CC session
+  folder; regression test added. **58/58 tests, typecheck + build green.**
 
 ### What's on disk
 - `src/core/jsonl.ts` — defensive JSONL line parser.
@@ -63,25 +81,37 @@ transcript never leaves the machine.
 
 ### Stack (decided, do not re-litigate)
 Dependency-free TypeScript core, tested via `npm test` (`node --test
---experimental-strip-types`, Node ≥22.6). The Vite + React browser UI is a separate,
-later layer that needs an **approval-gated** install. `@types/node` is intentionally
-absent — `node:fs`/`process` editor diagnostics are expected, runtime is the gate.
+--experimental-strip-types`, Node ≥22.6). The Vite + React browser UI is a separate
+layer with `@types/react` (dev-only) and a `pnpm typecheck` gate over `src`. `@types/node`
+is still intentionally absent — `node:fs`/`process` editor diagnostics on the test files
+and node scripts are expected (those are verified by running them, not by tsc); the
+typecheck config excludes them. Three verification surfaces: `pnpm test` (logic),
+`pnpm typecheck` (types), `pnpm render:smoke` (SSR render), plus `pnpm build`.
 
-## Next concrete step: pick a slice (core viewer is DONE)
+## Next concrete step: pick a slice (core viewer DONE + browser-verified)
 
-The end-to-end product ships: drop a CC/Codex session → waterfall + findings,
-local-first. Candidate next slices, roughly highest-value first:
-1. **Cost analytics** — price tokens per model ($ in/out, cache-read ~0.1×,
-   cache-creation ~1.25×) into a per-run + per-subagent cost view and a
-   `cost_runaway` $ detector (current detector is token-count based).
-2. **Live visual QA** — verified via SSR, not a real browser yet. Run `pnpm dev`,
-   drive a headless browser, screenshot, tune spacing/contrast/alignment.
-3. **@types/react + tsc typecheck** — approval-gated dev install
-   (`pnpm add -D @types/react @types/react-dom`); then a `typecheck` script over a
-   tsconfig.app.json (include src/ui + src/core, exclude *.test.ts + scripts).
-4. **Waterfall virtualization** — big sessions render thousands of bars; windowing
+Drop a CC/Codex session → waterfall + findings, local-first. Verified end to end by
+an operator drag of real sessions. Candidate next slices, highest-value first:
+1. **Idle-gap compression (timeline)** — IN PROGRESS as of be1f3a7. Long/marathon
+   sessions (e.g. the 14h27m operant session) render uselessly on a linear axis:
+   activity bursts crush to slivers, the idle middle eats the chart. Collapse idle
+   spans longer than a gap threshold into a `// gap //` break so each burst gets real
+   width. Pure view-model time-warp (`buildTimeline`) + a UI break render; backward
+   compatible (no big gaps → identity warp → unchanged). One knob: the gap threshold.
+   **Top pick** — central to forensics on long runs.
+2. **Waterfall virtualization** — big sessions render thousands of bars; windowing
    keeps it smooth (the 19MB CC session is ~6177 steps).
-5. **Tauri 2 packaging** — wrap the SPA as a desktop app for offline distribution.
+3. **Tauri 2 packaging** — wrap the SPA as a desktop app for offline distribution.
+4. **Polish nits** — "load another" button affordance; agent-type lane labels
+   (currently truncated subagent-id hashes).
+
+DONE (no longer candidates): ~~Cost analytics~~ — dropped, redundant with the
+`cost-tracker` MCP + ccusage CLI. ~~Live visual QA~~ → `d0f3501`. ~~@types/react + tsc
+typecheck~~ → `965db10`.
+
+> Install gotcha (banked): the `!` shell runs in `/Users/d`, NOT the repo — use
+> `pnpm -C ~/Projects/agent-session-replay add …` or installs land in $HOME and cause
+> false-green typechecks (tsc walks up to a stray parent `node_modules`).
 
 ## Open follow-ups (deferred)
 - `parseJsonl` malformed-line count so the UI can warn "N unparseable lines".
