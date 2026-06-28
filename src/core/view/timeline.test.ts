@@ -82,6 +82,45 @@ test("subagent steps land in their own lane; main steps stay in lane 0", () => {
 	assert.equal(view.lanes[1].bars[0].step_id, "s");
 });
 
+test("a subagent lane is labeled by its agent type when the spawning Agent step is present", () => {
+	const view = buildTimeline(
+		trace([
+			step({
+				step_id: "ag",
+				kind: "agent",
+				started_at: "2026-01-01T00:00:05.000Z",
+				attributes: {
+					[ATTR.AGENT_SPAWNS]: "sub-1",
+					[ATTR.AGENT_TYPE]: "code-reviewer",
+				},
+			}),
+			step({
+				step_id: "s",
+				kind: "tool_call",
+				started_at: "2026-01-01T00:00:10.000Z",
+				subagent_id: "sub-1",
+			}),
+		]),
+	);
+	const lane = view.lanes.find((l) => l.id === "sub-1");
+	assert.equal(lane?.label, "code-reviewer");
+});
+
+test("a subagent lane falls back to its id when no agent type is known", () => {
+	const view = buildTimeline(
+		trace([
+			step({
+				step_id: "s",
+				kind: "tool_call",
+				started_at: "2026-01-01T00:00:10.000Z",
+				subagent_id: "orphan-sub",
+			}),
+		]),
+	);
+	const lane = view.lanes.find((l) => l.id === "orphan-sub");
+	assert.equal(lane?.label, "orphan-sub");
+});
+
 test("a step cited by a finding carries that finding's severity", () => {
 	const findings: Finding[] = [
 		{

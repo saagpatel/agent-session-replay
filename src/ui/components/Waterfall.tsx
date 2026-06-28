@@ -10,7 +10,7 @@ import type {
 import { fmtClock, fmtDuration, kindColorVar } from "../format.ts";
 
 /** Kept in sync with --label-w in styles.css (the time-axis gutter). */
-const LABEL_W = 88;
+const LABEL_W = 112;
 const TICKS = [0, 0.25, 0.5, 0.75, 1];
 const SEV_VAR: Record<Severity, string> = {
 	critical: "--sev-critical",
@@ -27,7 +27,7 @@ const KIND_LEGEND: { label: string; kind: StepKind }[] = [
 ];
 
 function shortLane(id: string): string {
-	return id.length > 10 ? `${id.slice(0, 9)}…` : id;
+	return id.length > 16 ? `${id.slice(0, 15)}…` : id;
 }
 
 /** Map a warped fraction back to wall-clock via the (piecewise-linear) axis knots,
@@ -67,7 +67,16 @@ const Lanes = memo(function Lanes({
 		<>
 			{lanes.map((lane) => (
 				<div className="lane" key={lane.index}>
-					<div className="lane__label" title={lane.id ?? "main"}>
+					<div
+						className="lane__label"
+						title={
+							lane.id
+								? lane.label === lane.id
+									? lane.id
+									: `${lane.label} · ${lane.id}`
+								: "main"
+						}
+					>
 						{lane.id ? shortLane(lane.label) : "main"}
 					</div>
 					<div className="lane__track">

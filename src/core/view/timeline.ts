@@ -249,6 +249,16 @@ export function buildTimeline(
 	const lanes: TimelineLane[] = [mainLane];
 	const subLanes = new Map<string, TimelineLane>();
 
+	// Label subagent lanes by agent type ("code-reviewer") instead of the opaque
+	// id; the spawning Agent step carries both the spawned id and the type.
+	const subagentLabel = new Map<string, string>();
+	for (const s of trace.steps) {
+		const spawned = s.attributes[ATTR.AGENT_SPAWNS];
+		const type = s.attributes[ATTR.AGENT_TYPE];
+		if (typeof spawned === "string" && typeof type === "string")
+			subagentLabel.set(spawned, type);
+	}
+
 	for (const s of trace.steps) {
 		const sub = s.subagent_id ?? null;
 		let lane: TimelineLane;
@@ -257,7 +267,12 @@ export function buildTimeline(
 		} else {
 			let existing = subLanes.get(sub);
 			if (!existing) {
-				existing = { index: lanes.length, id: sub, label: sub, bars: [] };
+				existing = {
+					index: lanes.length,
+					id: sub,
+					label: subagentLabel.get(sub) ?? sub,
+					bars: [],
+				};
 				subLanes.set(sub, existing);
 				lanes.push(existing);
 			}
