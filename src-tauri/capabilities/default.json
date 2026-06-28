@@ -1,0 +1,7 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "Capabilities for the main window. The viewer is client-side only, so core defaults suffice.",
+	"windows": ["main"],
+	"permissions": ["core:default"]
+}

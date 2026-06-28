@@ -1,0 +1,15 @@
+[package]
+name = "agent-session-replay"
+version = "0.1.0"
+description = "Local-first failure-forensics viewer for Claude Code and Codex agent sessions."
+edition = "2021"
+
+[lib]
+name = "agent_session_replay_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

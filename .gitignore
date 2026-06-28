@@ -5,6 +5,13 @@ node_modules/
 dist/
 .vite/
 
+# rust / tauri — generated; the scaffold + icons under src-tauri/ ARE committed
+src-tauri/target/
+src-tauri/gen/
+# desktop-only app — skip the mobile icon variants `tauri icon` also emits
+src-tauri/icons/android/
+src-tauri/icons/ios/
+
 # never commit real transcript data (privacy-first)
 real-samples/
 *.real.jsonl

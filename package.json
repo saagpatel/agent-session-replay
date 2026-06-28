@@ -12,12 +12,14 @@
 		"typecheck": "tsc -p tsconfig.app.json",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
-		"render:smoke": "node scripts/ssr-run.mjs"
+		"render:smoke": "node scripts/ssr-run.mjs",
+		"tauri": "tauri"
 	},
 	"engines": {
 		"node": ">=22.6"
 	},
 	"devDependencies": {
+		"@tauri-apps/cli": "^2.11.3",
 		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
 		"@vitejs/plugin-react": "^6.0.3",
