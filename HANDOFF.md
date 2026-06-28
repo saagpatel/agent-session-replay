@@ -109,7 +109,7 @@ DONE (no longer candidates): ~~Cost analytics~~ — dropped, redundant with the
 `cost-tracker` MCP + ccusage CLI. ~~Live visual QA~~ → `d0f3501`. ~~@types/react + tsc
 typecheck~~ → `965db10`.
 
-> Install gotcha (banked): the `!` shell runs in `/Users/d`, NOT the repo — use
+> Install gotcha (banked): the `!` shell runs in `$HOME`, NOT the repo — use
 > `pnpm -C ~/Projects/agent-session-replay add …` or installs land in $HOME and cause
 > false-green typechecks (tsc walks up to a stray parent `node_modules`).
 

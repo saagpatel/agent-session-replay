@@ -18,7 +18,7 @@ function ev(type: string, payload: unknown, ts?: string): unknown {
 const sessionMeta = (over: Record<string, unknown> = {}) =>
 	ev("session_meta", {
 		id: "019c6b51-run",
-		cwd: "/Users/d/Projects",
+		cwd: "/workspace/project",
 		originator: "Codex Desktop",
 		cli_version: "0.100.0",
 		...over,
@@ -26,7 +26,7 @@ const sessionMeta = (over: Record<string, unknown> = {}) =>
 const turnContext = (over: Record<string, unknown> = {}) =>
 	ev("turn_context", {
 		turn_id: "t1",
-		cwd: "/Users/d/Projects",
+		cwd: "/workspace/project",
 		approval_policy: "never",
 		sandbox_policy: { type: "danger-full-access" },
 		model: "gpt-5.3-codex",
@@ -56,7 +56,7 @@ test("builds run metadata from session_meta + turn_context", () => {
 	assert.equal(run.harness.name, "codex");
 	assert.equal(run.harness.version, "0.100.0");
 	assert.equal(run.model, "gpt-5.3-codex");
-	assert.equal(run.workspace?.cwd, "/Users/d/Projects");
+	assert.equal(run.workspace?.cwd, "/workspace/project");
 });
 
 test("an assistant message becomes an llm step; the first user message seeds the plan", () => {
