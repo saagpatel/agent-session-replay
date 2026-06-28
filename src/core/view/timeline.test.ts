@@ -210,6 +210,89 @@ test("a zero-duration run does not divide by zero", () => {
 	assert.ok(Number.isFinite(view.lanes[0].bars[0].width));
 });
 
+test("compresses an idle gap longer than the threshold so later steps don't cram the edge", () => {
+	const view = buildTimeline(
+		trace(
+			[
+				step({
+					step_id: "a",
+					kind: "tool_call",
+					started_at: T0,
+					ended_at: "2026-01-01T00:00:10.000Z",
+				}),
+				step({
+					step_id: "b",
+					kind: "tool_call",
+					started_at: "2026-01-01T01:00:05.000Z", // ~1h later
+					ended_at: "2026-01-01T01:00:10.000Z",
+				}),
+			],
+			{ started_at: T0, ended_at: "2026-01-01T01:00:10.000Z" },
+		),
+	);
+	// The ~1h idle span between the two clusters is collapsed into one gap.
+	assert.equal(view.gaps.length, 1);
+	assert.ok(Math.abs(view.gaps[0].durationMs - 3_595_000) < 1000);
+	// Linear mapping would shove step b to offset ~0.998; compression pulls it in.
+	const b = view.lanes[0].bars.find((x) => x.step_id === "b");
+	assert.ok(b, "step b exists");
+	assert.ok(
+		b.offset < 0.8,
+		`b.offset ${b.offset} should be well left of the edge`,
+	);
+	assert.ok(b.offset > 0.5, "b sits after the compressed gap");
+	// Header duration stays the TRUE span, not the compressed one.
+	assert.equal(view.durationMs, 3_610_000);
+});
+
+test("a dense session has no idle gaps and stays linearly positioned", () => {
+	const view = buildTimeline(
+		trace([
+			step({
+				step_id: "a",
+				kind: "tool_call",
+				started_at: "2026-01-01T00:00:25.000Z",
+				ended_at: "2026-01-01T00:00:50.000Z",
+			}),
+		]),
+	);
+	assert.deepEqual(view.gaps, []);
+	assert.ok(Math.abs(view.lanes[0].bars[0].offset - 0.25) < 1e-9);
+});
+
+test("axis knots map warped fractions back to wall-clock across a compressed gap", () => {
+	const end = "2026-01-01T01:00:10.000Z";
+	const view = buildTimeline(
+		trace(
+			[
+				step({
+					step_id: "a",
+					kind: "tool_call",
+					started_at: T0,
+					ended_at: "2026-01-01T00:00:10.000Z",
+				}),
+				step({
+					step_id: "b",
+					kind: "tool_call",
+					started_at: "2026-01-01T01:00:05.000Z",
+					ended_at: end,
+				}),
+			],
+			{ started_at: T0, ended_at: end },
+		),
+	);
+	const axis = view.axis;
+	assert.ok(axis.length >= 2);
+	assert.equal(axis[0].at, 0);
+	assert.equal(axis[0].t, Date.parse(T0));
+	assert.equal(axis[axis.length - 1].at, 1);
+	assert.equal(axis[axis.length - 1].t, Date.parse(end));
+	for (let i = 1; i < axis.length; i++) {
+		assert.ok(axis[i].at >= axis[i - 1].at, "warped fraction is monotonic");
+		assert.ok(axis[i].t >= axis[i - 1].t, "wall-clock is monotonic");
+	}
+});
+
 test("clamps a bar so it never overflows the right edge", () => {
 	const view = buildTimeline(
 		trace([

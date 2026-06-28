@@ -2,8 +2,12 @@ import { memo, useRef, useState } from "react";
 
 import type { Severity } from "../../core/detect/types.ts";
 import type { StepKind } from "../../core/types.ts";
-import type { TimelineLane, TimelineView } from "../../core/view/timeline.ts";
-import { fmtClock, kindColorVar } from "../format.ts";
+import type {
+	AxisKnot,
+	TimelineLane,
+	TimelineView,
+} from "../../core/view/timeline.ts";
+import { fmtClock, fmtDuration, kindColorVar } from "../format.ts";
 
 /** Kept in sync with --label-w in styles.css (the time-axis gutter). */
 const LABEL_W = 88;
@@ -24,6 +28,25 @@ const KIND_LEGEND: { label: string; kind: StepKind }[] = [
 
 function shortLane(id: string): string {
 	return id.length > 10 ? `${id.slice(0, 9)}…` : id;
+}
+
+/** Map a warped fraction back to wall-clock via the (piecewise-linear) axis knots,
+ * so the ruler + scrub read true time even where idle spans were compressed. */
+function clockMsAt(axis: readonly AxisKnot[], frac: number): number {
+	const first = axis[0];
+	const last = axis[axis.length - 1];
+	if (!first || !last) return 0;
+	if (frac <= 0) return first.t;
+	if (frac >= 1) return last.t;
+	for (let i = 1; i < axis.length; i++) {
+		const a = axis[i - 1];
+		const b = axis[i];
+		if (a && b && frac <= b.at) {
+			const span = b.at - a.at;
+			return a.t + (span > 0 ? (frac - a.at) / span : 0) * (b.t - a.t);
+		}
+	}
+	return last.t;
 }
 
 /**
@@ -91,8 +114,7 @@ export function Waterfall({
 	const bodyRef = useRef<HTMLDivElement>(null);
 	const [scrub, setScrub] = useState<number | null>(null);
 
-	const clockAt = (frac: number) =>
-		fmtClock(timeline.t0 + frac * timeline.durationMs);
+	const clockAt = (frac: number) => fmtClock(clockMsAt(timeline.axis, frac));
 
 	function onMove(e: { clientX: number }): void {
 		const el = bodyRef.current;
@@ -133,6 +155,25 @@ export function Waterfall({
 			>
 				<div className="wf__plot">
 					<div className="wf__band">
+						{timeline.gaps.length > 0 ? (
+							<div className="wf__gaps" aria-hidden="true">
+								{timeline.gaps.map((g) => (
+									<div
+										key={`gap-${g.offset}`}
+										className="wf__gap"
+										style={{
+											left: `${g.offset * 100}%`,
+											width: `${g.width * 100}%`,
+										}}
+										title={`${fmtDuration(g.durationMs)} idle (axis compressed)`}
+									>
+										<span className="wf__gap-label">
+											{fmtDuration(g.durationMs)}
+										</span>
+									</div>
+								))}
+							</div>
+						) : null}
 						<div className="wf__markers">
 							{timeline.markers.map((m) => (
 								<div

@@ -348,6 +348,45 @@ body {
 	white-space: nowrap;
 }
 
+/* compressed idle-gap breaks — collapsed dead time between activity bursts */
+.wf__gaps {
+	position: absolute;
+	left: var(--label-w);
+	right: 0;
+	top: 0;
+	bottom: 0;
+	pointer-events: none;
+	z-index: 2;
+}
+.wf__gap {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	min-width: 12px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: repeating-linear-gradient(
+		-45deg,
+		transparent,
+		transparent 4px,
+		color-mix(in srgb, var(--faint) 22%, transparent) 4px,
+		color-mix(in srgb, var(--faint) 22%, transparent) 5px
+	);
+	border-left: 1px dashed var(--line-bright);
+	border-right: 1px dashed var(--line-bright);
+}
+.wf__gap-label {
+	writing-mode: vertical-rl;
+	font-size: 9px;
+	letter-spacing: 0.08em;
+	color: var(--muted);
+	white-space: nowrap;
+	background: var(--ink);
+	padding: 5px 1px;
+	border-radius: 2px;
+}
+
 /* lanes + bars */
 .lane {
 	display: flex;
