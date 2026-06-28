@@ -57,6 +57,36 @@ test("builds run metadata from session events", () => {
 	assert.equal(trace.run.outcome?.status, "completed");
 });
 
+test("run window is the min/max event timestamp, independent of event order", () => {
+	// Subagent sidechains get concatenated by file size, so the chronologically
+	// latest event is often NOT last in the array. The run window must be min/max,
+	// not first/last-in-order, or the timeline collapses to a sliver and later
+	// steps clamp to the right edge.
+	const T0 = "2026-06-20T10:00:00.000Z"; // earliest
+	const T1 = "2026-06-20T10:05:00.000Z";
+	const T2 = "2026-06-20T10:12:00.000Z"; // latest
+	const ev = (ts: string, sidechain: boolean) => ({
+		type: "assistant",
+		sessionId: "sess-1",
+		timestamp: ts,
+		uuid: `u-${ts}`,
+		...(sidechain ? { isSidechain: true, agentId: "sub-1" } : {}),
+		message: { role: "assistant", content: [{ type: "text", text: "x" }] },
+	});
+	// Out of chronological order: mid first, max in the middle, min last.
+	const trace = parseClaudeCodeEvents([
+		ev(T1, false),
+		ev(T2, true),
+		ev(T0, true),
+	]);
+	assert.equal(
+		trace.run.started_at,
+		T0,
+		"started_at must be the min timestamp",
+	);
+	assert.equal(trace.run.ended_at, T2, "ended_at must be the max timestamp");
+});
+
 test("llm step captures model, token usage incl. cache, finish reason, reasoning", () => {
 	const events = [
 		{

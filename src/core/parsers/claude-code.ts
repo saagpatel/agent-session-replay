@@ -331,8 +331,13 @@ function buildRun(events: Json[]): Run {
 	let planText: string | undefined;
 	let outSummary: string | undefined;
 	let outStop: string | undefined;
+	// Min/max of all event timestamps, not first/last in array order: subagent
+	// sidechains are concatenated in arbitrary (size-sorted) order, so the
+	// chronologically latest event is often not last in the stream.
 	let started: string | undefined;
 	let ended: string | undefined;
+	let startMs: number | undefined;
+	let endMs: number | undefined;
 
 	for (const ev of events) {
 		if (runId === "unknown" && str(ev["sessionId"]))
@@ -343,8 +348,17 @@ function buildRun(events: Json[]): Run {
 		gitBranch ??= str(ev["gitBranch"]);
 		const ts = str(ev["timestamp"]);
 		if (ts) {
-			started ??= ts;
-			ended = ts;
+			const t = Date.parse(ts);
+			if (!Number.isNaN(t)) {
+				if (startMs === undefined || t < startMs) {
+					startMs = t;
+					started = ts;
+				}
+				if (endMs === undefined || t > endMs) {
+					endMs = t;
+					ended = ts;
+				}
+			}
 		}
 		if (ev["type"] === "assistant" && !ev["isSidechain"]) {
 			const msg = asObj(ev["message"]);
