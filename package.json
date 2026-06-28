@@ -4,6 +4,7 @@
 	"private": true,
 	"type": "module",
 	"description": "Local-first failure-forensics for Claude Code and Codex agent sessions",
+	"license": "MIT",
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
