@@ -1,6 +1,7 @@
 import { memo, useRef, useState } from "react";
 
 import type { Severity } from "../../core/detect/types.ts";
+import type { StepKind } from "../../core/types.ts";
 import type { TimelineLane, TimelineView } from "../../core/view/timeline.ts";
 import { fmtClock, kindColorVar } from "../format.ts";
 
@@ -12,6 +13,14 @@ const SEV_VAR: Record<Severity, string> = {
 	warning: "--sev-warning",
 	info: "--sev-info",
 };
+/** Decode the bar color channels: each step kind maps to a signal hue. */
+const KIND_LEGEND: { label: string; kind: StepKind }[] = [
+	{ label: "llm", kind: "llm" },
+	{ label: "tool", kind: "tool_call" },
+	{ label: "agent", kind: "agent" },
+	{ label: "hook", kind: "hook" },
+	{ label: "compaction", kind: "compaction" },
+];
 
 function shortLane(id: string): string {
 	return id.length > 10 ? `${id.slice(0, 9)}…` : id;
@@ -98,7 +107,20 @@ export function Waterfall({
 	return (
 		<div className="wf">
 			<div className="wf__head">
-				<span className="label">Waterfall</span>
+				<div className="wf__head-left">
+					<span className="label">Waterfall</span>
+					<div className="wf__legend">
+						{KIND_LEGEND.map(({ label, kind }) => (
+							<span className="wf__legend-item" key={kind}>
+								<span
+									className="wf__legend-sw"
+									style={{ ["--bar" as string]: `var(${kindColorVar(kind)})` }}
+								/>
+								{label}
+							</span>
+						))}
+					</div>
+				</div>
 				<span className="label">
 					{timeline.lanes.length} lanes · {clockAt(0)} → {clockAt(1)}
 				</span>
@@ -109,37 +131,43 @@ export function Waterfall({
 				onMouseMove={onMove}
 				onMouseLeave={() => setScrub(null)}
 			>
-				<div className="wf__ruler">
-					{TICKS.map((t) => (
-						<div className="wf__tick" key={t} style={{ left: `${t * 100}%` }}>
-							{clockAt(t)}
-						</div>
-					))}
-				</div>
 				<div className="wf__plot">
-					<div className="wf__markers">
-						{timeline.markers.map((m) => (
-							<div
-								key={m.finding_id}
-								className={`tracer${focusedFindingId === m.finding_id ? " tracer--focus" : ""}`}
-								title={m.title}
-								style={{
-									left: `${m.offset * 100}%`,
-									["--tc" as string]: `var(${SEV_VAR[m.severity]})`,
-								}}
-							/>
-						))}
-						{scrub !== null ? (
-							<div className="wf__scrub" style={{ left: `${scrub * 100}%` }}>
-								<div className="wf__scrub-read">{clockAt(scrub)}</div>
-							</div>
-						) : null}
+					<div className="wf__band">
+						<div className="wf__markers">
+							{timeline.markers.map((m) => (
+								<div
+									key={m.finding_id}
+									className={`tracer${focusedFindingId === m.finding_id ? " tracer--focus" : ""}`}
+									title={m.title}
+									style={{
+										left: `${m.offset * 100}%`,
+										["--tc" as string]: `var(${SEV_VAR[m.severity]})`,
+									}}
+								/>
+							))}
+							{scrub !== null ? (
+								<div className="wf__scrub" style={{ left: `${scrub * 100}%` }}>
+									<div className="wf__scrub-read">{clockAt(scrub)}</div>
+								</div>
+							) : null}
+						</div>
+						<div className="wf__ruler">
+							{TICKS.map((t) => (
+								<div
+									className="wf__tick"
+									key={t}
+									style={{ left: `${t * 100}%` }}
+								>
+									{clockAt(t)}
+								</div>
+							))}
+						</div>
+						<Lanes
+							lanes={timeline.lanes}
+							selectedStepId={selectedStepId}
+							onSelect={onSelect}
+						/>
 					</div>
-					<Lanes
-						lanes={timeline.lanes}
-						selectedStepId={selectedStepId}
-						onSelect={onSelect}
-					/>
 				</div>
 			</div>
 		</div>

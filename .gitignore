@@ -8,6 +8,9 @@ dist/
 # never commit real transcript data (privacy-first)
 real-samples/
 *.real.jsonl
+# local-only visual-QA harness — pre-parses real transcripts into JSON fixtures
+# that embed real local paths; never committed.
+qa/
 
 # os / editor
 .DS_Store
