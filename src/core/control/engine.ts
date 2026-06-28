@@ -404,8 +404,16 @@ export function analyzeControlBundle(
 		bundle.reconciliationReport?.sources,
 	)) {
 		const warnings = row.warnings?.length ?? 0;
-		const rowSeverity = row.severity === "error" ? "critical" : "warning";
-		if (rowSeverity === "warning" && warnings === 0 && row.status !== "skipped")
+		const rowSeverity =
+			row.severity === "error" || row.status === "error"
+				? "critical"
+				: "warning";
+		if (
+			rowSeverity === "warning" &&
+			warnings === 0 &&
+			row.status !== "skipped" &&
+			row.status !== "warning"
+		)
 			continue;
 		add(findings, {
 			id: `reconciliation_warning:${source}`,

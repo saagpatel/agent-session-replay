@@ -139,6 +139,32 @@ test("reconciliation warnings get a safe inspect command when source rows omit o
 	);
 });
 
+test("reconciliation error rows surface even without warning codes", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			reconciliationReport: {
+				ok: false,
+				sources: [
+					{
+						source: "bridge-db",
+						status: "error",
+					},
+				],
+			},
+		}),
+	);
+
+	const finding = report.findings.find(
+		(item) => item.id === "reconciliation_warning:bridge-db",
+	);
+	assert.equal(finding?.severity, "critical");
+	assert.equal(finding?.sourceSystems[0], "bridge-db");
+	assert.equal(
+		finding?.nextCommand,
+		"uv run afr-local latest reconciliation --source bridge-db",
+	);
+	assert.equal(report.actions[0]?.severity, "critical");
+});
 
 test("failure, cost, and boundary records become ranked evidence findings", () => {
 	const report = analyzeControlBundle(

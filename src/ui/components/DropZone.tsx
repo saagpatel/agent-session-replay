@@ -13,14 +13,32 @@ export type DropPayload =
 	| { kind: "transcript"; name: string; text: string }
 	| { kind: "afr"; input: AfrInput };
 
+interface DroppedFile {
+	file: File;
+	name: string;
+	path: string;
+	size: number;
+	text: () => Promise<string>;
+}
+
+function droppedFile(file: File, path: string): DroppedFile {
+	return {
+		file,
+		name: file.name,
+		path,
+		size: file.size,
+		text: () => file.text(),
+	};
+}
+
 /** Recursively collect files from a dropped entry (so a session folder picks up
  * its subagents/ sidechains). Entries must be read synchronously from the drop. */
-function readEntry(entry: FileSystemEntry, out: File[]): Promise<void> {
+function readEntry(entry: FileSystemEntry, out: DroppedFile[]): Promise<void> {
 	return new Promise((resolve) => {
 		if (entry.isFile) {
 			(entry as FileSystemFileEntry).file(
 				(f) => {
-					out.push(f);
+					out.push(droppedFile(f, entry.fullPath || f.name));
 					resolve();
 				},
 				() => resolve(),
@@ -49,7 +67,13 @@ function readEntry(entry: FileSystemEntry, out: File[]): Promise<void> {
 	});
 }
 
-async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
+function droppedFiles(files: File[]): DroppedFile[] {
+	return files.map((file) =>
+		droppedFile(file, file.webkitRelativePath || file.name),
+	);
+}
+
+async function filesFromDrop(dt: DataTransfer): Promise<DroppedFile[]> {
 	const items = dt.items;
 	const roots: FileSystemEntry[] = [];
 	if (items?.length && typeof items[0]?.webkitGetAsEntry === "function") {
@@ -58,15 +82,15 @@ async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
 			if (e) roots.push(e);
 		}
 	}
-	if (roots.length === 0) return Array.from(dt.files);
-	const out: File[] = [];
+	if (roots.length === 0) return droppedFiles(Array.from(dt.files));
+	const out: DroppedFile[] = [];
 	await Promise.all(roots.map((e) => readEntry(e, out)));
-	return out.length > 0 ? out : Array.from(dt.files);
+	return out.length > 0 ? out : droppedFiles(Array.from(dt.files));
 }
 
 /** Merge the .jsonl files of a session into one event stream (main first). */
 async function combine(
-	files: File[],
+	files: DroppedFile[],
 ): Promise<{ name: string; text: string } | null> {
 	const jsonl = files.filter((f) => JSONL.test(f.name));
 	if (jsonl.length === 0) return null;
@@ -77,18 +101,14 @@ async function combine(
 	return { name, text: texts.join("\n") };
 }
 
-function fileKey(file: File): string {
-	return file.webkitRelativePath || file.name;
-}
-
-function archiveNameFor(trace: File): string {
-	const key = fileKey(trace);
+function archiveNameFor(trace: DroppedFile): string {
+	const key = trace.path;
 	const parts = key.split("/").filter(Boolean);
 	if (parts.length > 1) return parts[parts.length - 2] ?? trace.name;
 	return trace.name;
 }
 
-async function afrInput(files: File[]): Promise<AfrInput | null> {
+async function afrInput(files: DroppedFile[]): Promise<AfrInput | null> {
 	const byName = new Map(files.map((file) => [file.name, file]));
 	const trace = byName.get(AFR_TRACE);
 	if (!trace) return null;
@@ -116,7 +136,7 @@ export function DropZone({
 	const [over, setOver] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 
-	async function take(files: File[]): Promise<void> {
+	async function take(files: DroppedFile[]): Promise<void> {
 		try {
 			const afr = await afrInput(files);
 			if (afr) {
@@ -192,7 +212,7 @@ export function DropZone({
 					multiple
 					hidden
 					onChange={(e) => {
-						const files = Array.from(e.target.files ?? []);
+						const files = droppedFiles(Array.from(e.target.files ?? []));
 						e.target.value = ""; // allow re-picking the same file after an error
 						void take(files);
 					}}
