@@ -67,6 +67,14 @@ export function App() {
 						<span title={loaded.fileName}>
 							{loaded.trace.run.run_id.slice(0, 12)}
 						</span>
+						{loaded.trace.malformed_lines ? (
+							<span
+								className="chip chip--warn"
+								title={`${loaded.trace.malformed_lines} transcript line(s) could not be parsed and were skipped — this view may under-report`}
+							>
+								⚠ {loaded.trace.malformed_lines} unparsed
+							</span>
+						) : null}
 						<button
 							type="button"
 							className="linklike"

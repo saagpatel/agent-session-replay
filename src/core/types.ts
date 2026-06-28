@@ -84,6 +84,9 @@ export interface Trace {
 	plumbline_version: string;
 	run: Run;
 	steps: Step[];
+	/** Parse metadata (not part of the plumbline data model): count of non-blank
+	 * transcript lines that failed to parse, so the UI can flag under-reporting. */
+	malformed_lines?: number;
 }
 
 /**

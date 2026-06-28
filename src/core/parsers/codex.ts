@@ -21,7 +21,7 @@
  * Defensive throughout: a single malformed event never aborts the run.
  */
 
-import { parseJsonl } from "../jsonl.ts";
+import { parseJsonlWithStats } from "../jsonl.ts";
 import { ATTR, type Run, type Step, type Trace } from "../types.ts";
 
 const PLUMBLINE_VERSION = "0.1.0";
@@ -356,5 +356,6 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 
 /** Parse raw Codex rollout text into a Trace. */
 export function parseCodexTranscript(text: string): Trace {
-	return parseCodexEvents(parseJsonl(text));
+	const { records, malformed } = parseJsonlWithStats(text);
+	return { ...parseCodexEvents(records), malformed_lines: malformed };
 }

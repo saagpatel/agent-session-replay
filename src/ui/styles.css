@@ -134,6 +134,11 @@ body {
 	color: var(--accent);
 	border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
 }
+.chip--warn {
+	color: var(--sev-warning);
+	border-color: color-mix(in srgb, var(--sev-warning) 45%, var(--line));
+	background: color-mix(in srgb, var(--sev-warning) 12%, var(--panel-2));
+}
 .linklike {
 	background: none;
 	border: none;

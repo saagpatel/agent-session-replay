@@ -409,6 +409,21 @@ test("subagent sidechain events are tagged with subagent_id", () => {
 	assert.equal(subStep.subagent_id, "ag-7");
 });
 
+test("parseClaudeCodeTranscript reports unparseable-line counts across main + sidechains", () => {
+	const valid = JSON.stringify({
+		type: "assistant",
+		sessionId: "s",
+		uuid: "a",
+		timestamp: TS1,
+		message: { role: "assistant", content: [{ type: "text", text: "x" }] },
+	});
+	const trace = parseClaudeCodeTranscript(`${valid}\n{ broken json\n`, [
+		"totally not json\n",
+	]);
+	assert.equal(trace.malformed_lines, 2);
+	assert.ok(trace.steps.length > 0, "valid lines still parse");
+});
+
 test("noise event types produce no steps", () => {
 	const events = [
 		{ type: "attachment", timestamp: TS1 },

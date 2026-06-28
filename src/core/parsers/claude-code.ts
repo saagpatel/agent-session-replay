@@ -16,7 +16,7 @@
  * `tool.result.kind` taxonomy are kept compatible on purpose.
  */
 
-import { parseJsonl } from "../jsonl.ts";
+import { parseJsonlWithStats } from "../jsonl.ts";
 import {
 	ATTR,
 	type Run,
@@ -451,7 +451,13 @@ export function parseClaudeCodeTranscript(
 	mainText: string,
 	subagentTexts: readonly string[] = [],
 ): Trace {
-	const events = parseJsonl(mainText);
-	for (const sub of subagentTexts) events.push(...parseJsonl(sub));
-	return parseClaudeCodeEvents(events);
+	const main = parseJsonlWithStats(mainText);
+	const events = [...main.records];
+	let malformed = main.malformed;
+	for (const sub of subagentTexts) {
+		const s = parseJsonlWithStats(sub);
+		events.push(...s.records);
+		malformed += s.malformed;
+	}
+	return { ...parseClaudeCodeEvents(events), malformed_lines: malformed };
 }
