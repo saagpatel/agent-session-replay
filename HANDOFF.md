@@ -116,10 +116,10 @@
   ready. Distribute the DMG via a GitHub *Release* (binaries are gitignored under `target/`).
 - **Minor:** `parseJsonl` already counts malformed lines; `readEntry` (DropZone) still
   silently resolves on per-entry I/O error (graceful-degrade, acceptable for v1).
-- **Flight Deck polish:** add richer grouping around bridge-db, ccq,
-  cost-tracker, notification-hub, hook/MCP configs, and collector follow-up
-  commands once source-specific contracts are stable enough to make the controls
-  prescriptive.
+- **Flight Deck confidence:** keep the next pass evidence-led: test several
+  existing AFR archives (empty, stale, dense all-source, and source-specific) and
+  tighten labels only where a real archive makes a decision ambiguous. Avoid
+  adding collectors, daemons, or write flows; keep the deck a decision surface.
 
 ## Blocked
 
