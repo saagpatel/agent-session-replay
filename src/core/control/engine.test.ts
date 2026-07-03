@@ -262,6 +262,11 @@ test("failed eval observations become outcome findings", () => {
 					status: "failed",
 					privacy_tier: "P0",
 					timestamp: "2026-06-28T12:00:01Z",
+					attributes: {
+						command_results_count: 1,
+						tests_failed_count: 2,
+						tests_passed_count: 1,
+					},
 				},
 			],
 		}),
@@ -270,7 +275,53 @@ test("failed eval observations become outcome findings", () => {
 	const finding = report.findings.find((item) => item.id === "eval_failure");
 	assert.equal(finding?.severity, "warning");
 	assert.equal(finding?.sourceSystems[0], "evals");
-	assert.match(finding?.outcomeSignal ?? "", /failed eval/);
+	assert.match(finding?.detail ?? "", /redacted by AFR privacy policy/);
+	assert.match(finding?.outcomeSignal ?? "", /1 failed eval/);
+	assert.match(finding?.outcomeSignal ?? "", /2 failed test assertions/);
+	assert.match(finding?.outcomeSignal ?? "", /1 passed assertion/);
+	assert.match(finding?.outcomeSignal ?? "", /1 command result/);
+	assert.equal(
+		finding?.nextCommand,
+		"uv run afr-local latest timeline --source evals --limit 20",
+	);
+});
+
+test("failed eval observations stay useful when assertion counts are redacted", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "e1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					validation_status: "failed",
+					status: "failed",
+					privacy_tier: "P0",
+					timestamp: "2026-06-28T12:00:01Z",
+				},
+				{
+					record_id: "e2",
+					record_type: "eval_observation",
+					source_system: "evals",
+					validation_status: "failed",
+					status: "failed",
+					privacy_tier: "P0",
+					timestamp: "2026-06-28T12:10:01Z",
+				},
+			],
+		}),
+	);
+
+	const finding = report.findings.find((item) => item.id === "eval_failure");
+	assert.equal(finding?.severity, "warning");
+	assert.match(
+		finding?.outcomeSignal ?? "",
+		/failed status without exposed assertion count/,
+	);
+	assert.match(
+		finding?.outcomeSignal ?? "",
+		/failed window 2026-06-28T12:00:01Z to 2026-06-28T12:10:01Z/,
+	);
 });
 
 test("bridge-db pending handoff records become control findings", () => {

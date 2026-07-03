@@ -140,6 +140,22 @@ function attributeString(record: AfrRecord, key: string): string | null {
 	return typeof value === "string" ? value : null;
 }
 
+function attributeNumber(record: AfrRecord, key: string): number {
+	const value = record.attributes?.[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function timeRange(records: AfrRecord[]): { oldest: string | null; newest: string | null } {
+	const timestamps = records
+		.map((record) => record.timestamp)
+		.filter((timestamp): timestamp is string => Boolean(timestamp))
+		.sort();
+	return {
+		oldest: timestamps[0] ?? null,
+		newest: timestamps.at(-1) ?? null,
+	};
+}
+
 function reconciliationRows(
 	sources: NonNullable<AfrBundle["reconciliationReport"]>["sources"],
 ): Array<[string, AfrReconciliationSource]> {
@@ -506,20 +522,49 @@ export function analyzeControlBundle(
 			(record.validation_status === "failed" || record.status === "failed"),
 	);
 	if (failedEvalRecords.length > 0) {
+		const failedTests = failedEvalRecords.reduce(
+			(total, record) => total + attributeNumber(record, "tests_failed_count"),
+			0,
+		);
+		const passedInsideFailures = failedEvalRecords.reduce(
+			(total, record) => total + attributeNumber(record, "tests_passed_count"),
+			0,
+		);
+		const commandResults = failedEvalRecords.reduce(
+			(total, record) => total + attributeNumber(record, "command_results_count"),
+			0,
+		);
+		const failedRange = timeRange(failedEvalRecords);
+		const failedTestSignal =
+			failedTests > 0
+				? `${failedTests} failed test assertion${failedTests === 1 ? "" : "s"}`
+				: "failed status without exposed assertion count";
+		const passedSignal =
+			passedInsideFailures > 0
+				? `; ${passedInsideFailures} passed assertion${passedInsideFailures === 1 ? "" : "s"} inside failed observations`
+				: "";
+		const commandSignal =
+			commandResults > 0
+				? `; ${commandResults} command result${commandResults === 1 ? "" : "s"}`
+				: "";
+		const rangeSignal =
+			failedRange.oldest && failedRange.newest
+				? `; failed window ${failedRange.oldest} to ${failedRange.newest}`
+				: "";
 		add(findings, {
 			id: "eval_failure",
 			kind: "eval_failure",
 			severity: tierForCount(failedEvalRecords.length, 1, 3),
 			title: `${failedEvalRecords.length} eval failure${failedEvalRecords.length === 1 ? "" : "s"}`,
 			detail:
-				"Evaluation records show failed expectations. Treat this as outcome evidence before routing similar work to the same agent path.",
+				"Evaluation records show failed expectations. Case labels, prompts, outputs, paths, and commands may be intentionally redacted by AFR privacy policy, so route from the aggregate outcome signal before trusting similar work to the same agent path.",
 			sourceSystems: sourceSystems(failedEvalRecords),
 			privacyTier: strongestPrivacyTier(failedEvalRecords),
 			freshness,
-			outcomeSignal: `${failedEvalRecords.length} failed eval observation(s)`,
+			outcomeSignal: `${failedEvalRecords.length} failed eval observation(s); ${failedTestSignal}${passedSignal}${commandSignal}${rangeSignal}`,
 			evidenceRefs: failedEvalRecords.slice(0, 5).map(evidence),
-			nextCommand: "uv run afr-local latest evals --limit 5",
-			score: 180 + failedEvalRecords.length,
+			nextCommand: "uv run afr-local latest timeline --source evals --limit 20",
+			score: 180 + failedEvalRecords.length + failedTests,
 		});
 	}
 
