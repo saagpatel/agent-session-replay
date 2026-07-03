@@ -298,6 +298,27 @@ function actionTitle(category: ControlActionCategory, sources: string[]): string
 	}
 }
 
+function actionReason(finding: ControlFinding): string {
+	if (finding.kind === "eval_failure") return `${finding.severity} eval failures`;
+	if (finding.kind === "cost_attention") {
+		return finding.severity === "warning" ? "estimated cost signal" : "cost signal";
+	}
+	if (finding.id.startsWith("stale_source:")) {
+		return `stale ${finding.sourceSystems[0] ?? "source"} source`;
+	}
+	if (finding.kind === "stale_source") return "stale archive";
+	if (finding.kind === "missing_all_source_archive") return "not all-source";
+	if (finding.kind === "privacy_violation") return "privacy failed";
+	if (finding.kind === "validation_failure") return "validation failed";
+	if (finding.kind === "validation_warning") return "validation warnings";
+	if (finding.kind === "bridge_pending_handoff") return "pending handoffs";
+	if (finding.kind === "reconciliation_warning") return "reconciliation warning";
+	if (finding.kind === "failure_marker") return "failure markers";
+	if (finding.kind === "boundary_event") return "boundary event";
+	if (finding.kind === "malformed_records") return "malformed records";
+	return finding.title;
+}
+
 function buildActions(findings: ControlFinding[]): ControlAction[] {
 	const actions = new Map<string, ControlAction>();
 	for (const finding of findings) {
@@ -306,6 +327,9 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 		const key = `${category}:${finding.nextCommand}`;
 		const existing = actions.get(key);
 		if (existing) {
+			const replaceReason =
+				SEVERITY_RANK[finding.severity] > SEVERITY_RANK[existing.severity] ||
+				finding.score > existing.priority;
 			existing.findingIds.push(finding.id);
 			existing.sourceSystems = uniq([
 				...existing.sourceSystems,
@@ -318,6 +342,7 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 			]);
 			existing.priority = Math.max(existing.priority, finding.score);
 			existing.title = actionTitle(category, existing.sourceSystems);
+			if (replaceReason) existing.decisionReason = actionReason(finding);
 			continue;
 		}
 		actions.set(key, {
@@ -331,6 +356,7 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 			severity: finding.severity,
 			privacyTier: finding.privacyTier,
 			rationale: finding.title,
+			decisionReason: actionReason(finding),
 		});
 	}
 	return [...actions.values()].sort(

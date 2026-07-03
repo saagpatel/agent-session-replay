@@ -45,6 +45,7 @@ export interface ControlAction {
 	severity: Severity;
 	privacyTier: PrivacyTier;
 	rationale: string;
+	decisionReason: string;
 }
 
 export interface ControlSummary {

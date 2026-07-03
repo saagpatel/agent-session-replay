@@ -331,6 +331,12 @@ test("failed eval observations stay useful when assertion counts are redacted", 
 		)?.title,
 		"Route eval maintenance",
 	);
+	assert.equal(
+		report.actions.find((action) =>
+			action.findingIds.includes("eval_failure"),
+		)?.decisionReason,
+		"warning eval failures",
+	);
 });
 
 test("bridge-db pending handoff records become control findings", () => {
@@ -646,6 +652,29 @@ test("route actions get source-specific decision titles", () => {
 	);
 	assert.equal(action?.category, "route");
 	assert.equal(action?.title, "Review cost routing");
+	assert.equal(action?.decisionReason, "estimated cost signal");
+});
+
+test("inspect actions explain stale source reasons", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "old-e",
+					record_type: "eval_observation",
+					source_system: "evals",
+					timestamp: "2026-06-20T12:00:00Z",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+
+	const action = report.actions.find((item) =>
+		item.findingIds.includes("stale_source:evals"),
+	);
+	assert.equal(action?.category, "inspect");
+	assert.equal(action?.decisionReason, "stale evals source");
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
