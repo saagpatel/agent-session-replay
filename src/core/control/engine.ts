@@ -1055,6 +1055,15 @@ function isMetadataEvidenceRef(ref: string): boolean {
 function evidenceRefSource(ref: string, sourceSystems: string[]): string {
 	const [prefix] = ref.split(":", 1);
 	if (prefix && sourceSystems.includes(prefix)) return prefix;
+	if (prefix && prefix !== ref && /^[a-z][a-z0-9._-]*$/i.test(prefix)) {
+		return prefix;
+	}
+	if (
+		/^\d{4}-\d{2}-\d{2}T/.test(ref) ||
+		/\.(json|jsonl)$/i.test(ref)
+	) {
+		return "metadata";
+	}
 	if (sourceSystems.length === 1) return sourceSystems[0] ?? "metadata";
 	return "metadata";
 }
