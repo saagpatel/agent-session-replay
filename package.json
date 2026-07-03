@@ -12,6 +12,7 @@
 		"test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
 		"typecheck": "tsc -p tsconfig.app.json",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
+		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
 		"render:smoke": "node scripts/ssr-run.mjs",
 		"tauri": "tauri"

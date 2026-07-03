@@ -57,6 +57,9 @@ The action rail deduplicates repeated evidence refs and uses source-specific rou
 titles so eval and cost follow-up are decision commands rather than generic alerts.
 Each action includes a compact decision reason, such as critical eval failures,
 estimated cost signal, or stale source evidence.
+The repo also includes a read-only archive candidate helper
+(`pnpm afr:archives`) that ranks existing local AFR run folders and prints the
+best folder path to drop into the deck without collecting or modifying archives.
 When multiple findings share one safe command, the rail keeps a single row while
 showing every contributing action category and reason.
 Source-specific freshness and routing quirks live in a small source contract
@@ -136,4 +139,5 @@ needed.
 pnpm test         # run the full test suite
 pnpm typecheck    # TypeScript gate
 pnpm build        # browser build
+pnpm afr:archives # rank existing local AFR archive folders, read-only
 ```
