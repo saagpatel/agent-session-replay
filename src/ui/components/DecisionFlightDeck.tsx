@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 
 import type { AfrBundle } from "../../core/afr/types.ts";
 import type {
@@ -61,6 +61,17 @@ function actionBoundaries(action: ControlAction): string {
 
 function ActionRow({ action }: { action: ControlAction }) {
 	const boundaries = actionBoundaries(action);
+	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+		"idle",
+	);
+	const copyCommand = async () => {
+		try {
+			await navigator.clipboard.writeText(action.command);
+			setCopyStatus("copied");
+		} catch {
+			setCopyStatus("failed");
+		}
+	};
 	return (
 		<div className="control-action">
 			<div className="control-action__meta">
@@ -93,7 +104,19 @@ function ActionRow({ action }: { action: ControlAction }) {
 						</div>
 					) : null}
 				</div>
-				<code>{action.command}</code>
+				<div className="control-action__command">
+					<code>{action.command}</code>
+					<div className="control-action__copy">
+						<button type="button" onClick={copyCommand}>
+							Copy command
+						</button>
+						{copyStatus !== "idle" ? (
+							<span aria-live="polite">
+								{copyStatus === "copied" ? "Copied" : "Copy failed"}
+							</span>
+						) : null}
+					</div>
+				</div>
 			</div>
 		</div>
 	);

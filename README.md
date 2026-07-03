@@ -76,7 +76,9 @@ or a generic control signal without opening evidence refs. Each action also
 explains its local safety boundary and the source freshness reason behind the
 command, keeping command choice inspectable without exposing raw AFR rows. The
 rail keeps the top three commands visible and folds lower-priority actions behind
-a source-labeled expander so dense all-source archives stay scannable.
+a source-labeled expander so dense all-source archives stay scannable. Commands
+can be copied from the action row by explicit user click; no clipboard write
+happens during passive viewing.
 
 ## Develop
 
