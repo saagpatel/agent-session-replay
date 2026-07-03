@@ -373,6 +373,22 @@ function actionTitle(category: ControlActionCategory, sources: string[]): string
 	}
 }
 
+function pressureTitle(
+	action: Pick<
+		ControlAction,
+		"category" | "command" | "findingIds" | "sourceSystems"
+	>,
+): string {
+	if (
+		action.command === "uv run afr-local latest costs --limit 5" &&
+		action.findingIds.includes("cost_attention") &&
+		action.findingIds.includes("validation_warning")
+	) {
+		return "Review estimated cost signals";
+	}
+	return actionTitle(action.category, action.sourceSystems);
+}
+
 function actionReason(finding: ControlFinding): string {
 	if (finding.kind === "eval_failure") return `${finding.severity} eval failures`;
 	if (finding.kind === "cost_attention") {
@@ -592,7 +608,7 @@ function buildActions(
 				existing.rationale = finding.title;
 				existing.decisionReason = reason;
 			}
-			existing.title = actionTitle(existing.category, existing.sourceSystems);
+			existing.title = pressureTitle(existing);
 			continue;
 		}
 		const safetyNote = safetyNoteForCommand(finding.nextCommand);
