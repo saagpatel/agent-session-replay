@@ -1346,6 +1346,24 @@ body {
 	line-height: 1;
 	padding: 3px 5px;
 }
+.control-action__trace-more {
+	border-top: 1px solid var(--line);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding-top: 6px;
+}
+.control-action__trace-more summary {
+	color: var(--faint);
+	cursor: pointer;
+	font-size: 10px;
+}
+.control-action__trace-more summary:hover {
+	color: var(--text);
+}
+.control-action__trace-more .control-action__trace-row {
+	margin-top: 6px;
+}
 .evidence-copy {
 	display: flex;
 	align-items: center;

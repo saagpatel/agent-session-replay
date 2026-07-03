@@ -56,6 +56,12 @@ const FINDING_COLOR: Record<ControlFinding["severity"], string> = {
 	info: "var(--sev-info)",
 };
 
+const TRACE_SEVERITY_RANK: Record<ControlFinding["severity"], number> = {
+	critical: 3,
+	warning: 2,
+	info: 1,
+};
+
 const SOURCE_PRESETS: Array<{ id: ControlSourcePreset; label: string }> = [
 	{ id: "all", label: "all" },
 	{ id: "bridge-db", label: "bridge-db" },
@@ -116,6 +122,16 @@ function actionTraceSignal(trace: ControlAction["trace"][number]): string {
 		trace.costSignal ??
 		trace.outcomeSignal ??
 		"no extra signal"
+	);
+}
+
+function sortedActionTrace(action: ControlAction): ControlAction["trace"] {
+	return [...action.trace].sort(
+		(a, b) =>
+			TRACE_SEVERITY_RANK[b.severity] - TRACE_SEVERITY_RANK[a.severity] ||
+			b.evidenceRefCount - a.evidenceRefCount ||
+			a.kind.localeCompare(b.kind) ||
+			a.findingId.localeCompare(b.findingId),
 	);
 }
 
@@ -364,6 +380,9 @@ function ActionRow({ action }: { action: ControlAction }) {
 	const boundaries = actionBoundaries(action);
 	const bundlePreview = buildActionBundlePreview(action);
 	const actionBundle = exportActionBundle(action);
+	const traceRows = sortedActionTrace(action);
+	const visibleTraceRows = traceRows.slice(0, 3);
+	const hiddenTraceRows = traceRows.slice(3);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
 		"idle",
 	);
@@ -465,7 +484,7 @@ function ActionRow({ action }: { action: ControlAction }) {
 							</b>
 						</div>
 						<div className="control-action__trace">
-							{action.trace.map((trace) => (
+							{visibleTraceRows.map((trace) => (
 								<div className="control-action__trace-row" key={trace.findingId}>
 									<span className={`sev-tag control-action__trace-sev`}>
 										{trace.severity}
@@ -476,6 +495,27 @@ function ActionRow({ action }: { action: ControlAction }) {
 									<small>{trace.evidenceRefCount} ref(s)</small>
 								</div>
 							))}
+							{hiddenTraceRows.length > 0 ? (
+								<details className="control-action__trace-more">
+									<summary>
+										Show {hiddenTraceRows.length} lower-signal trace row(s)
+									</summary>
+									{hiddenTraceRows.map((trace) => (
+										<div
+											className="control-action__trace-row"
+											key={trace.findingId}
+										>
+											<span className={`sev-tag control-action__trace-sev`}>
+												{trace.severity}
+											</span>
+											<strong>{trace.kind}</strong>
+											<em>{list(trace.sourceSystems)}</em>
+											<b>{actionTraceSignal(trace)}</b>
+											<small>{trace.evidenceRefCount} ref(s)</small>
+										</div>
+									))}
+								</details>
+							) : null}
 						</div>
 						<details className="control-action__bundle">
 							<summary>Action bundle preview</summary>
