@@ -763,6 +763,18 @@ body {
 	border-color: color-mix(in srgb, var(--sev-warning) 35%, var(--line));
 	color: var(--sev-warning);
 }
+.decision-note-scope {
+	border-top: 1px solid var(--line);
+	padding-top: 7px;
+}
+.decision-note-scope summary {
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 10px;
+}
+.decision-note-scope summary:hover {
+	color: var(--text);
+}
 .decision-note-copy {
 	display: flex;
 	align-items: center;

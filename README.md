@@ -98,7 +98,9 @@ currently loaded AFR evidence, surfacing missing commands, missing metadata refs
 source freshness drift, and blocked export status before anything is run. The
 replay preview can also copy an export-only markdown decision note with top
 findings, next actions, replay verdict, and metadata evidence refs; the app does
-not write the note anywhere automatically.
+not write the note anywhere automatically. A scope preview shows included
+metadata refs, raw-looking excluded ref count, evidence sources, and privacy tier
+counts before the note is copied.
 
 ## Develop
 

@@ -1227,5 +1227,11 @@ export function exportDecisionNote(input: {
 		findingCount: topFindings.length,
 		actionCount: topActions.length,
 		evidenceRefCount: evidenceExport.includedCount,
+		scope: {
+			includedEvidenceRefs: evidenceExport.groups.flatMap((group) => group.refs),
+			excludedEvidenceRefCount: evidenceExport.excludedCount,
+			evidenceSources: evidenceExport.groups.map((group) => group.source),
+			privacyTierCounts: report.summary.privacyTierCounts,
+		},
 	};
 }
