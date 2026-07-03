@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from "react";
 
 import type { AfrBundle } from "../../core/afr/types.ts";
 import {
+	buildActionBundlePreview,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 } from "../../core/control/engine.ts";
@@ -156,6 +157,7 @@ function EvidenceRefCopy({
 
 function ActionRow({ action }: { action: ControlAction }) {
 	const boundaries = actionBoundaries(action);
+	const bundlePreview = buildActionBundlePreview(action);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
 		"idle",
 	);
@@ -241,6 +243,34 @@ function ActionRow({ action }: { action: ControlAction }) {
 									: "none"}
 							</b>
 						</div>
+						<details className="control-action__bundle">
+							<summary>Action bundle preview</summary>
+							<div className="control-action__preview-grid">
+								<span>command</span>
+								<b>
+									{bundlePreview.commandExportEligible
+										? "exportable"
+										: "not exportable"}
+								</b>
+								<span>safety</span>
+								<b>{ACTION_SAFETY_LABELS[bundlePreview.commandSafety]}</b>
+								<span>readiness</span>
+								<b>
+									{ACTION_READINESS_LABELS[bundlePreview.commandReadiness.state]}
+								</b>
+								<span>refs</span>
+								<b>
+									{bundlePreview.evidenceRefCount} metadata
+									{bundlePreview.excludedEvidenceRefCount > 0
+										? ` / ${bundlePreview.excludedEvidenceRefCount} excluded`
+										: ""}
+								</b>
+								<span>sources</span>
+								<b>{list(bundlePreview.evidenceSources)}</b>
+								<span>boundary</span>
+								<b>{bundlePreview.boundary}</b>
+							</div>
+						</details>
 						<EvidenceRefCopy
 							evidenceRefs={action.evidenceRefs}
 							sourceSystems={action.sourceSystems}

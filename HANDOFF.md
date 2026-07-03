@@ -68,8 +68,10 @@
   command block by explicit click, limited to read-only commands that are
   runnable now; placeholder and approval-required commands are excluded by
   default. Actions and findings can copy grouped metadata evidence refs by
-  explicit click, with raw-looking values excluded from the copied block.
-- **Quality** — 109 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  explicit click, with raw-looking values excluded from the copied block. Each
+  action has a compact bundle preview showing command export eligibility,
+  readiness, boundary, and evidence-ref counts before anything is copied or run.
+- **Quality** — 110 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { AfrBundle } from "../afr/types.ts";
 import {
 	analyzeControlBundle,
+	buildActionBundlePreview,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 } from "./engine.ts";
@@ -1075,6 +1076,47 @@ test("metadata evidence export groups refs by source and excludes raw-looking va
 	assert.match(evidenceExport.text, /## bridge-db\n- bridge-db:handoff-21/);
 	assert.doesNotMatch(evidenceExport.text, /raw/);
 	assert.doesNotMatch(evidenceExport.text, /line two/);
+});
+
+test("action bundle preview summarizes command eligibility and evidence refs", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-20T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+
+	const route = report.actions.find(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	const refresh = report.actions.find(
+		(action) => action.command === "uv run afr-local collect all --limit 50",
+	);
+	const routePreview = buildActionBundlePreview(route!);
+	const refreshPreview = buildActionBundlePreview(refresh!);
+
+	assert.equal(routePreview.commandExportEligible, true);
+	assert.equal(routePreview.commandSafety, "read_only");
+	assert.equal(routePreview.commandReadiness.state, "runnable_now");
+	assert.equal(routePreview.evidenceRefCount, 1);
+	assert.deepEqual(routePreview.evidenceSources, ["evals"]);
+	assert.match(routePreview.boundary, /Read-only inspection/);
+	assert.equal(refreshPreview.commandExportEligible, false);
+	assert.equal(refreshPreview.commandSafety, "local_write");
+	assert.equal(refreshPreview.commandReadiness.state, "needs_approval");
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

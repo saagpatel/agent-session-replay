@@ -925,6 +925,19 @@ body {
 .control-action__preview summary:hover {
 	color: var(--text);
 }
+.control-action__bundle {
+	border-top: 1px solid var(--line);
+	margin-top: 7px;
+	padding-top: 6px;
+}
+.control-action__bundle summary {
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 10px;
+}
+.control-action__bundle summary:hover {
+	color: var(--text);
+}
 .control-action__preview-grid {
 	display: grid;
 	grid-template-columns: 62px 1fr;
