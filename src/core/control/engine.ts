@@ -1597,15 +1597,46 @@ export function exportDecisionNote(input: {
 	report: ControlReport;
 	archiveName: string;
 	replayPreview?: ControlActionBundleReplayPreview | null;
+	fullReport?: ControlReport | null;
 }): ControlDecisionNoteExport {
-	const { report, archiveName, replayPreview = null } = input;
+	const { report, archiveName, replayPreview = null, fullReport = null } = input;
 	const topFindings = report.findings.slice(0, 5);
 	const topActions = report.actions.slice(0, 3);
+	const hiddenFindings =
+		fullReport && fullReport !== report
+			? fullReport.findings.filter(
+					(finding) => !report.findings.some((item) => item.id === finding.id),
+				)
+			: [];
+	const hiddenActions =
+		fullReport && fullReport !== report
+			? fullReport.actions.filter(
+					(action) => !report.actions.some((item) => item.id === action.id),
+				)
+			: [];
 	const evidenceExport = exportMetadataEvidenceRefs({
 		sourceSystems: report.summary.sourceSystems,
 		evidenceRefs: decisionNoteEvidenceRefs(report, replayPreview),
 		title: "Decision note",
 	});
+	const scopeLines =
+		hiddenFindings.length > 0 || hiddenActions.length > 0
+			? [
+					`- active view findings: ${report.findings.length} of ${fullReport?.findings.length ?? report.findings.length}`,
+					`- active view actions: ${report.actions.length} of ${fullReport?.actions.length ?? report.actions.length}`,
+					`- hidden findings: ${hiddenFindings.length}`,
+					`- hidden actions: ${hiddenActions.length}`,
+					`- hidden action titles: ${
+						hiddenActions.length > 0
+							? hiddenActions
+									.slice(0, 5)
+									.map((action) => action.title)
+									.join(" / ")
+							: "none"
+					}`,
+					"- note: filtered view is not an all-clear; switch to all-source for complete context.",
+				]
+			: ["- active view includes all loaded findings/actions."];
 	const replayLines = replayPreview
 		? [
 				`- status: ${replayPreview.status}`,
@@ -1638,6 +1669,9 @@ export function exportDecisionNote(input: {
 		"",
 		"## Decision Pressure Map",
 		...decisionPressureLines(topActions),
+		"",
+		"## Scope Caveat",
+		...scopeLines,
 		"",
 		"## Top Findings",
 		...(topFindings.length > 0
@@ -1673,6 +1707,8 @@ export function exportDecisionNote(input: {
 			excludedEvidenceRefCount: evidenceExport.excludedCount,
 			evidenceSources: evidenceExport.groups.map((group) => group.source),
 			privacyTierCounts: report.summary.privacyTierCounts,
+			hiddenFindingCount: hiddenFindings.length,
+			hiddenActionCount: hiddenActions.length,
 		},
 	};
 }

@@ -231,6 +231,7 @@ function ActionBundleReplayPreview({
 	const decisionNote = exportDecisionNote({
 		archiveName,
 		report,
+		fullReport,
 		replayPreview: preview,
 	});
 	const [noteStatus, setNoteStatus] = useState<
@@ -305,6 +306,11 @@ function ActionBundleReplayPreview({
 					<b>{decisionNote.scope.excludedEvidenceRefCount} raw-looking refs</b>
 					<span>sources</span>
 					<b>{list(decisionNote.scope.evidenceSources)}</b>
+					<span>hidden</span>
+					<b>
+						{decisionNote.scope.hiddenFindingCount} findings /{" "}
+						{decisionNote.scope.hiddenActionCount} actions
+					</b>
 					<span>refs</span>
 					<b>{list(decisionNote.scope.includedEvidenceRefs.slice(0, 8))}</b>
 				</div>
