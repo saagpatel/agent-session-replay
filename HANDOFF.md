@@ -85,8 +85,11 @@
   hooks/MCP so findings, actions, replay preview, and decision note scope can
   narrow without changing the loaded AFR archive. Empty presets show why the
   context is empty plus a read-only latest-timeline command for inspection, never
-  a collection command.
-- **Quality** — 120 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  a collection command. The action rail now includes a command safety ledger that
+  groups every surfaced command by read-only, local-write, external-write, or
+  unknown safety while keeping grouped export limited to runnable read-only
+  commands.
+- **Quality** — 121 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -120,5 +123,5 @@
 
 ## Verify / Run
 
-`pnpm test` (106) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (121) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

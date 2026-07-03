@@ -5,6 +5,7 @@ import type { AfrBundle } from "../afr/types.ts";
 import {
 	analyzeControlBundle,
 	buildActionBundlePreview,
+	buildCommandSafetyLedger,
 	emptyPresetGuidance,
 	exportActionBundle,
 	exportDecisionNote,
@@ -1053,6 +1054,49 @@ test("command export includes only runnable read-only actions", () => {
 	]);
 	assert.doesNotMatch(commandExport.text, /<archive>/);
 	assert.doesNotMatch(commandExport.text, /collect all/);
+});
+
+test("command safety ledger groups all surfaced commands by safety", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-20T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+	const ledger = buildCommandSafetyLedger(report.actions);
+	const readOnly = ledger.groups.find((group) => group.safety === "read_only");
+	const localWrite = ledger.groups.find((group) => group.safety === "local_write");
+
+	assert.equal(ledger.totalCount, report.actions.length);
+	assert.equal(ledger.exportEligibleCount, readOnly?.actions.length);
+	assert.ok(
+		readOnly?.actions.some((action) =>
+			action.command.includes("latest timeline --source evals"),
+		),
+	);
+	assert.ok(readOnly?.actions.every((action) => action.exportEligible));
+	assert.ok(
+		localWrite?.actions.some((action) =>
+			action.command.includes("afr-local collect all"),
+		),
+	);
+	assert.ok(localWrite?.actions.every((action) => !action.exportEligible));
+	assert.deepEqual(
+		ledger.groups.map((group) => group.safety),
+		["read_only", "local_write", "external_write", "unknown"],
+	);
 });
 
 test("metadata evidence export groups refs by source and excludes raw-looking values", () => {
