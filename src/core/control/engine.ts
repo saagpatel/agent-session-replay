@@ -1365,8 +1365,14 @@ export function exportDecisionNote(input: {
 	const replayLines = replayPreview
 		? [
 				`- status: ${replayPreview.status}`,
+				`- scope: ${replayPreview.commandScope}`,
 				`- command: ${replayPreview.command ?? "none"}`,
 				`- match: ${replayPreview.matchedActionTitle ?? "none"}`,
+				`- drift: ${
+					replayPreview.commandDrift.length > 0
+						? replayPreview.commandDrift.join(" / ")
+						: "none"
+				}`,
 				`- missing refs: ${replayPreview.missingEvidenceRefs.length}`,
 				`- warnings: ${
 					replayPreview.warnings.length > 0
