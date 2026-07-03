@@ -139,6 +139,13 @@ export interface ControlActionBundleReplayPreview {
 	warnings: string[];
 }
 
+export interface ControlDecisionNoteExport {
+	text: string;
+	findingCount: number;
+	actionCount: number;
+	evidenceRefCount: number;
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

@@ -12,6 +12,7 @@ import type {
 	ControlActionBundleReplayPreview,
 	ControlActionCategory,
 	ControlCommandExport,
+	ControlDecisionNoteExport,
 	ControlEvidenceRefExport,
 	ControlActionReadiness,
 	ControlActionSafety,
@@ -1147,5 +1148,84 @@ export function previewImportedActionBundle(
 		missingEvidenceRefs,
 		sourceFreshness: action.sourceExplanations,
 		warnings,
+	};
+}
+
+function decisionNoteEvidenceRefs(
+	report: ControlReport,
+	replayPreview: ControlActionBundleReplayPreview | null,
+): string[] {
+	return uniqInOrder([
+		...report.findings.slice(0, 5).flatMap((finding) => finding.evidenceRefs),
+		...report.actions.slice(0, 3).flatMap((action) => action.evidenceRefs),
+		...(replayPreview?.importedEvidenceRefs ?? []),
+	]);
+}
+
+export function exportDecisionNote(input: {
+	report: ControlReport;
+	archiveName: string;
+	replayPreview?: ControlActionBundleReplayPreview | null;
+}): ControlDecisionNoteExport {
+	const { report, archiveName, replayPreview = null } = input;
+	const topFindings = report.findings.slice(0, 5);
+	const topActions = report.actions.slice(0, 3);
+	const evidenceExport = exportMetadataEvidenceRefs({
+		sourceSystems: report.summary.sourceSystems,
+		evidenceRefs: decisionNoteEvidenceRefs(report, replayPreview),
+		title: "Decision note",
+	});
+	const replayLines = replayPreview
+		? [
+				`- status: ${replayPreview.status}`,
+				`- command: ${replayPreview.command ?? "none"}`,
+				`- match: ${replayPreview.matchedActionTitle ?? "none"}`,
+				`- missing refs: ${replayPreview.missingEvidenceRefs.length}`,
+				`- warnings: ${
+					replayPreview.warnings.length > 0
+						? replayPreview.warnings.join(" / ")
+						: "none"
+				}`,
+			]
+		: ["- status: no pasted bundle preview"];
+	const text = [
+		"# Decision Flight Deck Note",
+		`- archive: ${archiveName}`,
+		`- records: ${report.summary.recordCount}`,
+		`- findings: ${report.findings.length}`,
+		`- actions: ${report.actions.length}`,
+		`- privacy: ${report.summary.privacyOk === null ? "missing" : report.summary.privacyOk ? "ok" : "failed"}`,
+		`- validation: ${report.summary.validationOk === null ? "missing" : report.summary.validationOk ? "ok" : "failed"}`,
+		`- reconciliation: ${report.summary.reconciliationOk === null ? "missing" : report.summary.reconciliationOk ? "ok" : "failed"}`,
+		"",
+		"## Top Findings",
+		...(topFindings.length > 0
+			? topFindings.map(
+					(finding, index) =>
+						`${index + 1}. [${finding.severity}] ${finding.title} — ${finding.detail}`,
+				)
+			: ["none"]),
+		"",
+		"## Next Actions",
+		...(topActions.length > 0
+			? topActions.map(
+					(action, index) =>
+						`${index + 1}. ${action.title} — ${action.command} (${action.commandSafety}, ${action.commandReadiness.state})`,
+				)
+			: ["none"]),
+		"",
+		"## Replay Preview",
+		...replayLines,
+		"",
+		"## Metadata Evidence Refs",
+		evidenceExport.text
+			? evidenceExport.text.replace(/^# Decision Flight Deck evidence refs: Decision note\n/, "")
+			: "none",
+	].join("\n");
+	return {
+		text,
+		findingCount: topFindings.length,
+		actionCount: topActions.length,
+		evidenceRefCount: evidenceExport.includedCount,
 	};
 }

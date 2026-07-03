@@ -76,8 +76,10 @@
   blocked reason visible. Copied action bundles can be pasted back into the deck
   for a replay preview against the current AFR evidence, surfacing missing
   commands, missing metadata refs, source freshness drift, and blocked export
-  status before anything is run.
-- **Quality** — 116 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  status before anything is run. The replay preview can copy an export-only
+  markdown decision note with top findings, next actions, replay verdict, and
+  metadata evidence refs; the app does not write that note anywhere automatically.
+- **Quality** — 118 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
