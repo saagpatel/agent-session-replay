@@ -331,6 +331,45 @@ test("summary includes per-source freshness", () => {
 	);
 });
 
+test("stale archives do not fan out per-source stale findings", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-06-20T12:00:00Z",
+			records: [
+				{
+					record_id: "old-bridge",
+					record_type: "event",
+					source_system: "bridge-db",
+					timestamp: "2026-06-20T12:00:00Z",
+				},
+				{
+					record_id: "old-codex",
+					record_type: "event",
+					source_system: "codex",
+					timestamp: "2026-06-20T12:00:00Z",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+
+	assert.ok(report.findings.some((finding) => finding.id === "stale_source"));
+	assert.equal(
+		report.findings.some((finding) => finding.id === "stale_source:bridge-db"),
+		false,
+	);
+	assert.equal(
+		report.findings.some((finding) => finding.id === "stale_source:codex"),
+		false,
+	);
+	assert.equal(report.summary.sourceFreshness["bridge-db"]?.freshness, "stale");
+	assert.equal(report.summary.sourceFreshness.codex?.freshness, "stale");
+	assert.deepEqual(
+		report.actions.find((action) => action.category === "refresh")?.findingIds,
+		["stale_source"],
+	);
+});
+
 test("control actions group repeated safe commands by priority and source", () => {
 	const report = analyzeControlBundle(
 		bundle({

@@ -41,8 +41,10 @@ findings without uploading data.
 The AFR path has been smoke-tested against a real metadata-only all-source local
 archive. It supports the local collector's reconciliation source rows and treats
 stale per-source evidence as ranked decision findings rather than passive
-summary data. Ranked findings also feed a compact action rail that groups safe
-next commands into route, inspect, refresh, and repair moves.
+summary data when the archive is otherwise current; stale archives collapse to a
+single refresh decision while preserving source freshness in the summary. Ranked
+findings also feed a compact action rail that groups safe next commands into
+route, inspect, refresh, and repair moves.
 
 ## Develop
 
