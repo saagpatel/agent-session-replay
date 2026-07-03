@@ -369,6 +369,14 @@ test("bridge-db pending handoff records become control findings", () => {
 	assert.equal(action?.title, "Review bridge handoffs");
 	assert.equal(action?.decisionReason, "bridge handoff pressure");
 	assert.deepEqual(action?.boundaryEvents, ["bridge handoff pressure"]);
+	assert.match(action?.safetyNote ?? "", /bridge-db read tool/);
+	assert.deepEqual(action?.sourceExplanations, [
+		{
+			source: "bridge-db",
+			freshness: "stale",
+			freshnessReason: "derived from newest source record timestamp",
+		},
+	]);
 });
 
 test("boundary event actions use source contract wording", () => {
@@ -401,6 +409,8 @@ test("boundary event actions use source contract wording", () => {
 		action?.command,
 		"uv run afr-local latest timeline --source notification-hub --limit 20",
 	);
+	assert.match(action?.safetyNote ?? "", /latest local AFR metadata archive/);
+	assert.equal(action?.sourceExplanations[0]?.source, "notification-hub");
 });
 
 test("hook and MCP source contracts provide boundary wording", () => {
@@ -915,6 +925,31 @@ test("actions merge route and inspect pressure for the same command", () => {
 		"critical eval failures",
 		"stale evals source",
 	]);
+	assert.match(actions[0]?.safetyNote ?? "", /latest local AFR metadata archive/);
+	assert.deepEqual(actions[0]?.sourceExplanations, [
+		{
+			source: "evals",
+			freshness: "stale",
+			freshnessReason: "derived from newest source record timestamp",
+		},
+	]);
+});
+
+test("refresh actions explain local collection side effects", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+
+	const action = report.actions.find(
+		(item) => item.command === "uv run afr-local collect all --limit 50",
+	);
+	assert.match(action?.safetyNote ?? "", /Creates a fresh local AFR metadata archive/);
+	assert.equal(action?.sourceExplanations.length, 0);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

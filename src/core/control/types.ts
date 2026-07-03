@@ -34,6 +34,12 @@ export interface ControlFinding {
 
 export type ControlActionCategory = "repair" | "refresh" | "inspect" | "route";
 
+export interface ControlActionSourceExplanation {
+	source: string;
+	freshness: SourceFreshnessState;
+	freshnessReason: string;
+}
+
 export interface ControlAction {
 	id: string;
 	category: ControlActionCategory;
@@ -49,6 +55,8 @@ export interface ControlAction {
 	decisionReason: string;
 	decisionReasons: string[];
 	boundaryEvents: string[];
+	safetyNote: string;
+	sourceExplanations: ControlActionSourceExplanation[];
 }
 
 export interface ControlSummary {

@@ -54,8 +54,9 @@
   so mixed hook/MCP/notification evidence routes into separate source-filtered
   action rows. Action rows now carry compact boundary summaries, making bridge
   handoff pressure, notification routing, hook, MCP, and generic control signals
-  visible without opening evidence refs.
-- **Quality** — 105 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  visible without opening evidence refs. Action rows also explain their local
+  safety boundary and source freshness reasons without exposing raw AFR rows.
+- **Quality** — 106 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

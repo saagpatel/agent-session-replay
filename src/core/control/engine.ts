@@ -8,6 +8,7 @@ import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
 	ControlActionCategory,
+	ControlActionSourceExplanation,
 	ControlFinding,
 	ControlReport,
 	ControlSummary,
@@ -314,7 +315,48 @@ function actionReason(finding: ControlFinding): string {
 	return finding.title;
 }
 
-function buildActions(findings: ControlFinding[]): ControlAction[] {
+function safetyNoteForCommand(command: string): string {
+	if (command.startsWith("uv run afr-local collect ")) {
+		return "Creates a fresh local AFR metadata archive; no upload, daemon, or external mutation implied by the command text.";
+	}
+	if (
+		command.startsWith("uv run afr-local latest ") ||
+		command.startsWith("afr-local latest ")
+	) {
+		return "Reads the latest local AFR metadata archive only; no raw transcript export or external write.";
+	}
+	if (command.startsWith("uv run afr validate ")) {
+		return "Validates a local AFR archive contract without uploading archive contents.";
+	}
+	if (command.startsWith("bridge-db:get_")) {
+		return "Uses a bridge-db read tool for inspection; do not pair with repair calls unless separately approved.";
+	}
+	return "Inspect before running; command is suggested from metadata evidence only.";
+}
+
+function sourceExplanation(
+	source: string,
+	sourceFreshness: ControlSummary["sourceFreshness"],
+): ControlActionSourceExplanation {
+	const row = sourceFreshness[source];
+	return {
+		source,
+		freshness: row?.freshness ?? "unknown",
+		freshnessReason: row?.reason ?? "no source freshness row in this archive",
+	};
+}
+
+function sourceExplanations(
+	sources: string[],
+	sourceFreshness: ControlSummary["sourceFreshness"],
+): ControlActionSourceExplanation[] {
+	return sources.map((source) => sourceExplanation(source, sourceFreshness));
+}
+
+function buildActions(
+	findings: ControlFinding[],
+	sourceFreshness: ControlSummary["sourceFreshness"],
+): ControlAction[] {
 	const actions = new Map<string, ControlAction>();
 	for (const finding of findings) {
 		if (!finding.nextCommand) continue;
@@ -349,6 +391,10 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 				...existing.boundaryEvents,
 				finding.boundaryEvent,
 			]);
+			existing.sourceExplanations = sourceExplanations(
+				existing.sourceSystems,
+				sourceFreshness,
+			);
 			if (replaceReason) {
 				existing.category = category;
 				existing.rationale = finding.title;
@@ -372,6 +418,8 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 			decisionReason: reason,
 			decisionReasons: [reason],
 			boundaryEvents: uniqInOrder([finding.boundaryEvent]),
+			safetyNote: safetyNoteForCommand(finding.nextCommand),
+			sourceExplanations: sourceExplanations(finding.sourceSystems, sourceFreshness),
 		});
 	}
 	return [...actions.values()].sort(
@@ -727,9 +775,10 @@ export function analyzeControlBundle(
 			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
 	);
 
+	const reportSummary = summary(bundle, nowMs);
 	return {
-		summary: summary(bundle, nowMs),
+		summary: reportSummary,
 		findings,
-		actions: buildActions(findings),
+		actions: buildActions(findings, reportSummary.sourceFreshness),
 	};
 }

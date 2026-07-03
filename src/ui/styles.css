@@ -737,6 +737,20 @@ body {
 	font-size: 10.5px;
 	overflow-wrap: anywhere;
 }
+.control-action__sources {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-top: 3px;
+}
+.control-action__sources span {
+	color: var(--faint);
+	font-size: 10px;
+}
+.control-action__sources b {
+	color: var(--text);
+	font-weight: 600;
+}
 .control-action__main code {
 	min-width: 0;
 	color: var(--kind-tool);
