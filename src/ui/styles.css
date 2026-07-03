@@ -1561,6 +1561,20 @@ body {
 	max-width: 42ch;
 	line-height: 1.55;
 }
+.drop__hint {
+	color: var(--faint);
+	font-size: 11.5px;
+	margin: -6px auto 18px;
+	max-width: 48ch;
+	line-height: 1.5;
+}
+.drop__hint code {
+	color: var(--text);
+	background: var(--panel-2);
+	border: 1px solid var(--line);
+	border-radius: 5px;
+	padding: 1px 5px;
+}
 .drop__priv {
 	margin-top: 22px;
 	color: var(--faint);
