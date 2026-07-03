@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 import type { AfrBundle } from "../../core/afr/types.ts";
 import {
 	buildActionBundlePreview,
+	exportActionBundle,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 } from "../../core/control/engine.ts";
@@ -158,15 +159,31 @@ function EvidenceRefCopy({
 function ActionRow({ action }: { action: ControlAction }) {
 	const boundaries = actionBoundaries(action);
 	const bundlePreview = buildActionBundlePreview(action);
+	const actionBundle = exportActionBundle(action);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
 		"idle",
 	);
+	const [bundleStatus, setBundleStatus] = useState<
+		"idle" | "copied" | "failed" | "blocked"
+	>("idle");
 	const copyCommand = async () => {
 		try {
 			await navigator.clipboard.writeText(action.command);
 			setCopyStatus("copied");
 		} catch {
 			setCopyStatus("failed");
+		}
+	};
+	const copyActionBundle = async () => {
+		if (!actionBundle.preview.commandExportEligible || !actionBundle.text) {
+			setBundleStatus("blocked");
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(actionBundle.text);
+			setBundleStatus("copied");
+		} catch {
+			setBundleStatus("failed");
 		}
 	};
 	return (
@@ -269,6 +286,26 @@ function ActionRow({ action }: { action: ControlAction }) {
 								<b>{list(bundlePreview.evidenceSources)}</b>
 								<span>boundary</span>
 								<b>{bundlePreview.boundary}</b>
+							</div>
+							<div className="control-action__bundle-copy">
+								<button
+									type="button"
+									onClick={copyActionBundle}
+									disabled={!bundlePreview.commandExportEligible}
+								>
+									Copy action bundle
+								</button>
+								<span aria-live="polite">
+									{bundleStatus === "copied"
+										? "Copied bundle"
+										: bundleStatus === "failed"
+											? "Copy failed"
+											: bundleStatus === "blocked"
+												? "Not exportable"
+												: bundlePreview.commandExportEligible
+													? "Ready to export"
+													: `Blocked: ${bundlePreview.commandReadiness.reason}`}
+								</span>
 							</div>
 						</details>
 						<EvidenceRefCopy

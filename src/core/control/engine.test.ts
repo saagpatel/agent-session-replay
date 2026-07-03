@@ -5,6 +5,7 @@ import type { AfrBundle } from "../afr/types.ts";
 import {
 	analyzeControlBundle,
 	buildActionBundlePreview,
+	exportActionBundle,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 } from "./engine.ts";
@@ -1117,6 +1118,60 @@ test("action bundle preview summarizes command eligibility and evidence refs", (
 	assert.equal(refreshPreview.commandExportEligible, false);
 	assert.equal(refreshPreview.commandSafety, "local_write");
 	assert.equal(refreshPreview.commandReadiness.state, "needs_approval");
+});
+
+test("action bundle export includes only runnable read-only command preflight", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const route = report.actions.find(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	const actionBundle = exportActionBundle(route!);
+
+	assert.equal(actionBundle.preview.commandExportEligible, true);
+	assert.match(
+		actionBundle.text,
+		/^# Decision Flight Deck action bundle: Route eval maintenance/,
+	);
+	assert.match(actionBundle.text, /## Command\nuv run afr-local latest timeline/);
+	assert.match(actionBundle.text, /- export: eligible/);
+	assert.match(actionBundle.text, /- safety: read_only/);
+	assert.match(actionBundle.text, /- readiness: runnable_now/);
+	assert.match(actionBundle.text, /## evals\n- evals:case-1/);
+});
+
+test("action bundle export blocks approval-required commands", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+	const refresh = report.actions.find(
+		(action) => action.command === "uv run afr-local collect all --limit 50",
+	);
+	const actionBundle = exportActionBundle(refresh!);
+
+	assert.equal(actionBundle.preview.commandExportEligible, false);
+	assert.equal(actionBundle.preview.commandSafety, "local_write");
+	assert.equal(actionBundle.preview.commandReadiness.state, "needs_approval");
+	assert.equal(actionBundle.text, "");
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

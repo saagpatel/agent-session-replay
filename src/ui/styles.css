@@ -938,6 +938,40 @@ body {
 .control-action__bundle summary:hover {
 	color: var(--text);
 }
+.control-action__bundle-copy {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 7px;
+	margin-top: 7px;
+}
+.control-action__bundle-copy button {
+	border: 1px solid color-mix(in srgb, var(--kind-tool) 40%, var(--line));
+	border-radius: 3px;
+	background: transparent;
+	color: var(--kind-tool);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.control-action__bundle-copy button:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--kind-tool) 10%, transparent);
+}
+.control-action__bundle-copy button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.control-action__bundle-copy button:disabled {
+	border-color: var(--line);
+	color: var(--faint);
+	cursor: default;
+}
+.control-action__bundle-copy span {
+	color: var(--faint);
+	font-size: 10px;
+	overflow-wrap: anywhere;
+}
 .control-action__preview-grid {
 	display: grid;
 	grid-template-columns: 62px 1fr;
