@@ -112,7 +112,9 @@ delta preview, making hidden, appeared, and changed command safety/readiness
 visible before anything is copied or run. Pasted action-bundle replay uses the
 same context awareness, distinguishing commands hidden by the active preset from
 commands missing from the archive and surfacing title, safety, and readiness
-drift from older bundles.
+drift from older bundles. Copied decision notes include that replay scope and
+drift, so handoffs preserve why a pasted command is runnable, hidden, stale, or
+gone.
 
 ## Develop
 

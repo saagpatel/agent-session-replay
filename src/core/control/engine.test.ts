@@ -1518,9 +1518,61 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.match(note.text, /## Top Findings/);
 	assert.match(note.text, /## Next Actions/);
 	assert.match(note.text, /## Replay Preview\n- status: matched/);
+	assert.match(note.text, /- scope: current_context/);
+	assert.match(note.text, /- drift: none/);
 	assert.match(note.text, /## Metadata Evidence Refs/);
 	assert.match(note.text, /- evals:case-1/);
 	assert.doesNotMatch(note.text, /raw\":\"value/);
+});
+
+test("decision note export includes replay scope and command drift", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "bridge-db:handoff-1",
+					record_type: "handoff",
+					source_system: "bridge-db",
+					timestamp: "2026-06-28T12:03:00Z",
+					evidence_ref: "bridge-db:handoff-1",
+					attributes: { handoff_status: "pending" },
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const bridgeAction = report.actions.find((action) =>
+		action.command.includes("--source bridge-db"),
+	);
+	const evals = filterControlReportBySourcePreset(report, "evals");
+	const exported = exportActionBundle(bridgeAction!).text;
+	const staleBundle = exported
+		.replace(
+			`# Decision Flight Deck action bundle: ${bridgeAction!.title}`,
+			"# Decision Flight Deck action bundle: Old bridge route",
+		)
+		.replace("- safety: read_only", "- safety: unknown");
+	const replay = previewImportedActionBundle(staleBundle, evals, report);
+	const note = exportDecisionNote({
+		archiveName: "20260628T120000Z-all",
+		report: evals,
+		replayPreview: replay,
+	});
+
+	assert.equal(replay.status, "hidden_by_preset");
+	assert.match(note.text, /- status: hidden_by_preset/);
+	assert.match(note.text, /- scope: hidden_by_preset/);
+	assert.match(note.text, /- drift: Title changed: Old bridge route ->/);
+	assert.match(note.text, /Safety changed: unknown -> read_only/);
+	assert.match(note.text, /hidden by the active source preset/);
 });
 
 test("decision note export works without pasted replay preview", () => {
