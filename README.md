@@ -114,7 +114,9 @@ same context awareness, distinguishing commands hidden by the active preset from
 commands missing from the archive and surfacing title, safety, and readiness
 drift from older bundles. Copied decision notes include that replay scope and
 drift, so handoffs preserve why a pasted command is runnable, hidden, stale, or
-gone.
+gone. Action bundles and decision notes also include a compact finding-to-command
+trace with finding kind, severity, source, signal, and metadata-ref count, so the
+handoff explains why each command exists.
 
 ## Develop
 

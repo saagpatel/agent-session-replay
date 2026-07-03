@@ -18,6 +18,7 @@ import type {
 	ControlActionReadiness,
 	ControlActionSafety,
 	ControlActionSourceExplanation,
+	ControlActionTrace,
 	ControlFinding,
 	ControlPresetEmptyGuidance,
 	ControlCommandSafetyLedger,
@@ -432,6 +433,19 @@ function sourceExplanations(
 	return sources.map((source) => sourceExplanation(source, sourceFreshness));
 }
 
+function actionTrace(finding: ControlFinding): ControlActionTrace {
+	return {
+		findingId: finding.id,
+		kind: finding.kind,
+		severity: finding.severity,
+		sourceSystems: finding.sourceSystems,
+		boundaryEvent: finding.boundaryEvent,
+		costSignal: finding.costSignal,
+		outcomeSignal: finding.outcomeSignal,
+		evidenceRefCount: finding.evidenceRefs.length,
+	};
+}
+
 function buildActions(
 	findings: ControlFinding[],
 	sourceFreshness: ControlSummary["sourceFreshness"],
@@ -474,6 +488,7 @@ function buildActions(
 				...existing.boundaryEvents,
 				finding.boundaryEvent,
 			]);
+			existing.trace.push(actionTrace(finding));
 			existing.sourceExplanations = sourceExplanations(
 				existing.sourceSystems,
 				sourceFreshness,
@@ -514,6 +529,7 @@ function buildActions(
 			boundaryEvents: uniqInOrder([finding.boundaryEvent]),
 			safetyNote,
 			sourceExplanations: sourceExplanations(finding.sourceSystems, sourceFreshness),
+			trace: [actionTrace(finding)],
 			preview: {
 				why: [reason],
 				boundary: commandBoundary(safety, safetyNote),
@@ -1102,6 +1118,22 @@ export function buildActionBundlePreview(
 	};
 }
 
+function actionTraceLines(action: ControlAction): string[] {
+	return action.trace.map((trace) => {
+		const signals = [
+			trace.boundaryEvent ? `boundary=${trace.boundaryEvent}` : null,
+			trace.costSignal ? `cost=${trace.costSignal}` : null,
+			trace.outcomeSignal ? `outcome=${trace.outcomeSignal}` : null,
+		].filter(Boolean);
+		return [
+			`- ${trace.kind} [${trace.severity}]`,
+			`sources=${trace.sourceSystems.join(",") || "none"}`,
+			`refs=${trace.evidenceRefCount}`,
+			...signals,
+		].join(" / ");
+	});
+}
+
 export function exportActionBundle(action: ControlAction): ControlActionBundleExport {
 	const preview = buildActionBundlePreview(action);
 	if (!preview.commandExportEligible) {
@@ -1137,6 +1169,8 @@ export function exportActionBundle(action: ControlAction): ControlActionBundleEx
 			`- boundary: ${action.preview.boundary}`,
 			`- metadata refs: ${preview.evidenceRefCount}`,
 			`- excluded refs: ${preview.excludedEvidenceRefCount}`,
+			"## Why this command exists",
+			...actionTraceLines(action),
 			"## Evidence refs",
 			refsBlock,
 		].join("\n"),
@@ -1401,10 +1435,10 @@ export function exportDecisionNote(input: {
 		"",
 		"## Next Actions",
 		...(topActions.length > 0
-			? topActions.map(
-					(action, index) =>
-						`${index + 1}. ${action.title} — ${action.command} (${action.commandSafety}, ${action.commandReadiness.state})`,
-				)
+			? topActions.flatMap((action, index) => [
+					`${index + 1}. ${action.title} — ${action.command} (${action.commandSafety}, ${action.commandReadiness.state})`,
+					...actionTraceLines(action).map((line) => `   ${line}`),
+				])
 			: ["none"]),
 		"",
 		"## Replay Preview",

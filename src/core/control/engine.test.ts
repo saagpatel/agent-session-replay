@@ -1258,6 +1258,11 @@ test("action bundle export includes only runnable read-only command preflight", 
 	assert.match(actionBundle.text, /- export: eligible/);
 	assert.match(actionBundle.text, /- safety: read_only/);
 	assert.match(actionBundle.text, /- readiness: runnable_now/);
+	assert.match(actionBundle.text, /## Why this command exists/);
+	assert.match(actionBundle.text, /- eval_failure \[warning\]/);
+	assert.match(actionBundle.text, /sources=evals/);
+	assert.match(actionBundle.text, /outcome=1 failed eval observation/);
+	assert.match(actionBundle.text, /refs=1/);
 	assert.match(actionBundle.text, /## evals\n- evals:case-1/);
 });
 
@@ -1517,6 +1522,10 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.match(note.text, /- archive: 20260628T120000Z-all/);
 	assert.match(note.text, /## Top Findings/);
 	assert.match(note.text, /## Next Actions/);
+	assert.match(note.text, /eval_failure \[warning\]/);
+	assert.match(note.text, /sources=evals/);
+	assert.match(note.text, /outcome=2 failed eval observation\(s\)/);
+	assert.match(note.text, /refs=2/);
 	assert.match(note.text, /## Replay Preview\n- status: matched/);
 	assert.match(note.text, /- scope: current_context/);
 	assert.match(note.text, /- drift: none/);

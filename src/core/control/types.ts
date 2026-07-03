@@ -55,6 +55,17 @@ export interface ControlActionPreview {
 	evidenceRefs: string[];
 }
 
+export interface ControlActionTrace {
+	findingId: string;
+	kind: ControlFindingKind;
+	severity: Severity;
+	sourceSystems: string[];
+	boundaryEvent?: string;
+	costSignal?: string;
+	outcomeSignal?: string;
+	evidenceRefCount: number;
+}
+
 export interface ControlActionReadiness {
 	state: ControlActionReadinessState;
 	reason: string;
@@ -80,6 +91,7 @@ export interface ControlAction {
 	boundaryEvents: string[];
 	safetyNote: string;
 	sourceExplanations: ControlActionSourceExplanation[];
+	trace: ControlActionTrace[];
 	preview: ControlActionPreview;
 }
 
