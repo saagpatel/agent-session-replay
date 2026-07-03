@@ -202,6 +202,10 @@ export function DropZone({
 					rollout, to see exactly where the run went wrong. Drop an AFR archive
 					to rank local control-plane findings across sources.
 				</p>
+				<p className="drop__hint">
+					For Flight Deck: run <code>pnpm afr:archives</code>, then drop the
+					printed BEST folder.
+				</p>
 				<span className="chip">
 					Drop a session folder / AFR archive / .jsonl files
 				</span>
