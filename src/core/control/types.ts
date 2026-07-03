@@ -115,6 +115,11 @@ export interface ControlActionBundlePreview {
 	evidenceSources: string[];
 }
 
+export interface ControlActionBundleExport {
+	preview: ControlActionBundlePreview;
+	text: string;
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

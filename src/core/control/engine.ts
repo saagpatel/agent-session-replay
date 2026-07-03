@@ -7,6 +7,7 @@ import type {
 import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
+	ControlActionBundleExport,
 	ControlActionBundlePreview,
 	ControlActionCategory,
 	ControlCommandExport,
@@ -988,5 +989,46 @@ export function buildActionBundlePreview(
 		evidenceRefCount: evidenceExport.includedCount,
 		excludedEvidenceRefCount: evidenceExport.excludedCount,
 		evidenceSources: evidenceExport.groups.map((group) => group.source),
+	};
+}
+
+export function exportActionBundle(action: ControlAction): ControlActionBundleExport {
+	const preview = buildActionBundlePreview(action);
+	if (!preview.commandExportEligible) {
+		return {
+			preview,
+			text: "",
+		};
+	}
+	const evidenceExport = exportMetadataEvidenceRefs({
+		sourceSystems: action.sourceSystems,
+		evidenceRefs: action.evidenceRefs,
+		title: action.title,
+	});
+	const refsBlock =
+		evidenceExport.groups.length > 0
+			? evidenceExport.groups
+					.flatMap((group) => [
+						`## ${group.source}`,
+						...group.refs.map((ref) => `- ${ref}`),
+					])
+					.join("\n")
+			: "none";
+	return {
+		preview,
+		text: [
+			`# Decision Flight Deck action bundle: ${action.title}`,
+			"## Command",
+			action.command,
+			"## Preflight",
+			`- export: eligible`,
+			`- safety: ${action.commandSafety}`,
+			`- readiness: ${action.commandReadiness.state}`,
+			`- boundary: ${action.preview.boundary}`,
+			`- metadata refs: ${preview.evidenceRefCount}`,
+			`- excluded refs: ${preview.excludedEvidenceRefCount}`,
+			"## Evidence refs",
+			refsBlock,
+		].join("\n"),
 	};
 }

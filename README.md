@@ -90,7 +90,9 @@ of the exported block by default. Actions and findings can also copy grouped
 metadata evidence refs by explicit click, with raw-looking values excluded from
 the copied block. Each action also has a compact bundle preview showing command
 export eligibility, readiness, boundary, and evidence-ref counts before anything
-is copied or run.
+is copied or run. Runnable read-only actions can copy an action bundle with the
+command plus preflight and metadata refs; approval-required or placeholder
+commands keep the bundle copy disabled with the blocked reason visible.
 
 ## Develop
 
