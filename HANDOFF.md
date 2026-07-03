@@ -34,7 +34,9 @@
   findings. Stale archives collapse to one refresh decision while per-source
   freshness stays visible in the summary. The deck now derives a compact action
   rail from ranked findings, grouping safe next commands by
-  route/inspect/refresh/repair.
+  route/inspect/refresh/repair. Source-specific stale findings in a fresh archive
+  route to source-filtered inspection commands instead of repeating the all-source
+  collection command.
 - **Quality** — 85 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
