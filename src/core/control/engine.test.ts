@@ -6,6 +6,7 @@ import {
 	analyzeControlBundle,
 	buildActionBundlePreview,
 	buildCommandSafetyLedger,
+	compareCommandActions,
 	emptyPresetGuidance,
 	exportActionBundle,
 	exportDecisionNote,
@@ -1096,6 +1097,64 @@ test("command safety ledger groups all surfaced commands by safety", () => {
 	assert.deepEqual(
 		ledger.groups.map((group) => group.safety),
 		["read_only", "local_write", "external_write", "unknown"],
+	);
+});
+
+test("command delta preview shows appeared hidden and changed commands", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "bridge-db:handoff-1",
+					record_type: "handoff",
+					source_system: "bridge-db",
+					timestamp: "2026-06-28T12:03:00Z",
+					evidence_ref: "bridge-db:handoff-1",
+					attributes: { handoff_status: "pending" },
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const evals = filterControlReportBySourcePreset(report, "evals");
+	const hiddenDelta = compareCommandActions(report.actions, evals.actions);
+	const appearedDelta = compareCommandActions(evals.actions, report.actions);
+	const changedDelta = compareCommandActions(report.actions, [
+		{
+			...report.actions[0]!,
+			title: `${report.actions[0]!.title} changed`,
+			commandSafety: "unknown",
+			commandReadiness: {
+				state: "needs_approval",
+				reason: "operator approval required",
+			},
+		},
+		...report.actions.slice(1),
+	]);
+
+	assert.equal(hiddenDelta.appeared.length, 0);
+	assert.ok(hiddenDelta.disappeared.length > 0);
+	assert.ok(
+		hiddenDelta.disappeared.some((action) =>
+			action.command.includes("--source bridge-db"),
+		),
+	);
+	assert.ok(appearedDelta.appeared.length > 0);
+	assert.equal(changedDelta.changed.length, 1);
+	assert.equal(changedDelta.changed[0]?.beforeSafety, "read_only");
+	assert.equal(changedDelta.changed[0]?.afterSafety, "unknown");
+	assert.equal(changedDelta.changed[0]?.afterReadiness.state, "needs_approval");
+	assert.equal(
+		changedDelta.unchangedCount,
+		report.actions.length - changedDelta.changed.length,
 	);
 });
 

@@ -12,6 +12,7 @@ import type {
 	ControlActionBundleReplayPreview,
 	ControlActionCategory,
 	ControlCommandExport,
+	ControlCommandDeltaPreview,
 	ControlDecisionNoteExport,
 	ControlEvidenceRefExport,
 	ControlActionReadiness,
@@ -948,6 +949,78 @@ export function buildCommandSafetyLedger(
 		exportEligibleCount: groups
 			.flatMap((group) => group.actions)
 			.filter((action) => action.exportEligible).length,
+	};
+}
+
+function commandDeltaAction(action: ControlAction) {
+	return {
+		command: action.command,
+		title: action.title,
+		safety: action.commandSafety,
+		readiness: action.commandReadiness,
+	};
+}
+
+function readinessChanged(
+	before: ControlActionReadiness,
+	after: ControlActionReadiness,
+): boolean {
+	return before.state !== after.state || before.reason !== after.reason;
+}
+
+export function compareCommandActions(
+	beforeActions: ControlAction[],
+	afterActions: ControlAction[],
+): ControlCommandDeltaPreview {
+	const beforeByCommand = new Map(
+		beforeActions.map((action) => [action.command, action]),
+	);
+	const afterByCommand = new Map(
+		afterActions.map((action) => [action.command, action]),
+	);
+	const appeared = afterActions
+		.filter((action) => !beforeByCommand.has(action.command))
+		.map(commandDeltaAction);
+	const disappeared = beforeActions
+		.filter((action) => !afterByCommand.has(action.command))
+		.map(commandDeltaAction);
+	const changed = afterActions.flatMap((after) => {
+		const before = beforeByCommand.get(after.command);
+		if (!before) return [];
+		if (
+			before.title === after.title &&
+			before.commandSafety === after.commandSafety &&
+			!readinessChanged(before.commandReadiness, after.commandReadiness)
+		) {
+			return [];
+		}
+		return [
+			{
+				command: after.command,
+				beforeTitle: before.title,
+				afterTitle: after.title,
+				beforeSafety: before.commandSafety,
+				afterSafety: after.commandSafety,
+				beforeReadiness: before.commandReadiness,
+				afterReadiness: after.commandReadiness,
+			},
+		];
+	});
+	return {
+		appeared,
+		disappeared,
+		changed,
+		unchangedCount: afterActions.filter((after) => {
+			const before = beforeByCommand.get(after.command);
+			if (!before) return false;
+			return (
+				before.title === after.title &&
+				before.commandSafety === after.commandSafety &&
+				!readinessChanged(before.commandReadiness, after.commandReadiness)
+			);
+		}).length,
+		totalBefore: beforeActions.length,
+		totalAfter: afterActions.length,
 	};
 }
 

@@ -4,6 +4,7 @@ import type { AfrBundle } from "../../core/afr/types.ts";
 import {
 	buildCommandSafetyLedger,
 	buildActionBundlePreview,
+	compareCommandActions,
 	emptyPresetGuidance,
 	exportActionBundle,
 	exportDecisionNote,
@@ -14,6 +15,7 @@ import {
 } from "../../core/control/engine.ts";
 import type {
 	ControlAction,
+	ControlCommandDeltaPreview,
 	ControlFinding,
 	ControlReport,
 	ControlSourcePreset,
@@ -114,6 +116,79 @@ function excludedReasonText(
 	return reasons
 		.map((row) => `${row.count} ${EXPORT_EXCLUDED_LABELS[row.reason]}`)
 		.join(" / ");
+}
+
+function commandDeltaSummary(delta: ControlCommandDeltaPreview): string {
+	return [
+		`${delta.appeared.length} appeared`,
+		`${delta.disappeared.length} hidden`,
+		`${delta.changed.length} changed`,
+		`${delta.unchangedCount} unchanged`,
+	].join(" / ");
+}
+
+function CommandDeltaPreview({
+	delta,
+}: {
+	delta: ControlCommandDeltaPreview;
+}) {
+	const rows = [
+		...delta.appeared.map((action) => ({
+			key: `appeared:${action.command}`,
+			status: "appeared",
+			title: action.title,
+			command: action.command,
+			detail: `${ACTION_SAFETY_LABELS[action.safety]} / ${ACTION_READINESS_LABELS[action.readiness.state]}`,
+		})),
+		...delta.disappeared.map((action) => ({
+			key: `disappeared:${action.command}`,
+			status: "hidden",
+			title: action.title,
+			command: action.command,
+			detail: `${ACTION_SAFETY_LABELS[action.safety]} / ${ACTION_READINESS_LABELS[action.readiness.state]}`,
+		})),
+		...delta.changed.map((action) => ({
+			key: `changed:${action.command}`,
+			status: "changed",
+			title:
+				action.beforeTitle === action.afterTitle
+					? action.afterTitle
+					: `${action.beforeTitle} -> ${action.afterTitle}`,
+			command: action.command,
+			detail: `${ACTION_SAFETY_LABELS[action.beforeSafety]} -> ${ACTION_SAFETY_LABELS[action.afterSafety]} / ${ACTION_READINESS_LABELS[action.beforeReadiness.state]} -> ${ACTION_READINESS_LABELS[action.afterReadiness.state]}`,
+		})),
+	];
+	return (
+		<details className="command-delta">
+			<summary>
+				<span>Command delta</span>
+				<b>{commandDeltaSummary(delta)}</b>
+			</summary>
+			{rows.length > 0 ? (
+				<div className="command-delta__rows">
+					{rows.slice(0, 8).map((row) => (
+						<div className="command-delta__row" key={row.key}>
+							<span className={`command-delta__status command-delta__status--${row.status}`}>
+								{row.status}
+							</span>
+							<strong>{row.title}</strong>
+							<code>{row.command}</code>
+							<em>{row.detail}</em>
+						</div>
+					))}
+					{rows.length > 8 ? (
+						<span className="command-delta__more">
+							{rows.length - 8} more command change(s)
+						</span>
+					) : null}
+				</div>
+			) : (
+				<span className="command-delta__empty">
+					No command safety, readiness, or visibility changes.
+				</span>
+			)}
+		</details>
+	);
 }
 
 function ActionBundleReplayPreview({
@@ -612,6 +687,7 @@ export function DecisionFlightDeck({
 	const filteredSummary = filteredReport.summary;
 	const filteredFreshnessRows = sourceFreshnessRows(filteredSummary.sourceFreshness);
 	const presetEmptyGuidance = emptyPresetGuidance(sourcePreset, filteredReport);
+	const commandDelta = compareCommandActions(report.actions, filteredReport.actions);
 	return (
 		<main className="control-deck">
 			<section className="stats">
@@ -663,6 +739,7 @@ export function DecisionFlightDeck({
 							{filteredReport.findings.length} finding(s) /{" "}
 							{filteredReport.actions.length} action(s)
 						</p>
+						<CommandDeltaPreview delta={commandDelta} />
 					</div>
 					<div>
 						<span className="label">Sources</span>
