@@ -1598,8 +1598,15 @@ export function exportDecisionNote(input: {
 	archiveName: string;
 	replayPreview?: ControlActionBundleReplayPreview | null;
 	fullReport?: ControlReport | null;
+	emptyPresetGuidance?: ControlPresetEmptyGuidance | null;
 }): ControlDecisionNoteExport {
-	const { report, archiveName, replayPreview = null, fullReport = null } = input;
+	const {
+		report,
+		archiveName,
+		replayPreview = null,
+		fullReport = null,
+		emptyPresetGuidance = null,
+	} = input;
 	const topFindings = report.findings.slice(0, 5);
 	const topActions = report.actions.slice(0, 3);
 	const hiddenFindings =
@@ -1673,6 +1680,15 @@ export function exportDecisionNote(input: {
 		"## Scope Caveat",
 		...scopeLines,
 		"",
+		...(emptyPresetGuidance
+			? [
+					"## Empty Preset Guidance",
+					`- title: ${emptyPresetGuidance.title}`,
+					`- detail: ${emptyPresetGuidance.detail}`,
+					`- safe inspect command: ${emptyPresetGuidance.command}`,
+					"",
+				]
+			: []),
 		"## Top Findings",
 		...(topFindings.length > 0
 			? topFindings.map(
