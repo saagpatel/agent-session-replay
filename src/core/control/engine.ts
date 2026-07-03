@@ -8,6 +8,7 @@ import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
 	ControlActionCategory,
+	ControlActionSafety,
 	ControlActionSourceExplanation,
 	ControlFinding,
 	ControlReport,
@@ -334,6 +335,20 @@ function safetyNoteForCommand(command: string): string {
 	return "Inspect before running; command is suggested from metadata evidence only.";
 }
 
+function commandSafety(command: string): ControlActionSafety {
+	if (command.startsWith("uv run afr-local collect ")) return "local_write";
+	if (
+		command.startsWith("uv run afr-local latest ") ||
+		command.startsWith("afr-local latest ") ||
+		command.startsWith("uv run afr validate ")
+	) {
+		return "read_only";
+	}
+	if (command.startsWith("bridge-db:get_")) return "read_only";
+	if (command.startsWith("bridge-db:")) return "external_write";
+	return "unknown";
+}
+
 function sourceExplanation(
 	source: string,
 	sourceFreshness: ControlSummary["sourceFreshness"],
@@ -410,6 +425,7 @@ function buildActions(
 			priority: finding.score,
 			title: actionTitle(category, finding.sourceSystems),
 			command: finding.nextCommand,
+			commandSafety: commandSafety(finding.nextCommand),
 			sourceSystems: finding.sourceSystems,
 			findingIds: [finding.id],
 			severity: finding.severity,

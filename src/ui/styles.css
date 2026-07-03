@@ -796,8 +796,29 @@ body {
 .control-action__copy {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
+	justify-content: flex-start;
+	flex-wrap: wrap;
 	gap: 8px;
+}
+.control-action__safety {
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	color: var(--faint);
+	font-size: 10px;
+	line-height: 1;
+	padding: 4px 6px;
+}
+.control-action__safety--read_only {
+	border-color: color-mix(in srgb, var(--sev-info) 35%, var(--line));
+	color: var(--sev-info);
+}
+.control-action__safety--local_write {
+	border-color: color-mix(in srgb, var(--sev-warning) 40%, var(--line));
+	color: var(--sev-warning);
+}
+.control-action__safety--external_write {
+	border-color: color-mix(in srgb, var(--sev-critical) 45%, var(--line));
+	color: var(--sev-critical);
 }
 .control-action__copy button {
 	border: 1px solid color-mix(in srgb, var(--kind-tool) 40%, var(--line));
