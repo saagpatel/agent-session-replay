@@ -1649,6 +1649,8 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.ok(note.evidenceRefCount > 0);
 	assert.deepEqual(note.scope.evidenceSources, ["evals"]);
 	assert.equal(note.scope.excludedEvidenceRefCount, 1);
+	assert.equal(note.scope.hiddenFindingCount, 0);
+	assert.equal(note.scope.hiddenActionCount, 0);
 	assert.ok(note.scope.includedEvidenceRefs.includes("evals:case-1"));
 	assert.equal(note.scope.privacyTierCounts.unknown, 2);
 	assert.match(note.text, /^# Decision Flight Deck Note/);
@@ -1659,6 +1661,8 @@ test("decision note export summarizes findings actions replay and metadata refs"
 		/Route eval maintenance \/ reasons=warning eval failures/,
 	);
 	assert.match(note.text, /freshness=evals fresh/);
+	assert.match(note.text, /## Scope Caveat/);
+	assert.match(note.text, /active view includes all loaded findings\/actions/);
 	assert.match(note.text, /## Top Findings/);
 	assert.match(note.text, /## Next Actions/);
 	assert.match(note.text, /eval_failure \[warning\]/);
@@ -1800,10 +1804,18 @@ test("decision note export preserves imported ref source prefixes across presets
 	const note = exportDecisionNote({
 		archiveName: "20260628T120000Z-all",
 		report: bridge,
+		fullReport: report,
 		replayPreview: replay,
 	});
 
 	assert.equal(replay.status, "hidden_by_preset");
+	assert.equal(note.scope.hiddenActionCount, 1);
+	assert.equal(note.scope.hiddenFindingCount, 1);
+	assert.match(note.text, /## Scope Caveat/);
+	assert.match(note.text, /active view findings: 2 of 3/);
+	assert.match(note.text, /active view actions: 2 of 3/);
+	assert.match(note.text, /hidden action titles: Route eval maintenance/);
+	assert.match(note.text, /filtered view is not an all-clear/);
 	assert.match(note.text, /## bridge-db\n- bridge-db:handoff-1/);
 	assert.match(note.text, /## evals\n- evals:case-1/);
 	assert.deepEqual(note.scope.evidenceSources, ["bridge-db", "evals"]);
@@ -1816,10 +1828,13 @@ test("decision note export works without pasted replay preview", () => {
 	});
 
 	assert.match(note.text, /## Replay Preview\n- status: no pasted bundle preview/);
+	assert.match(note.text, /## Scope Caveat\n- active view includes all loaded findings\/actions/);
 	assert.match(note.text, /## Metadata Evidence Refs\n## metadata/);
 	assert.match(note.text, /- 2026-06-28T12:00:00Z/);
 	assert.deepEqual(note.scope.evidenceSources, ["metadata"]);
 	assert.equal(note.scope.excludedEvidenceRefCount, 0);
+	assert.equal(note.scope.hiddenFindingCount, 0);
+	assert.equal(note.scope.hiddenActionCount, 0);
 	assert.deepEqual(note.scope.includedEvidenceRefs, ["2026-06-28T12:00:00Z"]);
 });
 
