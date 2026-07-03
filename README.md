@@ -141,3 +141,14 @@ pnpm typecheck    # TypeScript gate
 pnpm build        # browser build
 pnpm afr:archives # rank existing local AFR archive folders, read-only
 ```
+
+## Decision Flight Deck Input
+
+To pick a local AFR archive without collecting anything new:
+
+```bash
+pnpm afr:archives
+```
+
+Drop the printed `BEST` folder path into the app. The helper reads existing
+metadata archives only; it does not create, modify, or upload archives.
