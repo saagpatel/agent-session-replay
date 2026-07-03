@@ -778,7 +778,13 @@ body {
 	color: var(--text);
 	font-weight: 600;
 }
-.control-action__main code {
+.control-action__command {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.control-action__command code {
 	min-width: 0;
 	color: var(--kind-tool);
 	background: var(--ink);
@@ -786,6 +792,33 @@ body {
 	border-radius: 3px;
 	padding: 6px 7px;
 	overflow-wrap: anywhere;
+}
+.control-action__copy {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+.control-action__copy button {
+	border: 1px solid color-mix(in srgb, var(--kind-tool) 40%, var(--line));
+	border-radius: 3px;
+	background: transparent;
+	color: var(--kind-tool);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.control-action__copy button:hover {
+	background: color-mix(in srgb, var(--kind-tool) 10%, transparent);
+}
+.control-action__copy button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.control-action__copy span {
+	color: var(--faint);
+	font-size: 10px;
 }
 .control-deck__list {
 	overflow-y: auto;
