@@ -8,6 +8,7 @@ import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
 	ControlActionCategory,
+	ControlActionReadiness,
 	ControlActionSafety,
 	ControlActionSourceExplanation,
 	ControlFinding,
@@ -365,6 +366,43 @@ function commandBoundary(
 	}
 }
 
+function commandReadiness(
+	command: string,
+	commandSafetyValue: ControlActionSafety,
+): ControlActionReadiness {
+	if (/<[^>]+>/.test(command)) {
+		return {
+			state: "needs_placeholder",
+			reason: "Fill the placeholder value before running this command.",
+		};
+	}
+	if (commandSafetyValue === "local_write") {
+		return {
+			state: "needs_approval",
+			reason:
+				"Creates local artifacts; run only after explicitly approving local collection.",
+		};
+	}
+	if (commandSafetyValue === "external_write") {
+		return {
+			state: "needs_approval",
+			reason:
+				"May mutate an external or shared system; confirm the exact boundary first.",
+		};
+	}
+	if (commandSafetyValue === "unknown") {
+		return {
+			state: "needs_approval",
+			reason:
+				"Command boundary is unknown; inspect and approve before running.",
+		};
+	}
+	return {
+		state: "runnable_now",
+		reason: "Runnable as a read-only local inspection command.",
+	};
+}
+
 function sourceExplanation(
 	source: string,
 	sourceFreshness: ControlSummary["sourceFreshness"],
@@ -445,6 +483,7 @@ function buildActions(
 		}
 		const safetyNote = safetyNoteForCommand(finding.nextCommand);
 		const safety = commandSafety(finding.nextCommand);
+		const readiness = commandReadiness(finding.nextCommand, safety);
 		actions.set(key, {
 			id: key,
 			category,
@@ -453,6 +492,7 @@ function buildActions(
 			title: actionTitle(category, finding.sourceSystems),
 			command: finding.nextCommand,
 			commandSafety: safety,
+			commandReadiness: readiness,
 			sourceSystems: finding.sourceSystems,
 			findingIds: [finding.id],
 			evidenceRefs: finding.evidenceRefs,

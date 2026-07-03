@@ -14,6 +14,15 @@ const ACTION_SAFETY_LABELS: Record<ControlAction["commandSafety"], string> = {
 	unknown: "unknown",
 };
 
+const ACTION_READINESS_LABELS: Record<
+	ControlAction["commandReadiness"]["state"],
+	string
+> = {
+	runnable_now: "runnable",
+	needs_placeholder: "needs value",
+	needs_approval: "needs approval",
+};
+
 const FINDING_COLOR: Record<ControlFinding["severity"], string> = {
 	critical: "var(--sev-critical)",
 	warning: "var(--sev-warning)",
@@ -119,6 +128,11 @@ function ActionRow({ action }: { action: ControlAction }) {
 						>
 							{ACTION_SAFETY_LABELS[action.commandSafety]}
 						</span>
+						<span
+							className={`control-action__readiness control-action__readiness--${action.commandReadiness.state}`}
+						>
+							{ACTION_READINESS_LABELS[action.commandReadiness.state]}
+						</span>
 						<button type="button" onClick={copyCommand}>
 							Copy command
 						</button>
@@ -133,6 +147,8 @@ function ActionRow({ action }: { action: ControlAction }) {
 						<div className="control-action__preview-grid">
 							<span>boundary</span>
 							<b>{action.preview.boundary}</b>
+							<span>readiness</span>
+							<b>{action.commandReadiness.reason}</b>
 							<span>why</span>
 							<b>{list(action.preview.why)}</b>
 							<span>evidence</span>
