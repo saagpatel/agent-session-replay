@@ -11,6 +11,13 @@ export interface SourceContract {
 	) => SourceFreshnessState | null;
 }
 
+export interface SourceContractFixture {
+	source: string;
+	reconciliationRow: AfrReconciliationSource;
+	expectedFreshness: SourceFreshnessState | null;
+	expectedReason: string | null;
+}
+
 function healthyReconciliation(row: AfrReconciliationSource | null): boolean {
 	if (!row || row.status !== "ok" || row.severity === "error") return false;
 	return (row.warnings?.length ?? 0) === 0;
@@ -41,6 +48,58 @@ export const SOURCE_CONTRACTS: SourceContract[] = [
 		source: "evals",
 		routeTitle: "Route eval maintenance",
 		staleDecisionReason: "stale evals source",
+	},
+];
+
+export const SOURCE_CONTRACT_FIXTURES: SourceContractFixture[] = [
+	{
+		source: "artifact-store",
+		reconciliationRow: {
+			source: "artifact-store",
+			status: "ok",
+			warnings: [],
+			detected_records: 50,
+			sampled_records: 50,
+			emitted_records: 52,
+			skipped_records: 0,
+			source_counts: {
+				artifact_records_sampled: 50,
+				digest_skipped: 0,
+				redacted_classes: [
+					"absolute_paths",
+					"artifact_contents",
+					"directory_names",
+					"file_names",
+					"relative_paths",
+				],
+			},
+		},
+		expectedFreshness: "historical",
+		expectedReason:
+			"healthy reconciliation marks sampled artifact history as historical, not stale",
+	},
+	{
+		source: "cost-tracker",
+		reconciliationRow: {
+			source: "cost-tracker",
+			status: "ok",
+			warnings: [],
+			detected_records: 62,
+			sampled_records: 62,
+			emitted_records: 65,
+			skipped_records: 0,
+			source_counts: {
+				ccusage_error_count: 0,
+				ccusage_live_used: true,
+				daily_records_sampled: 9,
+				monthly_records_sampled: 3,
+				session_records_sampled: 50,
+				window_days: 14,
+			},
+		},
+		expectedFreshness: "fresh",
+		expectedReason:
+			"healthy reconciliation confirms live ccusage billing-period evidence",
 	},
 ];
 
