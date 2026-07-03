@@ -834,6 +834,23 @@ body {
 	color: var(--faint);
 	font-size: 10px;
 }
+.control-actions__excluded {
+	color: var(--faint);
+	font-size: 10px;
+}
+.control-actions__excluded summary {
+	cursor: pointer;
+}
+.control-actions__excluded summary:hover {
+	color: var(--text);
+}
+.control-actions__excluded span {
+	display: block;
+	margin-top: 3px;
+	max-width: 180px;
+	overflow-wrap: anywhere;
+	text-align: right;
+}
 .control-action__safety {
 	border: 1px solid var(--line);
 	border-radius: 3px;

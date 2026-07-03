@@ -1040,6 +1040,10 @@ test("command export includes only runnable read-only actions", () => {
 	);
 	assert.equal(commandExport.includedCount, 2);
 	assert.equal(commandExport.excludedCount, 2);
+	assert.deepEqual(commandExport.excludedReasons, [
+		{ reason: "needs_placeholder", count: 1 },
+		{ reason: "needs_approval", count: 1 },
+	]);
 	assert.doesNotMatch(commandExport.text, /<archive>/);
 	assert.doesNotMatch(commandExport.text, /collect all/);
 });

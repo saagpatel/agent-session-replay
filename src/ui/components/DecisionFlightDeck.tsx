@@ -24,6 +24,19 @@ const ACTION_READINESS_LABELS: Record<
 	needs_approval: "needs approval",
 };
 
+const EXPORT_EXCLUDED_LABELS: Record<
+	ControlAction["commandReadiness"]["state"] | ControlAction["commandSafety"],
+	string
+> = {
+	runnable_now: "runnable",
+	needs_placeholder: "needs value",
+	needs_approval: "needs approval",
+	read_only: "read-only",
+	local_write: "local write",
+	external_write: "external write",
+	unknown: "unknown",
+};
+
 const FINDING_COLOR: Record<ControlFinding["severity"], string> = {
 	critical: "var(--sev-critical)",
 	warning: "var(--sev-warning)",
@@ -74,6 +87,14 @@ function actionBoundaries(action: ControlAction): string {
 	return action.boundaryEvents.length > 0
 		? action.boundaryEvents.join(" / ")
 		: "";
+}
+
+function excludedReasonText(
+	reasons: ReturnType<typeof exportRunnableReadOnlyCommands>["excludedReasons"],
+): string {
+	return reasons
+		.map((row) => `${row.count} ${EXPORT_EXCLUDED_LABELS[row.reason]}`)
+		.join(" / ");
 }
 
 function ActionRow({ action }: { action: ControlAction }) {
@@ -211,6 +232,12 @@ function ActionRail({ actions }: { actions: ControlAction[] }) {
 									? "Nothing runnable"
 									: `${commandExport.includedCount} runnable`}
 					</span>
+					{commandExport.excludedCount > 0 ? (
+						<details className="control-actions__excluded">
+							<summary>{commandExport.excludedCount} excluded</summary>
+							<span>{excludedReasonText(commandExport.excludedReasons)}</span>
+						</details>
+					) : null}
 				</div>
 			</div>
 			<div className="control-actions__list">
