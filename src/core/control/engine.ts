@@ -14,7 +14,8 @@ import type {
 	SourceFreshnessState,
 } from "./types.ts";
 import {
-	routeTitleForSource,
+	actionReasonForSource,
+	actionTitleForSource,
 	sourceFreshnessOverride,
 	sourceFreshnessReason,
 	staleSourceDecisionReason,
@@ -279,9 +280,9 @@ function actionTitle(category: ControlActionCategory, sources: string[]): string
 		case "refresh":
 			return `Refresh ${source}`;
 		case "route":
-			return routeTitleForSource(source) ?? `Route ${source}`;
+			return actionTitleForSource(source, category) ?? `Route ${source}`;
 		case "inspect":
-			return `Inspect ${source}`;
+			return actionTitleForSource(source, category) ?? `Inspect ${source}`;
 	}
 }
 
@@ -289,6 +290,13 @@ function actionReason(finding: ControlFinding): string {
 	if (finding.kind === "eval_failure") return `${finding.severity} eval failures`;
 	if (finding.kind === "cost_attention") {
 		return finding.severity === "warning" ? "estimated cost signal" : "cost signal";
+	}
+	if (
+		finding.kind === "bridge_pending_handoff" ||
+		finding.kind === "boundary_event"
+	) {
+		const sourceReason = actionReasonForSource(finding.sourceSystems[0] ?? "");
+		if (sourceReason) return sourceReason;
 	}
 	if (finding.id.startsWith("stale_source:")) {
 		return staleSourceDecisionReason(finding.sourceSystems[0] ?? "source");

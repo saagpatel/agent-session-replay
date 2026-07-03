@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+	actionReasonForSource,
+	actionTitleForSource,
 	routeTitleForSource,
+	SOURCE_ACTION_FIXTURES,
 	SOURCE_CONTRACT_FIXTURES,
 	SOURCE_CONTRACTS,
 	sourceFreshnessOverride,
@@ -30,6 +33,21 @@ test("registry fixtures document expected source freshness decisions", () => {
 			sourceFreshnessReason(fixture.source, fixture.reconciliationRow),
 			fixture.expectedReason,
 			fixture.source,
+		);
+	}
+});
+
+test("action fixtures document source-specific action wording", () => {
+	for (const fixture of SOURCE_ACTION_FIXTURES) {
+		assert.equal(
+			actionTitleForSource(fixture.source, fixture.category),
+			fixture.expectedTitle,
+			`${fixture.source}:${fixture.category} title`,
+		);
+		assert.equal(
+			actionReasonForSource(fixture.source),
+			fixture.expectedReason,
+			`${fixture.source}:${fixture.category} reason`,
 		);
 	}
 });
