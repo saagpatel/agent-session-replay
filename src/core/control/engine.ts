@@ -174,6 +174,79 @@ function money(value: number): string {
 	}).format(value);
 }
 
+function increment(map: Map<string, number>, key: string): void {
+	map.set(key, (map.get(key) ?? 0) + 1);
+}
+
+function validationWarningBucket(warning: string): string {
+	const lower = warning.toLowerCase();
+	if (lower.includes("cost quality") && lower.includes("estimated")) {
+		return "cost_quality_estimated";
+	}
+	if (lower.includes("correlation confidence") && lower.includes("heuristic")) {
+		return "correlation_confidence_heuristic";
+	}
+	if (lower.includes("multiple trace_id")) return "multiple_trace_ids";
+	if (lower.includes("missing") || lower.includes("required")) {
+		return "schema_field";
+	}
+	return "other_validation_warning";
+}
+
+function validationWarningSource(warning: string): string | null {
+	const lower = warning.toLowerCase();
+	const prefixedRecord =
+		/^line\s+\d+:\s+([a-z0-9-]+?)(?:-snapshot|-v\d|-record|-session|:)/i.exec(
+			warning,
+		);
+	if (prefixedRecord?.[1]) return prefixedRecord[1];
+	if (lower.includes("cost quality") || lower.includes("correlation confidence")) {
+		return "cost-tracker";
+	}
+	return null;
+}
+
+function summarizeValidationWarnings(warnings: unknown[]): {
+	signal: string;
+	sources: string[];
+	dominantBucket: string | null;
+	dominantSource: string | null;
+} {
+	const bucketCounts = new Map<string, number>();
+	const sourceCounts = new Map<string, number>();
+	for (const warning of warnings) {
+		if (typeof warning !== "string") {
+			increment(bucketCounts, "other_validation_warning");
+			continue;
+		}
+		increment(bucketCounts, validationWarningBucket(warning));
+		const source = validationWarningSource(warning);
+		if (source) increment(sourceCounts, source);
+	}
+	const topEntries = (counts: Map<string, number>) =>
+		[...counts.entries()]
+			.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+			.slice(0, 3);
+	const bucketEntries = topEntries(bucketCounts);
+	const sourceEntries = topEntries(sourceCounts);
+	const bucketText =
+		bucketEntries.length > 0
+			? bucketEntries.map(([bucket, count]) => `${bucket} ${count}`).join(" / ")
+			: "unclassified";
+	const sourceText =
+		sourceEntries.length > 0
+			? `; likely source ${sourceEntries
+					.map(([source, count]) => `${source} ${count}`)
+					.join(" / ")}`
+			: "";
+	return {
+		signal: `${bucketText}${sourceText}`,
+		sources: sourceEntries.map(([source]) => source),
+		dominantBucket: bucketEntries[0]?.[0] ?? null,
+		dominantSource: sourceEntries[0]?.[0] ?? null,
+	};
+}
+
 function attributeString(record: AfrRecord, key: string): string | null {
 	const value = record.attributes?.[key];
 	return typeof value === "string" ? value : null;
@@ -456,6 +529,7 @@ function actionTrace(finding: ControlFinding): ControlActionTrace {
 		sourceSystems: finding.sourceSystems,
 		boundaryEvent: finding.boundaryEvent,
 		costSignal: finding.costSignal,
+		validationSignal: finding.validationSignal,
 		outcomeSignal: finding.outcomeSignal,
 		evidenceRefCount: finding.evidenceRefs.length,
 	};
@@ -681,18 +755,33 @@ export function analyzeControlBundle(
 	if (bundle.validationReport?.ok !== false) {
 		const warnings = bundle.validationReport?.warnings?.length ?? 0;
 		if (warnings > 0) {
+			const warningSummary = summarizeValidationWarnings(
+				bundle.validationReport?.warnings ?? [],
+			);
+			const warningSources =
+				warningSummary.sources.length > 0 ? warningSummary.sources : sources;
+			const nextCommand =
+				warningSummary.dominantSource === "cost-tracker" ||
+				warningSummary.dominantBucket === "cost_quality_estimated" ||
+				warningSummary.dominantBucket === "correlation_confidence_heuristic"
+					? "uv run afr-local latest costs --limit 5"
+					: "uv run afr validate <archive>";
 			add(findings, {
 				id: "validation_warning",
 				kind: "validation_warning",
 				severity: "warning",
 				title: `${warnings} validation warning${warnings === 1 ? "" : "s"}`,
-				detail:
-					"The archive schema passed, but validation warnings reduce confidence in source completeness or field quality.",
-				sourceSystems: sources,
+				detail: `The archive schema passed, but validation warnings reduce confidence in source completeness or field quality. Top warning buckets: ${warningSummary.signal}.`,
+				sourceSystems: warningSources,
 				privacyTier: strongestPrivacyTier(bundle.records),
-				freshness,
+				freshness: findingFreshnessForSources(
+					warningSources,
+					reportSummary.sourceFreshness,
+					freshness,
+				),
+				validationSignal: warningSummary.signal,
 				evidenceRefs: ["validation-report.afr.json"],
-				nextCommand: "uv run afr validate <archive>",
+				nextCommand,
 				score: 130 + warnings,
 			});
 		}
@@ -1171,6 +1260,7 @@ function actionTraceLines(action: ControlAction): string[] {
 		const signals = [
 			trace.boundaryEvent ? `boundary=${trace.boundaryEvent}` : null,
 			trace.costSignal ? `cost=${trace.costSignal}` : null,
+			trace.validationSignal ? `validation=${trace.validationSignal}` : null,
 			trace.outcomeSignal ? `outcome=${trace.outcomeSignal}` : null,
 		].filter(Boolean);
 		return [
