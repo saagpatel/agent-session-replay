@@ -1562,6 +1562,37 @@ function decisionNoteEvidenceRefs(
 	]);
 }
 
+function compactSignals(action: ControlAction): string {
+	return uniqInOrder(
+		action.trace.flatMap((trace) => [
+			trace.boundaryEvent ? `boundary=${trace.boundaryEvent}` : undefined,
+			trace.costSignal ? `cost=${trace.costSignal}` : undefined,
+			trace.validationSignal ? `validation=${trace.validationSignal}` : undefined,
+			trace.outcomeSignal ? `outcome=${trace.outcomeSignal}` : undefined,
+		]),
+	).join(" / ");
+}
+
+function decisionPressureLines(actions: ControlAction[]): string[] {
+	if (actions.length === 0) return ["none"];
+	return actions.map((action, index) => {
+		const freshness = action.sourceExplanations
+			.map((row) => `${row.source} ${row.freshness}`)
+			.join(" / ");
+		const signals = compactSignals(action);
+		return [
+			`${index + 1}. ${action.title}`,
+			`reasons=${action.decisionReasons.join(" / ") || "none"}`,
+			`sources=${action.sourceSystems.join(",") || "none"}`,
+			`freshness=${freshness || "unknown"}`,
+			signals ? `signals=${signals}` : null,
+			`command=${action.command}`,
+		]
+			.filter(Boolean)
+			.join(" / ");
+	});
+}
+
 export function exportDecisionNote(input: {
 	report: ControlReport;
 	archiveName: string;
@@ -1604,6 +1635,9 @@ export function exportDecisionNote(input: {
 		`- privacy: ${report.summary.privacyOk === null ? "missing" : report.summary.privacyOk ? "ok" : "failed"}`,
 		`- validation: ${report.summary.validationOk === null ? "missing" : report.summary.validationOk ? "ok" : "failed"}`,
 		`- reconciliation: ${report.summary.reconciliationOk === null ? "missing" : report.summary.reconciliationOk ? "ok" : "failed"}`,
+		"",
+		"## Decision Pressure Map",
+		...decisionPressureLines(topActions),
 		"",
 		"## Top Findings",
 		...(topFindings.length > 0
