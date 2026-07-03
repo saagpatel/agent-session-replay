@@ -1259,6 +1259,7 @@ function replayEmpty(status: ControlActionBundleReplayPreview["status"], input: 
 	warnings: string[];
 	commandScope?: ControlActionBundleReplayPreview["commandScope"];
 	commandDrift?: string[];
+	operatorHint?: string;
 }): ControlActionBundleReplayPreview {
 	return {
 		status,
@@ -1272,7 +1273,27 @@ function replayEmpty(status: ControlActionBundleReplayPreview["status"], input: 
 		missingEvidenceRefs: input.missingEvidenceRefs ?? [],
 		sourceFreshness: [],
 		warnings: input.warnings,
+		operatorHint: input.operatorHint ?? replayOperatorHint(status),
 	};
+}
+
+function replayOperatorHint(
+	status: ControlActionBundleReplayPreview["status"],
+): string {
+	switch (status) {
+		case "empty":
+			return "Paste an action bundle to check whether its command still matches this archive.";
+		case "invalid":
+			return "Copy a fresh action bundle from the deck before using this replay preview.";
+		case "matched":
+			return "Command still matches this context; review warnings before copying or running it.";
+		case "hidden_by_preset":
+			return "Switch to the all-source view or the command's source preset to inspect this action.";
+		case "command_missing":
+			return "Inspect the loaded archive or refresh local AFR evidence before reusing this command.";
+		case "blocked":
+			return "Do not run this from the replay preview; resolve the readiness or approval blocker first.";
+	}
 }
 
 function commandDriftForParsedBundle(
@@ -1335,6 +1356,7 @@ export function previewImportedActionBundle(
 					"Command exists in the loaded AFR archive but is hidden by the active source preset.",
 					...drift,
 				],
+				operatorHint: replayOperatorHint("hidden_by_preset"),
 			};
 		}
 		return replayEmpty("command_missing", {
@@ -1378,6 +1400,9 @@ export function previewImportedActionBundle(
 		missingEvidenceRefs,
 		sourceFreshness: action.sourceExplanations,
 		warnings,
+		operatorHint: replayOperatorHint(
+			replayPreview.commandExportEligible ? "matched" : "blocked",
+		),
 	};
 }
 
@@ -1422,6 +1447,7 @@ export function exportDecisionNote(input: {
 						? replayPreview.warnings.join(" / ")
 						: "none"
 				}`,
+				`- next: ${replayPreview.operatorHint}`,
 			]
 		: ["- status: no pasted bundle preview"];
 	const text = [

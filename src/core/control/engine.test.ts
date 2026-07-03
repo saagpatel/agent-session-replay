@@ -1332,6 +1332,7 @@ test("imported action bundle preview matches current runnable evidence", () => {
 	assert.deepEqual(replay.importedEvidenceRefs, ["evals:case-1"]);
 	assert.deepEqual(replay.missingEvidenceRefs, []);
 	assert.deepEqual(replay.warnings, []);
+	assert.match(replay.operatorHint, /still matches this context/);
 });
 
 test("imported action bundle preview distinguishes hidden preset commands", () => {
@@ -1373,6 +1374,7 @@ test("imported action bundle preview distinguishes hidden preset commands", () =
 	assert.equal(replay.matchedActionTitle, bridgeAction?.title);
 	assert.deepEqual(replay.missingEvidenceRefs, []);
 	assert.match(replay.warnings[0] ?? "", /hidden by the active source preset/);
+	assert.match(replay.operatorHint, /Switch to the all-source view/);
 });
 
 test("imported action bundle preview reports title safety and readiness drift", () => {
@@ -1411,6 +1413,7 @@ test("imported action bundle preview reports title safety and readiness drift", 
 		"Readiness changed: needs_approval -> runnable_now",
 	]);
 	assert.match(replay.warnings.join("\n"), /Safety changed/);
+	assert.match(replay.operatorHint, /still matches this context/);
 });
 
 test("imported action bundle preview reports missing commands", () => {
@@ -1429,6 +1432,7 @@ test("imported action bundle preview reports missing commands", () => {
 	assert.equal(replay.matchedActionId, null);
 	assert.deepEqual(replay.missingEvidenceRefs, ["missing:case-1"]);
 	assert.match(replay.warnings[0] ?? "", /not present/);
+	assert.match(replay.operatorHint, /Inspect the loaded archive/);
 });
 
 test("imported action bundle preview reports missing metadata refs", () => {
@@ -1491,6 +1495,7 @@ test("imported action bundle preview blocks commands that are no longer exportab
 	assert.equal(replay.status, "blocked");
 	assert.equal(replay.matchedActionTitle, "Refresh 0 sources");
 	assert.match(replay.warnings.at(-1) ?? "", /approv/i);
+	assert.match(replay.operatorHint, /Do not run this/);
 });
 
 test("decision note export summarizes findings actions replay and metadata refs", () => {
@@ -1546,6 +1551,7 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.match(note.text, /## Replay Preview\n- status: matched/);
 	assert.match(note.text, /- scope: current_context/);
 	assert.match(note.text, /- drift: none/);
+	assert.match(note.text, /- next: Command still matches this context/);
 	assert.match(note.text, /## Metadata Evidence Refs/);
 	assert.match(note.text, /- evals:case-1/);
 	assert.doesNotMatch(note.text, /raw\":\"value/);
@@ -1596,6 +1602,7 @@ test("decision note export includes replay scope and command drift", () => {
 	assert.equal(replay.status, "hidden_by_preset");
 	assert.match(note.text, /- status: hidden_by_preset/);
 	assert.match(note.text, /- scope: hidden_by_preset/);
+	assert.match(note.text, /- next: Switch to the all-source view/);
 	assert.match(note.text, /- drift: Title changed: Old bridge route ->/);
 	assert.match(note.text, /Safety changed: unknown -> read_only/);
 	assert.match(note.text, /hidden by the active source preset/);
