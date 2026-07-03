@@ -39,8 +39,10 @@
   collection command. Cost-tracker freshness respects healthy live ccusage
   reconciliation so billing-period timestamps do not create stale source noise.
   Healthy artifact-store samples are marked historical rather than stale, keeping
-  the deck focused on operationally risky freshness gaps.
-- **Quality** — 89 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  the deck focused on operationally risky freshness gaps. Eval failures preserve
+  AFR redaction while surfacing aggregate assertion counts, command-result counts,
+  and failed observation windows for safer routing decisions.
+- **Quality** — 90 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -74,5 +76,5 @@
 
 ## Verify / Run
 
-`pnpm test` (89) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (90) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

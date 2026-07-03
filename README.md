@@ -50,6 +50,9 @@ collection. Cost-tracker freshness respects healthy live ccusage reconciliation
 so billing-period timestamps do not masquerade as stale source evidence.
 Healthy artifact-store samples are marked historical rather than stale, keeping
 the deck focused on operationally risky freshness gaps.
+Eval failures preserve AFR's redaction boundary while still surfacing failed
+observation counts, assertion counts when available, command-result counts, and
+the failed observation time window for safer routing decisions.
 
 ## Develop
 
