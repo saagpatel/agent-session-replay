@@ -95,7 +95,10 @@ command plus preflight and metadata refs; approval-required or placeholder
 commands keep the bundle copy disabled with the blocked reason visible. Copied
 action bundles can be pasted back into the deck for a replay preview against the
 currently loaded AFR evidence, surfacing missing commands, missing metadata refs,
-source freshness drift, and blocked export status before anything is run.
+source freshness drift, and blocked export status before anything is run. The
+replay preview can also copy an export-only markdown decision note with top
+findings, next actions, replay verdict, and metadata evidence refs; the app does
+not write the note anywhere automatically.
 
 ## Develop
 

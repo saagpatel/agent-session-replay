@@ -763,6 +763,34 @@ body {
 	border-color: color-mix(in srgb, var(--sev-warning) 35%, var(--line));
 	color: var(--sev-warning);
 }
+.decision-note-copy {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 7px;
+}
+.decision-note-copy button {
+	border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+	border-radius: 3px;
+	background: transparent;
+	color: var(--accent);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.decision-note-copy button:hover {
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.decision-note-copy button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.decision-note-copy span {
+	color: var(--faint);
+	font-size: 10px;
+	overflow-wrap: anywhere;
+}
 .control-action {
 	min-width: 0;
 	background: var(--panel);

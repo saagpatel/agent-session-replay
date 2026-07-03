@@ -6,6 +6,7 @@ import {
 	analyzeControlBundle,
 	buildActionBundlePreview,
 	exportActionBundle,
+	exportDecisionNote,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 	previewImportedActionBundle,
@@ -1284,6 +1285,65 @@ test("imported action bundle preview blocks commands that are no longer exportab
 	assert.equal(replay.status, "blocked");
 	assert.equal(replay.matchedActionTitle, "Refresh 0 sources");
 	assert.match(replay.warnings.at(-1) ?? "", /approv/i);
+});
+
+test("decision note export summarizes findings actions replay and metadata refs", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "evals:raw",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:03:00Z",
+					evidence_ref: "{\"raw\":\"value\"}",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const route = report.actions.find(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	const replay = previewImportedActionBundle(exportActionBundle(route!).text, report);
+	const note = exportDecisionNote({
+		archiveName: "20260628T120000Z-all",
+		report,
+		replayPreview: replay,
+	});
+
+	assert.equal(note.findingCount, Math.min(report.findings.length, 5));
+	assert.equal(note.actionCount, Math.min(report.actions.length, 3));
+	assert.ok(note.evidenceRefCount > 0);
+	assert.match(note.text, /^# Decision Flight Deck Note/);
+	assert.match(note.text, /- archive: 20260628T120000Z-all/);
+	assert.match(note.text, /## Top Findings/);
+	assert.match(note.text, /## Next Actions/);
+	assert.match(note.text, /## Replay Preview\n- status: matched/);
+	assert.match(note.text, /## Metadata Evidence Refs/);
+	assert.match(note.text, /- evals:case-1/);
+	assert.doesNotMatch(note.text, /raw\":\"value/);
+});
+
+test("decision note export works without pasted replay preview", () => {
+	const note = exportDecisionNote({
+		archiveName: "empty",
+		report: analyzeControlBundle(bundle()),
+	});
+
+	assert.match(note.text, /## Replay Preview\n- status: no pasted bundle preview/);
+	assert.match(note.text, /## Metadata Evidence Refs\n## metadata/);
+	assert.match(note.text, /- 2026-06-28T12:00:00Z/);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

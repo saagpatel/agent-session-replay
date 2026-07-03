@@ -4,6 +4,7 @@ import type { AfrBundle } from "../../core/afr/types.ts";
 import {
 	buildActionBundlePreview,
 	exportActionBundle,
+	exportDecisionNote,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 	previewImportedActionBundle,
@@ -103,9 +104,31 @@ function excludedReasonText(
 		.join(" / ");
 }
 
-function ActionBundleReplayPreview({ report }: { report: ControlReport }) {
+function ActionBundleReplayPreview({
+	archiveName,
+	report,
+}: {
+	archiveName: string;
+	report: ControlReport;
+}) {
 	const [bundleText, setBundleText] = useState("");
 	const preview = previewImportedActionBundle(bundleText, report);
+	const decisionNote = exportDecisionNote({
+		archiveName,
+		report,
+		replayPreview: preview,
+	});
+	const [noteStatus, setNoteStatus] = useState<
+		"idle" | "copied" | "failed"
+	>("idle");
+	const copyDecisionNote = async () => {
+		try {
+			await navigator.clipboard.writeText(decisionNote.text);
+			setNoteStatus("copied");
+		} catch {
+			setNoteStatus("failed");
+		}
+	};
 	return (
 		<section className="action-replay">
 			<div className="findings__head">
@@ -150,6 +173,18 @@ function ActionBundleReplayPreview({ report }: { report: ControlReport }) {
 			) : (
 				<div className="action-replay__ready">Still runnable against this archive.</div>
 			)}
+			<div className="decision-note-copy">
+				<button type="button" onClick={copyDecisionNote}>
+					Copy decision note
+				</button>
+				<span aria-live="polite">
+					{noteStatus === "copied"
+						? "Copied note"
+						: noteStatus === "failed"
+							? "Copy failed"
+							: `${decisionNote.findingCount} findings / ${decisionNote.actionCount} actions / ${decisionNote.evidenceRefCount} refs`}
+				</span>
+			</div>
 		</section>
 	);
 }
@@ -586,7 +621,7 @@ export function DecisionFlightDeck({
 					{report.actions.length > 0 ? (
 						<>
 							<ActionRail actions={report.actions} />
-							<ActionBundleReplayPreview report={report} />
+							<ActionBundleReplayPreview archiveName={bundle.name} report={report} />
 						</>
 					) : null}
 					<div className="findings__head">
