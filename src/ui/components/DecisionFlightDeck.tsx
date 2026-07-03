@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from "react";
 
 import type { AfrBundle } from "../../core/afr/types.ts";
 import {
+	buildCommandSafetyLedger,
 	buildActionBundlePreview,
 	emptyPresetGuidance,
 	exportActionBundle,
@@ -437,6 +438,7 @@ function ActionRail({ actions }: { actions: ControlAction[] }) {
 	const primaryActions = actions.slice(0, 3);
 	const secondaryActions = actions.slice(3);
 	const commandExport = exportRunnableReadOnlyCommands(actions);
+	const commandLedger = buildCommandSafetyLedger(actions);
 	const [exportStatus, setExportStatus] = useState<
 		"idle" | "copied" | "failed" | "empty"
 	>("idle");
@@ -482,6 +484,42 @@ function ActionRail({ actions }: { actions: ControlAction[] }) {
 					) : null}
 				</div>
 			</div>
+			<details className="command-ledger">
+				<summary>
+					<span>Command safety ledger</span>
+					<b>
+						{commandLedger.exportEligibleCount}/{commandLedger.totalCount} exportable
+					</b>
+				</summary>
+				<div className="command-ledger__groups">
+					{commandLedger.groups.map((group) => (
+						<div className="command-ledger__group" key={group.safety}>
+							<div className="command-ledger__head">
+								<span
+									className={`control-action__safety control-action__safety--${group.safety}`}
+								>
+									{ACTION_SAFETY_LABELS[group.safety]}
+								</span>
+								<b>{group.actions.length}</b>
+							</div>
+							{group.actions.length > 0 ? (
+								group.actions.map((action) => (
+									<div className="command-ledger__row" key={action.id}>
+										<strong>{action.title}</strong>
+										<code>{action.command}</code>
+										<span>
+											{ACTION_READINESS_LABELS[action.readiness.state]}
+											{action.exportEligible ? " / exportable" : ""}
+										</span>
+									</div>
+								))
+							) : (
+								<span className="command-ledger__empty">none</span>
+							)}
+						</div>
+					))}
+				</div>
+			</details>
 			<div className="control-actions__list">
 				{primaryActions.map((action) => (
 					<ActionRow key={action.id} action={action} />

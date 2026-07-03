@@ -19,6 +19,7 @@ import type {
 	ControlActionSourceExplanation,
 	ControlFinding,
 	ControlPresetEmptyGuidance,
+	ControlCommandSafetyLedger,
 	ControlReport,
 	ControlSummary,
 	ControlSourcePreset,
@@ -915,6 +916,38 @@ export function exportRunnableReadOnlyCommands(
 			reason: reason as ControlCommandExport["excludedReasons"][number]["reason"],
 			count,
 		})),
+	};
+}
+
+export function buildCommandSafetyLedger(
+	actions: ControlAction[],
+): ControlCommandSafetyLedger {
+	const safetyOrder: ControlActionSafety[] = [
+		"read_only",
+		"local_write",
+		"external_write",
+		"unknown",
+	];
+	const groups = safetyOrder.map((safety) => ({
+		safety,
+		actions: actions
+			.filter((action) => action.commandSafety === safety)
+			.map((action) => ({
+				id: action.id,
+				title: action.title,
+				command: action.command,
+				readiness: action.commandReadiness,
+				exportEligible:
+					action.commandSafety === "read_only" &&
+					action.commandReadiness.state === "runnable_now",
+			})),
+	}));
+	return {
+		groups,
+		totalCount: actions.length,
+		exportEligibleCount: groups
+			.flatMap((group) => group.actions)
+			.filter((action) => action.exportEligible).length,
 	};
 }
 

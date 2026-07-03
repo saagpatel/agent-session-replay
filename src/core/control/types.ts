@@ -94,6 +94,21 @@ export interface ControlCommandExport {
 	}>;
 }
 
+export interface ControlCommandSafetyLedger {
+	groups: Array<{
+		safety: ControlActionSafety;
+		actions: Array<{
+			id: string;
+			title: string;
+			command: string;
+			readiness: ControlActionReadiness;
+			exportEligible: boolean;
+		}>;
+	}>;
+	totalCount: number;
+	exportEligibleCount: number;
+}
+
 export interface ControlEvidenceRefExport {
 	groups: Array<{
 		source: string;
