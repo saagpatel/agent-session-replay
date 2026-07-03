@@ -48,7 +48,10 @@
   are centralized in a small source contract layer and the summary shows why each
   freshness state was chosen. Freshness override contracts now include
   representative reconciliation-row fixtures that lock the expected decision
-  shape for future source-specific contracts. Bridge-db, notification-hub,
+  shape for future source-specific contracts. Stale source-specific archives now
+  surface a runnable read-only source timeline inspection alongside the
+  approval-gated refresh command, so sparse archives do not dead-end on
+  collection approval. Bridge-db, notification-hub,
   hook-boundary, and MCP-boundary action wording now lives in source contracts
   instead of the control engine. Boundary/control findings are split per source,
   so mixed hook/MCP/notification evidence routes into separate source-filtered

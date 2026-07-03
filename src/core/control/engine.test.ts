@@ -37,17 +37,33 @@ test("analyzeControlBundle flags stale non-all archives as first-class findings"
 			name: "20260620T120000Z-latest",
 			archiveSuffix: "latest",
 			createdAt: "2026-06-20T12:00:00Z",
+			records: [
+				{
+					record_id: "old-codex",
+					record_type: "event",
+					source_system: "codex",
+					timestamp: "2026-06-20T12:00:00Z",
+				},
+			],
 		}),
 		Date.parse("2026-06-28T12:00:00Z"),
 	);
 
-	assert.equal(report.findings[0].id, "missing_all_source_archive");
+	assert.equal(report.findings[0].id, "stale_source:codex");
 	assert.ok(report.findings.some((finding) => finding.id === "stale_source"));
+	assert.ok(report.findings.some((finding) => finding.id === "stale_source:codex"));
 	assert.equal(
 		report.findings.find((finding) => finding.id === "missing_all_source_archive")
 			?.nextCommand,
 		"uv run afr-local collect all --limit 50",
 	);
+	const inspect = report.actions.find(
+		(action) =>
+			action.command ===
+			"uv run afr-local latest timeline --source codex --limit 20",
+	);
+	assert.equal(inspect?.commandSafety, "read_only");
+	assert.equal(inspect?.commandReadiness.state, "runnable_now");
 });
 
 test("privacy and validation failures outrank freshness warnings", () => {
@@ -763,7 +779,7 @@ test("artifact-store reconciliation warnings still surface stale source findings
 	);
 });
 
-test("stale archives do not fan out per-source stale findings", () => {
+test("stale all-source archives do not fan out per-source stale findings", () => {
 	const report = analyzeControlBundle(
 		bundle({
 			createdAt: "2026-06-20T12:00:00Z",
@@ -1041,13 +1057,14 @@ test("command export includes only runnable read-only actions", () => {
 
 	assert.deepEqual(commandExport.commands, [
 		"uv run afr-local latest timeline --source evals --limit 20",
+		"uv run afr-local latest timeline --source cost-tracker --limit 20",
 		"uv run afr-local latest costs --limit 5",
 	]);
 	assert.match(
 		commandExport.text,
 		/^# Decision Flight Deck runnable read-only commands\n/,
 	);
-	assert.equal(commandExport.includedCount, 2);
+	assert.equal(commandExport.includedCount, 3);
 	assert.equal(commandExport.excludedCount, 2);
 	assert.deepEqual(commandExport.excludedReasons, [
 		{ reason: "needs_placeholder", count: 1 },
@@ -1219,7 +1236,7 @@ test("action bundle preview summarizes command eligibility and evidence refs", (
 	assert.equal(routePreview.commandExportEligible, true);
 	assert.equal(routePreview.commandSafety, "read_only");
 	assert.equal(routePreview.commandReadiness.state, "runnable_now");
-	assert.equal(routePreview.evidenceRefCount, 1);
+	assert.equal(routePreview.evidenceRefCount, 2);
 	assert.deepEqual(routePreview.evidenceSources, ["evals"]);
 	assert.match(routePreview.boundary, /Read-only inspection/);
 	assert.equal(refreshPreview.commandExportEligible, false);
