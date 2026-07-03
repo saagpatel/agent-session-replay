@@ -209,6 +209,8 @@ export interface ControlDecisionNoteExport {
 		excludedEvidenceRefCount: number;
 		evidenceSources: string[];
 		privacyTierCounts: Record<string, number>;
+		hiddenFindingCount: number;
+		hiddenActionCount: number;
 	};
 }
 
