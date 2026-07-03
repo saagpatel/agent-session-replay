@@ -68,6 +68,8 @@ new source-specific contracts have to document their expected decision shape.
 Source contracts also carry decision wording for bridge handoffs,
 notification routing, hook boundaries, and MCP boundary evidence, keeping those
 action labels declarative instead of embedded in the control engine.
+Boundary/control findings are split per source, so mixed hook, MCP, and
+notification evidence routes into separate source-filtered action rows.
 
 ## Develop
 

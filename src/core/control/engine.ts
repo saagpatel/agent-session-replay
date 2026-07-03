@@ -691,21 +691,24 @@ export function analyzeControlBundle(
 			marker.includes("mcp")
 		);
 	});
-	if (boundaryRecords.length > 0) {
+	for (const source of sourceSystems(boundaryRecords)) {
+		const sourceBoundaryRecords = boundaryRecords.filter(
+			(record) => record.source_system === source,
+		);
 		add(findings, {
-			id: "boundary_event",
+			id: `boundary_event:${source}`,
 			kind: "boundary_event",
 			severity: "info",
-			title: `${boundaryRecords.length} boundary/control event${boundaryRecords.length === 1 ? "" : "s"}`,
+			title: `${sourceBoundaryRecords.length} boundary/control event${sourceBoundaryRecords.length === 1 ? "" : "s"}: ${source}`,
 			detail:
 				"The archive includes governance-shaped events such as hooks, permissions, MCP, guardrails, or handoffs.",
-			sourceSystems: sourceSystems(boundaryRecords),
-			privacyTier: strongestPrivacyTier(boundaryRecords),
+			sourceSystems: [source],
+			privacyTier: strongestPrivacyTier(sourceBoundaryRecords),
 			freshness,
 			boundaryEvent: "hook/permission/MCP/handoff signal",
-			evidenceRefs: boundaryRecords.slice(0, 5).map(evidence),
-			nextCommand: "uv run afr-local latest timeline --limit 20",
-			score: 40 + boundaryRecords.length,
+			evidenceRefs: sourceBoundaryRecords.slice(0, 5).map(evidence),
+			nextCommand: `uv run afr-local latest timeline --source ${source} --limit 20`,
+			score: 40 + sourceBoundaryRecords.length,
 		});
 	}
 
