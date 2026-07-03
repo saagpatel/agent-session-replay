@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { AfrBundle } from "../afr/types.ts";
-import { analyzeControlBundle } from "./engine.ts";
+import {
+	analyzeControlBundle,
+	exportRunnableReadOnlyCommands,
+} from "./engine.ts";
 
 function bundle(overrides: Partial<AfrBundle> = {}): AfrBundle {
 	return {
@@ -992,6 +995,53 @@ test("validation actions are classified as read-only commands", () => {
 	assert.equal(action?.commandReadiness.state, "needs_placeholder");
 	assert.match(action?.commandReadiness.reason ?? "", /placeholder/);
 	assert.match(action?.safetyNote ?? "", /without uploading archive contents/);
+});
+
+test("command export includes only runnable read-only actions", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+			validationReport: { ok: false, errors: [{ code: "schema" }] },
+			records: [
+				{
+					record_id: "cost-1",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					privacy_tier: "P2",
+					status: "ok",
+					timestamp: "2026-06-20T12:01:00Z",
+					amount_usd: 1.5,
+					cost_quality: "authoritative",
+				},
+				{
+					record_id: "eval-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					privacy_tier: "P2",
+					status: "failed",
+					timestamp: "2026-06-20T12:02:00Z",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+
+	const commandExport = exportRunnableReadOnlyCommands(report.actions);
+
+	assert.deepEqual(commandExport.commands, [
+		"uv run afr-local latest timeline --source evals --limit 20",
+		"uv run afr-local latest costs --limit 5",
+	]);
+	assert.match(
+		commandExport.text,
+		/^# Decision Flight Deck runnable read-only commands\n/,
+	);
+	assert.equal(commandExport.includedCount, 2);
+	assert.equal(commandExport.excludedCount, 2);
+	assert.doesNotMatch(commandExport.text, /<archive>/);
+	assert.doesNotMatch(commandExport.text, /collect all/);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

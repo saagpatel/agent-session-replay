@@ -83,6 +83,13 @@ export interface ControlAction {
 	preview: ControlActionPreview;
 }
 
+export interface ControlCommandExport {
+	commands: string[];
+	text: string;
+	includedCount: number;
+	excludedCount: number;
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

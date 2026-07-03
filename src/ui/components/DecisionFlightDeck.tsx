@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from "react";
 
 import type { AfrBundle } from "../../core/afr/types.ts";
+import { exportRunnableReadOnlyCommands } from "../../core/control/engine.ts";
 import type {
 	ControlAction,
 	ControlFinding,
@@ -172,11 +173,45 @@ function ActionRow({ action }: { action: ControlAction }) {
 function ActionRail({ actions }: { actions: ControlAction[] }) {
 	const primaryActions = actions.slice(0, 3);
 	const secondaryActions = actions.slice(3);
+	const commandExport = exportRunnableReadOnlyCommands(actions);
+	const [exportStatus, setExportStatus] = useState<
+		"idle" | "copied" | "failed" | "empty"
+	>("idle");
+	const copyRunnableCommands = async () => {
+		if (commandExport.commands.length === 0) {
+			setExportStatus("empty");
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(commandExport.text);
+			setExportStatus("copied");
+		} catch {
+			setExportStatus("failed");
+		}
+	};
 	return (
 		<div className="control-actions">
 			<div className="findings__head">
 				<span className="label">Next Safe Commands</span>
-				<span className="chip">{actions.length} action(s)</span>
+				<div className="control-actions__export">
+					<span className="chip">{actions.length} action(s)</span>
+					<button
+						type="button"
+						onClick={copyRunnableCommands}
+						disabled={commandExport.commands.length === 0}
+					>
+						Copy runnable block
+					</button>
+					<span aria-live="polite">
+						{exportStatus === "copied"
+							? `Copied ${commandExport.includedCount}`
+							: exportStatus === "failed"
+								? "Copy failed"
+								: exportStatus === "empty"
+									? "Nothing runnable"
+									: `${commandExport.includedCount} runnable`}
+					</span>
+				</div>
 			</div>
 			<div className="control-actions__list">
 				{primaryActions.map((action) => (

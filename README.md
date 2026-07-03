@@ -83,7 +83,10 @@ during passive viewing. Actions also show readiness: runnable now, needs a
 placeholder value, or needs explicit approval because it creates local artifacts
 or crosses an unknown/write boundary. Each action can expand into a compact
 preview explaining why the command was suggested, what boundary it crosses, and
-which metadata-only evidence refs triggered it.
+which metadata-only evidence refs triggered it. The rail can also export one
+grouped command block by explicit click, limited to commands that are both
+read-only and runnable now; placeholder and approval-required commands stay out
+of the exported block by default.
 
 ## Develop
 
