@@ -36,8 +36,9 @@
   rail from ranked findings, grouping safe next commands by
   route/inspect/refresh/repair. Source-specific stale findings in a fresh archive
   route to source-filtered inspection commands instead of repeating the all-source
-  collection command.
-- **Quality** — 85 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  collection command. Cost-tracker freshness respects healthy live ccusage
+  reconciliation so billing-period timestamps do not create stale source noise.
+- **Quality** — 87 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -71,5 +72,5 @@
 
 ## Verify / Run
 
-`pnpm test` (85) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (87) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

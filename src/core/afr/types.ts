@@ -44,6 +44,7 @@ export interface AfrReconciliationSource {
 	action?: string;
 	next_command?: string;
 	warnings?: unknown[];
+	source_counts?: Record<string, unknown>;
 	detected_records?: number | null;
 	sampled_records?: number | null;
 	emitted_records?: number | null;

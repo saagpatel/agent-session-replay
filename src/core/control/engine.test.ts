@@ -336,6 +336,84 @@ test("summary includes per-source freshness", () => {
 	);
 });
 
+test("healthy live cost feeds are fresh despite period-boundary timestamps", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:00:00Z",
+			records: [
+				{
+					record_id: "cost-day",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-07-02T00:00:00Z",
+					amount_usd: 12,
+					cost_quality: "authoritative",
+				},
+			],
+			reconciliationReport: {
+				ok: true,
+				sources: [
+					{
+						source: "cost-tracker",
+						status: "ok",
+						warnings: [],
+						source_counts: { ccusage_live_used: true },
+					},
+				],
+			},
+		}),
+		Date.parse("2026-07-03T02:30:00Z"),
+	);
+
+	assert.equal(
+		report.summary.sourceFreshness["cost-tracker"]?.freshness,
+		"fresh",
+	);
+	assert.equal(
+		report.findings.some((finding) => finding.id === "stale_source:cost-tracker"),
+		false,
+	);
+	assert.ok(report.findings.some((finding) => finding.id === "cost_attention"));
+});
+
+test("cost feeds with reconciliation warnings still surface stale source findings", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:00:00Z",
+			records: [
+				{
+					record_id: "cost-day",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-07-02T00:00:00Z",
+					amount_usd: 12,
+					cost_quality: "authoritative",
+				},
+			],
+			reconciliationReport: {
+				ok: false,
+				sources: [
+					{
+						source: "cost-tracker",
+						status: "warning",
+						warnings: ["source_reported_errors"],
+						source_counts: { ccusage_live_used: true },
+					},
+				],
+			},
+		}),
+		Date.parse("2026-07-03T02:30:00Z"),
+	);
+
+	assert.equal(
+		report.summary.sourceFreshness["cost-tracker"]?.freshness,
+		"stale",
+	);
+	assert.ok(
+		report.findings.some((finding) => finding.id === "stale_source:cost-tracker"),
+	);
+});
+
 test("stale archives do not fan out per-source stale findings", () => {
 	const report = analyzeControlBundle(
 		bundle({

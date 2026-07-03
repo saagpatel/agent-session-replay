@@ -92,19 +92,24 @@ function add(
 }
 
 function sourceFreshness(
-	records: AfrRecord[],
+	bundle: AfrBundle,
 	nowMs: number,
 ): ControlSummary["sourceFreshness"] {
 	const out: ControlSummary["sourceFreshness"] = {};
-	for (const source of sourceSystems(records)) {
-		const sourceRecords = records.filter((record) => record.source_system === source);
+	for (const source of sourceSystems(bundle.records)) {
+		const sourceRecords = bundle.records.filter(
+			(record) => record.source_system === source,
+		);
 		const newestMs = newestTimestamp(sourceRecords);
+		const freshness = sourceHasHealthyLiveCostFeed(bundle, source)
+			? "fresh"
+			: freshnessForTimestamp(newestMs, nowMs);
 		out[source] = {
 			newestTimestamp:
 				newestMs === null || !Number.isFinite(newestMs)
 					? null
 					: new Date(newestMs).toISOString(),
-			freshness: freshnessForTimestamp(newestMs, nowMs),
+			freshness,
 		};
 	}
 	return out;
@@ -145,6 +150,28 @@ function reconciliationRows(
 	return Object.entries(sources);
 }
 
+function reconciliationRowForSource(
+	bundle: AfrBundle,
+	source: string,
+): AfrReconciliationSource | null {
+	return (
+		reconciliationRows(bundle.reconciliationReport?.sources).find(
+			([rowSource]) => rowSource === source,
+		)?.[1] ?? null
+	);
+}
+
+function sourceHasHealthyLiveCostFeed(
+	bundle: AfrBundle,
+	source: string,
+): boolean {
+	if (source !== "cost-tracker") return false;
+	const row = reconciliationRowForSource(bundle, source);
+	if (!row || row.status !== "ok" || row.severity === "error") return false;
+	if ((row.warnings?.length ?? 0) > 0) return false;
+	return row.source_counts?.ccusage_live_used === true;
+}
+
 function summary(bundle: AfrBundle, nowMs: number): ControlSummary {
 	const recordTypes = bundle.records.map((record) => record.record_type ?? "unknown");
 	const privacyTiers = bundle.records.map(
@@ -171,7 +198,7 @@ function summary(bundle: AfrBundle, nowMs: number): ControlSummary {
 		reconciliationOk: bundle.reconciliationReport?.ok ?? null,
 		archiveCreatedAt: bundle.createdAt,
 		archiveSuffix: bundle.archiveSuffix,
-		sourceFreshness: sourceFreshness(bundle.records, nowMs),
+		sourceFreshness: sourceFreshness(bundle, nowMs),
 	};
 }
 

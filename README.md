@@ -46,7 +46,8 @@ single refresh decision while preserving source freshness in the summary. Ranked
 findings also feed a compact action rail that groups safe next commands into
 route, inspect, refresh, and repair moves. Source-specific stale findings in a
 fresh archive use inspect commands instead of looping back into another all-source
-collection.
+collection. Cost-tracker freshness respects healthy live ccusage reconciliation
+so billing-period timestamps do not masquerade as stale source evidence.
 
 ## Develop
 
