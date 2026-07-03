@@ -280,6 +280,70 @@ test("validation warnings are surfaced even when validation ok is true", () => {
 	assert.match(finding?.title ?? "", /1 validation warning/);
 });
 
+test("validation warnings are attributed to dominant cost-quality buckets", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "cost-row",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-06-28T12:00:00Z",
+				},
+			],
+			validationReport: {
+				ok: true,
+				warnings: [
+					"line 124: cost-tracker-snapshot-20260702T000000Z-session-0016: cost quality is estimated",
+					"line 124: cost-tracker-snapshot-20260702T000000Z-session-0016: correlation confidence is heuristic",
+					"bundle contains multiple trace_id values: cost-tracker-snapshot-20260702T000000Z",
+				],
+			},
+		}),
+	);
+
+	const finding = report.findings.find((item) => item.id === "validation_warning");
+	assert.deepEqual(finding?.sourceSystems, ["cost-tracker"]);
+	assert.match(finding?.detail ?? "", /cost_quality_estimated 1/);
+	assert.match(finding?.detail ?? "", /correlation_confidence_heuristic 1/);
+	assert.match(finding?.validationSignal ?? "", /likely source cost-tracker 2/);
+	assert.equal(finding?.freshness, "stale");
+	assert.equal(finding?.nextCommand, "uv run afr-local latest costs --limit 5");
+	const action = report.actions.find((item) =>
+		item.findingIds.includes("validation_warning"),
+	);
+	assert.equal(action?.command, "uv run afr-local latest costs --limit 5");
+	assert.equal(action?.trace[0]?.validationSignal, finding?.validationSignal);
+	assert.match(
+		exportActionBundle(action!).text,
+		/validation=correlation_confidence_heuristic 1 \/ cost_quality_estimated 1/,
+	);
+});
+
+test("non-cost validation warnings keep validate command and archive source scope", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "codex-row",
+					record_type: "event",
+					source_system: "codex",
+					timestamp: "2026-06-28T12:00:00Z",
+				},
+			],
+			validationReport: {
+				ok: true,
+				warnings: ["line 2: codex-record missing required field"],
+			},
+		}),
+	);
+
+	const finding = report.findings.find((item) => item.id === "validation_warning");
+	assert.deepEqual(finding?.sourceSystems, ["codex"]);
+	assert.match(finding?.validationSignal ?? "", /schema_field 1/);
+	assert.equal(finding?.nextCommand, "uv run afr validate <archive>");
+});
+
 test("failed eval observations become outcome findings", () => {
 	const report = analyzeControlBundle(
 		bundle({

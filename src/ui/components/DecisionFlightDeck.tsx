@@ -120,6 +120,7 @@ function actionTraceSignal(trace: ControlAction["trace"][number]): string {
 	return (
 		trace.boundaryEvent ??
 		trace.costSignal ??
+		trace.validationSignal ??
 		trace.outcomeSignal ??
 		"no extra signal"
 	);
@@ -720,6 +721,12 @@ function FindingCard({ finding }: { finding: ControlFinding }) {
 					<>
 						<span>cost</span>
 						<b>{finding.costSignal}</b>
+					</>
+				) : null}
+				{finding.validationSignal ? (
+					<>
+						<span>validation</span>
+						<b>{finding.validationSignal}</b>
 					</>
 				) : null}
 				{finding.outcomeSignal ? (
