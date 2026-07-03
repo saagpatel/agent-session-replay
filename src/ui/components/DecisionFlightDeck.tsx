@@ -31,13 +31,10 @@ function sourceCounts(counts: Record<string, number>): string {
 		.join(" / ");
 }
 
-function sourceFreshness(
+function sourceFreshnessRows(
 	freshness: ControlReport["summary"]["sourceFreshness"],
-): string {
-	const rows = Object.entries(freshness)
-		.sort((a, b) => a[0].localeCompare(b[0]))
-		.map(([source, row]) => `${source} ${row.freshness}`);
-	return rows.length > 0 ? rows.join(" / ") : "unknown";
+) {
+	return Object.entries(freshness).sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 function actionCategories(action: ControlAction): string {
@@ -136,6 +133,7 @@ export function DecisionFlightDeck({
 	report: ControlReport;
 }) {
 	const { summary } = report;
+	const freshnessRows = sourceFreshnessRows(summary.sourceFreshness);
 	return (
 		<main className="control-deck">
 			<section className="stats">
@@ -175,7 +173,30 @@ export function DecisionFlightDeck({
 					</div>
 					<div>
 						<span className="label">Source freshness</span>
-						<p>{sourceFreshness(summary.sourceFreshness)}</p>
+						<div className="source-freshness">
+							{freshnessRows.length > 0 ? (
+								freshnessRows.map(([source, row]) => (
+									<div className="source-freshness__row" key={source}>
+										<div className="source-freshness__top">
+											<strong>{source}</strong>
+											<span
+												className={`source-freshness__state source-freshness__state--${row.freshness}`}
+											>
+												{row.freshness}
+											</span>
+										</div>
+										<span className="source-freshness__reason">
+											{row.reason}
+										</span>
+										<span className="source-freshness__time">
+											{row.newestTimestamp ?? "no timestamp"}
+										</span>
+									</div>
+								))
+							) : (
+								<p>unknown</p>
+							)}
+						</div>
 					</div>
 					<div>
 						<span className="label">Record types</span>

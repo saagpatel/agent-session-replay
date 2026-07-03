@@ -5,6 +5,7 @@ export interface SourceContract {
 	source: string;
 	routeTitle?: string;
 	staleDecisionReason?: string;
+	freshnessReason?: string;
 	freshnessOverride?: (
 		row: AfrReconciliationSource | null,
 	) => SourceFreshnessState | null;
@@ -18,6 +19,8 @@ function healthyReconciliation(row: AfrReconciliationSource | null): boolean {
 export const SOURCE_CONTRACTS: SourceContract[] = [
 	{
 		source: "artifact-store",
+		freshnessReason:
+			"healthy reconciliation marks sampled artifact history as historical, not stale",
 		freshnessOverride: (row) =>
 			healthyReconciliation(row) &&
 			row?.source_counts?.artifact_records_sampled !== undefined
@@ -27,6 +30,8 @@ export const SOURCE_CONTRACTS: SourceContract[] = [
 	{
 		source: "cost-tracker",
 		routeTitle: "Review cost routing",
+		freshnessReason:
+			"healthy reconciliation confirms live ccusage billing-period evidence",
 		freshnessOverride: (row) =>
 			healthyReconciliation(row) && row?.source_counts?.ccusage_live_used === true
 				? "fresh"
@@ -48,6 +53,15 @@ export function sourceFreshnessOverride(
 	row: AfrReconciliationSource | null,
 ): SourceFreshnessState | null {
 	return contractForSource(source)?.freshnessOverride?.(row) ?? null;
+}
+
+export function sourceFreshnessReason(
+	source: string,
+	row: AfrReconciliationSource | null,
+): string | null {
+	const contract = contractForSource(source);
+	if (!contract?.freshnessReason) return null;
+	return contract.freshnessOverride?.(row) ? contract.freshnessReason : null;
 }
 
 export function routeTitleForSource(source: string): string | null {
