@@ -57,6 +57,8 @@ The action rail deduplicates repeated evidence refs and uses source-specific rou
 titles so eval and cost follow-up are decision commands rather than generic alerts.
 Each action includes a compact decision reason, such as critical eval failures,
 estimated cost signal, or stale source evidence.
+When multiple findings share one safe command, the rail keeps a single row while
+showing every contributing action category and reason.
 
 ## Develop
 

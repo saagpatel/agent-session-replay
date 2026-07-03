@@ -40,15 +40,27 @@ function sourceFreshness(
 	return rows.length > 0 ? rows.join(" / ") : "unknown";
 }
 
+function actionCategories(action: ControlAction): string {
+	return action.categories.length > 0
+		? action.categories.join(" + ")
+		: action.category;
+}
+
+function actionReasons(action: ControlAction): string {
+	return action.decisionReasons.length > 0
+		? action.decisionReasons.join(" / ")
+		: action.decisionReason;
+}
+
 function ActionRow({ action }: { action: ControlAction }) {
 	return (
 		<div className="control-action">
 			<div className="control-action__meta">
 				<span className={`action-kind action-kind--${action.category}`}>
-					{action.category}
+					{actionCategories(action)}
 				</span>
 				<span>{action.severity}</span>
-				<span>{action.decisionReason}</span>
+				<span>{actionReasons(action)}</span>
 				<span>{list(action.sourceSystems)}</span>
 				<span>
 					{action.findingIds.length} finding

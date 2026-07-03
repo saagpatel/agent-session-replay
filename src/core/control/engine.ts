@@ -324,7 +324,8 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 	for (const finding of findings) {
 		if (!finding.nextCommand) continue;
 		const category = actionCategory(finding);
-		const key = `${category}:${finding.nextCommand}`;
+		const key = finding.nextCommand;
+		const reason = actionReason(finding);
 		const existing = actions.get(key);
 		if (existing) {
 			const replaceReason =
@@ -341,13 +342,26 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 				{ privacy_tier: finding.privacyTier },
 			]);
 			existing.priority = Math.max(existing.priority, finding.score);
-			existing.title = actionTitle(category, existing.sourceSystems);
-			if (replaceReason) existing.decisionReason = actionReason(finding);
+			existing.categories = uniq([
+				...existing.categories,
+				category,
+			]) as ControlActionCategory[];
+			existing.decisionReasons = uniqInOrder([
+				...existing.decisionReasons,
+				reason,
+			]);
+			if (replaceReason) {
+				existing.category = category;
+				existing.rationale = finding.title;
+				existing.decisionReason = reason;
+			}
+			existing.title = actionTitle(existing.category, existing.sourceSystems);
 			continue;
 		}
 		actions.set(key, {
 			id: key,
 			category,
+			categories: [category],
 			priority: finding.score,
 			title: actionTitle(category, finding.sourceSystems),
 			command: finding.nextCommand,
@@ -356,7 +370,8 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 			severity: finding.severity,
 			privacyTier: finding.privacyTier,
 			rationale: finding.title,
-			decisionReason: actionReason(finding),
+			decisionReason: reason,
+			decisionReasons: [reason],
 		});
 	}
 	return [...actions.values()].sort(
