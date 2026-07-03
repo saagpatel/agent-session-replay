@@ -38,6 +38,10 @@ export type ControlActionSafety =
 	| "local_write"
 	| "external_write"
 	| "unknown";
+export type ControlActionReadinessState =
+	| "runnable_now"
+	| "needs_placeholder"
+	| "needs_approval";
 
 export interface ControlActionSourceExplanation {
 	source: string;
@@ -51,6 +55,11 @@ export interface ControlActionPreview {
 	evidenceRefs: string[];
 }
 
+export interface ControlActionReadiness {
+	state: ControlActionReadinessState;
+	reason: string;
+}
+
 export interface ControlAction {
 	id: string;
 	category: ControlActionCategory;
@@ -59,6 +68,7 @@ export interface ControlAction {
 	title: string;
 	command: string;
 	commandSafety: ControlActionSafety;
+	commandReadiness: ControlActionReadiness;
 	sourceSystems: string[];
 	findingIds: string[];
 	evidenceRefs: string[];

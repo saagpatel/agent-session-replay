@@ -79,9 +79,11 @@ rail keeps the top three commands visible and folds lower-priority actions behin
 a source-labeled expander so dense all-source archives stay scannable. Commands
 carry a compact read-only/local-write/external-write/unknown safety chip and can
 be copied from the action row by explicit user click; no clipboard write happens
-during passive viewing. Each action can expand into a compact preview explaining
-why the command was suggested, what boundary it crosses, and which metadata-only
-evidence refs triggered it.
+during passive viewing. Actions also show readiness: runnable now, needs a
+placeholder value, or needs explicit approval because it creates local artifacts
+or crosses an unknown/write boundary. Each action can expand into a compact
+preview explaining why the command was suggested, what boundary it crosses, and
+which metadata-only evidence refs triggered it.
 
 ## Develop
 

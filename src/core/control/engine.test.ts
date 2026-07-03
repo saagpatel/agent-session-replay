@@ -928,6 +928,11 @@ test("actions merge route and inspect pressure for the same command", () => {
 	]);
 	assert.match(actions[0]?.safetyNote ?? "", /latest local AFR metadata archive/);
 	assert.equal(actions[0]?.commandSafety, "read_only");
+	assert.equal(actions[0]?.commandReadiness.state, "runnable_now");
+	assert.match(
+		actions[0]?.commandReadiness.reason ?? "",
+		/read-only local inspection/,
+	);
 	assert.match(actions[0]?.preview.boundary ?? "", /Read-only inspection/);
 	assert.deepEqual(actions[0]?.preview.why, [
 		"critical eval failures",
@@ -963,6 +968,8 @@ test("refresh actions explain local collection side effects", () => {
 	);
 	assert.match(action?.safetyNote ?? "", /Creates a fresh local AFR metadata archive/);
 	assert.equal(action?.commandSafety, "local_write");
+	assert.equal(action?.commandReadiness.state, "needs_approval");
+	assert.match(action?.commandReadiness.reason ?? "", /Creates local artifacts/);
 	assert.match(action?.preview.boundary ?? "", /Local write/);
 	assert.deepEqual(action?.preview.evidenceRefs, [
 		"20260620T120000Z-latest",
@@ -982,6 +989,8 @@ test("validation actions are classified as read-only commands", () => {
 		(item) => item.command === "uv run afr validate <archive>",
 	);
 	assert.equal(action?.commandSafety, "read_only");
+	assert.equal(action?.commandReadiness.state, "needs_placeholder");
+	assert.match(action?.commandReadiness.reason ?? "", /placeholder/);
 	assert.match(action?.safetyNote ?? "", /without uploading archive contents/);
 });
 

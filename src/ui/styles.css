@@ -820,6 +820,26 @@ body {
 	border-color: color-mix(in srgb, var(--sev-critical) 45%, var(--line));
 	color: var(--sev-critical);
 }
+.control-action__readiness {
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	color: var(--faint);
+	font-size: 10px;
+	line-height: 1;
+	padding: 4px 6px;
+}
+.control-action__readiness--runnable_now {
+	border-color: color-mix(in srgb, var(--kind-tool) 35%, var(--line));
+	color: var(--kind-tool);
+}
+.control-action__readiness--needs_placeholder {
+	border-color: color-mix(in srgb, var(--sev-warning) 42%, var(--line));
+	color: var(--sev-warning);
+}
+.control-action__readiness--needs_approval {
+	border-color: color-mix(in srgb, var(--sev-critical) 42%, var(--line));
+	color: var(--sev-critical);
+}
 .control-action__copy button {
 	border: 1px solid color-mix(in srgb, var(--kind-tool) 40%, var(--line));
 	border-radius: 3px;
