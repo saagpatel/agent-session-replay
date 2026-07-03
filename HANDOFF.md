@@ -86,9 +86,10 @@
   evidence sources, and privacy tier counts before the note is copied.
   Source presets filter the decision context to all, bridge-db, evals, cost, or
   hooks/MCP so findings, actions, replay preview, and decision note scope can
-  narrow without changing the loaded AFR archive. Empty presets show why the
-  context is empty plus a read-only latest-timeline command for inspection, never
-  a collection command. The action rail now includes a command safety ledger that
+  narrow without changing the loaded AFR archive. Empty presets distinguish
+  absent metadata from quiet metadata with no active findings, then show a
+  read-only latest-timeline command for inspection, never a collection command.
+  The action rail now includes a command safety ledger that
   groups every surfaced command by read-only, local-write, external-write, or
   unknown safety while keeping grouped export limited to runnable read-only
   commands. Preset switches also show a command delta preview, making hidden,
