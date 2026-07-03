@@ -876,13 +876,22 @@ export function analyzeControlBundle(
 export function exportRunnableReadOnlyCommands(
 	actions: ControlAction[],
 ): ControlCommandExport {
-	const commands = actions
-		.filter(
-			(action) =>
-				action.commandSafety === "read_only" &&
-				action.commandReadiness.state === "runnable_now",
-		)
-		.map((action) => action.command);
+	const commands: string[] = [];
+	const excludedCounts = new Map<string, number>();
+	for (const action of actions) {
+		if (
+			action.commandSafety === "read_only" &&
+			action.commandReadiness.state === "runnable_now"
+		) {
+			commands.push(action.command);
+			continue;
+		}
+		const reason =
+			action.commandReadiness.state !== "runnable_now"
+				? action.commandReadiness.state
+				: action.commandSafety;
+		excludedCounts.set(reason, (excludedCounts.get(reason) ?? 0) + 1);
+	}
 	const text =
 		commands.length > 0
 			? [
@@ -895,5 +904,9 @@ export function exportRunnableReadOnlyCommands(
 		text,
 		includedCount: commands.length,
 		excludedCount: actions.length - commands.length,
+		excludedReasons: [...excludedCounts.entries()].map(([reason, count]) => ({
+			reason: reason as ControlCommandExport["excludedReasons"][number]["reason"],
+			count,
+		})),
 	};
 }

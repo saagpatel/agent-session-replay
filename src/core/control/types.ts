@@ -88,6 +88,10 @@ export interface ControlCommandExport {
 	text: string;
 	includedCount: number;
 	excludedCount: number;
+	excludedReasons: Array<{
+		reason: ControlActionReadinessState | ControlActionSafety;
+		count: number;
+	}>;
 }
 
 export interface ControlSummary {
