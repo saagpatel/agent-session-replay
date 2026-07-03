@@ -313,7 +313,12 @@ test("validation warnings are attributed to dominant cost-quality buckets", () =
 		item.findingIds.includes("validation_warning"),
 	);
 	assert.equal(action?.command, "uv run afr-local latest costs --limit 5");
+	assert.equal(action?.title, "Review estimated cost signals");
 	assert.equal(action?.trace[0]?.validationSignal, finding?.validationSignal);
+	assert.match(
+		exportActionBundle(action!).text,
+		/Decision Flight Deck action bundle: Review estimated cost signals/,
+	);
 	assert.match(
 		exportActionBundle(action!).text,
 		/validation=correlation_confidence_heuristic 1 \/ cost_quality_estimated 1/,
