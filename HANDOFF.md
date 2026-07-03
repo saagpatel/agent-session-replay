@@ -43,8 +43,11 @@
   AFR redaction while surfacing aggregate assertion counts, command-result counts,
   and failed observation windows for safer routing decisions. The action rail now
   deduplicates repeated evidence refs, uses source-specific route titles, and
-  adds compact decision reasons. Shared commands stay in one row while preserving
-  every contributing category and reason. Source-specific freshness/routing quirks
+  adds compact decision reasons. The repo also includes a read-only archive
+  candidate helper (`pnpm afr:archives`) that ranks existing local AFR run folders
+  and prints the best folder path to drop into the deck without collecting or
+  modifying archives. Shared commands stay in one row while preserving every
+  contributing category and reason. Source-specific freshness/routing quirks
   are centralized in a small source contract layer and the summary shows why each
   freshness state was chosen. Freshness override contracts now include
   representative reconciliation-row fixtures that lock the expected decision
@@ -110,7 +113,7 @@
   trace is visible inside each action's "Why this command" preview before copying
   anything, sorted by impact with lower-signal rows tucked behind a small
   disclosure when needed.
-- **Quality** — 125 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+- **Quality** — 129 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -144,5 +147,6 @@
 
 ## Verify / Run
 
-`pnpm test` (125) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
-· `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).
+`pnpm test` (129) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+· `pnpm afr:archives` (read-only AFR picker helper) · `pnpm dev` (web) ·
+`pnpm tauri dev` / `pnpm tauri build` (desktop).
