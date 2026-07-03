@@ -26,6 +26,7 @@ export interface ControlFinding {
 	freshness: SourceFreshnessState;
 	boundaryEvent?: string;
 	costSignal?: string;
+	validationSignal?: string;
 	outcomeSignal?: string;
 	evidenceRefs: string[];
 	nextCommand?: string;
@@ -62,6 +63,7 @@ export interface ControlActionTrace {
 	sourceSystems: string[];
 	boundaryEvent?: string;
 	costSignal?: string;
+	validationSignal?: string;
 	outcomeSignal?: string;
 	evidenceRefCount: number;
 }
