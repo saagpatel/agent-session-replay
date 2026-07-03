@@ -63,6 +63,8 @@ Source-specific freshness and routing quirks live in a small source contract
 layer, rather than being scattered through the control engine. The source
 freshness summary shows the contract or timestamp reason behind each state, so
 `historical` and live-billing freshness are legible without opening raw AFR rows.
+Freshness override contracts carry representative reconciliation-row fixtures, so
+new source-specific contracts have to document their expected decision shape.
 
 ## Develop
 

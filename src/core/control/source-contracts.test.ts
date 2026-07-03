@@ -3,10 +3,36 @@ import { test } from "node:test";
 
 import {
 	routeTitleForSource,
+	SOURCE_CONTRACT_FIXTURES,
+	SOURCE_CONTRACTS,
 	sourceFreshnessOverride,
 	sourceFreshnessReason,
 	staleSourceDecisionReason,
 } from "./source-contracts.ts";
+
+test("every freshness override contract has a registry fixture", () => {
+	const sourcesWithOverrides = SOURCE_CONTRACTS.filter(
+		(contract) => contract.freshnessOverride,
+	).map((contract) => contract.source);
+	const fixtureSources = SOURCE_CONTRACT_FIXTURES.map((fixture) => fixture.source);
+
+	assert.deepEqual(fixtureSources.sort(), sourcesWithOverrides.sort());
+});
+
+test("registry fixtures document expected source freshness decisions", () => {
+	for (const fixture of SOURCE_CONTRACT_FIXTURES) {
+		assert.equal(
+			sourceFreshnessOverride(fixture.source, fixture.reconciliationRow),
+			fixture.expectedFreshness,
+			fixture.source,
+		);
+		assert.equal(
+			sourceFreshnessReason(fixture.source, fixture.reconciliationRow),
+			fixture.expectedReason,
+			fixture.source,
+		);
+	}
+});
 
 test("artifact-store contract marks healthy sampled archives as historical", () => {
 	assert.equal(
