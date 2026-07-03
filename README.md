@@ -120,9 +120,12 @@ drift from older bundles. Copied decision notes include that replay scope and
 drift, so handoffs preserve why a pasted command is runnable, hidden, stale, or
 gone. Action bundles and decision notes also include a compact finding-to-command
 trace with finding kind, severity, source, signal, and metadata-ref count, so the
-handoff explains why each command exists. The same trace is visible inside each
-action's "Why this command" preview before copying anything, sorted by impact
-with lower-signal rows tucked behind a small disclosure when needed.
+handoff explains why each command exists. Decision note evidence keeps explicit
+source prefixes such as `evals:` even when a note is scoped to another preset,
+while generic report/timestamp refs stay in a metadata bucket. The same trace is
+visible inside each action's "Why this command" preview before copying anything,
+sorted by impact with lower-signal rows tucked behind a small disclosure when
+needed.
 
 ## Develop
 

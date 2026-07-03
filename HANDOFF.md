@@ -101,9 +101,12 @@
   handoffs preserve why a pasted command is runnable, hidden, stale, or gone.
   Action bundles and decision notes also include a compact finding-to-command
   trace with finding kind, severity, source, signal, and metadata-ref count, so
-  the handoff explains why each command exists. The same trace is visible inside
-  each action's "Why this command" preview before copying anything, sorted by
-  impact with lower-signal rows tucked behind a small disclosure when needed.
+  the handoff explains why each command exists. Decision note evidence keeps
+  explicit source prefixes such as `evals:` even when a note is scoped to another
+  preset, while generic report/timestamp refs stay in a metadata bucket. The same
+  trace is visible inside each action's "Why this command" preview before copying
+  anything, sorted by impact with lower-signal rows tucked behind a small
+  disclosure when needed.
 - **Quality** — 125 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
