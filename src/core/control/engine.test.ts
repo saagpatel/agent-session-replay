@@ -620,6 +620,48 @@ test("summary includes per-source freshness", () => {
 	);
 });
 
+test("source-bound findings use source freshness rather than archive freshness", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:26:52Z",
+			records: [
+				{
+					record_id: "fresh-bridge",
+					record_type: "event",
+					source_system: "bridge-db",
+					timestamp: "2026-07-03T02:26:02Z",
+				},
+				{
+					record_id: "old-eval",
+					record_type: "eval_observation",
+					source_system: "evals",
+					validation_status: "failed",
+					status: "failed",
+					privacy_tier: "P0",
+					timestamp: "2026-04-12T21:46:19Z",
+					evidence_ref: "evals:root-1#file-1",
+					attributes: { tests_failed_count: 1 },
+				},
+			],
+		}),
+		Date.parse("2026-07-03T06:10:00Z"),
+	);
+
+	assert.equal(report.summary.sourceFreshness["bridge-db"]?.freshness, "fresh");
+	assert.equal(report.summary.sourceFreshness.evals?.freshness, "stale");
+	assert.equal(
+		report.findings.find((finding) => finding.id === "eval_failure")
+			?.freshness,
+		"stale",
+	);
+	assert.equal(
+		report.actions
+			.find((action) => action.findingIds.includes("eval_failure"))
+			?.sourceExplanations.find((row) => row.source === "evals")?.freshness,
+		"stale",
+	);
+});
+
 test("healthy live cost feeds are fresh despite period-boundary timestamps", () => {
 	const report = analyzeControlBundle(
 		bundle({

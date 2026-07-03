@@ -433,6 +433,21 @@ function sourceExplanations(
 	return sources.map((source) => sourceExplanation(source, sourceFreshness));
 }
 
+function findingFreshnessForSources(
+	sources: string[],
+	sourceFreshness: ControlSummary["sourceFreshness"],
+	fallback: SourceFreshnessState,
+): SourceFreshnessState {
+	const sourceStates = sources.map(
+		(source) => sourceFreshness[source]?.freshness ?? "unknown",
+	);
+	if (sourceStates.length === 0) return fallback;
+	if (sourceStates.includes("stale")) return "stale";
+	if (sourceStates.includes("unknown")) return "unknown";
+	if (sourceStates.every((state) => state === "historical")) return "historical";
+	return "fresh";
+}
+
 function actionTrace(finding: ControlFinding): ControlActionTrace {
 	return {
 		findingId: finding.id,
@@ -708,7 +723,11 @@ export function analyzeControlBundle(
 			}.`,
 			sourceSystems: [source],
 			privacyTier: strongestPrivacyTier(bundle.records),
-			freshness,
+			freshness: findingFreshnessForSources(
+				[source],
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			evidenceRefs: ["reconciliation-report.afr.json"],
 			nextCommand:
 				row.next_command ?? `uv run afr-local latest reconciliation --source ${source}`,
@@ -729,7 +748,11 @@ export function analyzeControlBundle(
 				"AFR recorded explicit failure markers. Review these before trusting the run as complete.",
 			sourceSystems: sourceSystems(failureRecords),
 			privacyTier: strongestPrivacyTier(failureRecords),
-			freshness,
+			freshness: findingFreshnessForSources(
+				sourceSystems(failureRecords),
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			outcomeSignal: `${failureRecords.length} failure marker(s)`,
 			evidenceRefs: failureRecords.slice(0, 5).map(evidence),
 			nextCommand: "uv run afr-local latest failures --limit 5",
@@ -781,7 +804,11 @@ export function analyzeControlBundle(
 				"Evaluation records show failed expectations. Case labels, prompts, outputs, paths, and commands may be intentionally redacted by AFR privacy policy, so route from the aggregate outcome signal before trusting similar work to the same agent path.",
 			sourceSystems: sourceSystems(failedEvalRecords),
 			privacyTier: strongestPrivacyTier(failedEvalRecords),
-			freshness,
+			freshness: findingFreshnessForSources(
+				sourceSystems(failedEvalRecords),
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			outcomeSignal: `${failedEvalRecords.length} failed eval observation(s); ${failedTestSignal}${passedSignal}${commandSignal}${rangeSignal}`,
 			evidenceRefs: failedEvalRecords.slice(0, 5).map(evidence),
 			nextCommand: "uv run afr-local latest timeline --source evals --limit 20",
@@ -804,7 +831,11 @@ export function analyzeControlBundle(
 				"Bridge-db handoff records indicate pending work that may need pickup, clearing, or provenance review before the operating layer is quiet.",
 			sourceSystems: ["bridge-db"],
 			privacyTier: strongestPrivacyTier(pendingHandoffRecords),
-			freshness,
+			freshness: findingFreshnessForSources(
+				["bridge-db"],
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			boundaryEvent:
 				actionReasonForSource("bridge-db") ?? "bridge handoff pressure",
 			outcomeSignal: `${pendingHandoffRecords.length} pending handoff record(s)`,
@@ -840,7 +871,11 @@ export function analyzeControlBundle(
 					: "Authoritative cost observations are present. Treat them as routing evidence, not invoices, and compare them against outcome/failure markers.",
 			sourceSystems: sourceSystems(costRecords),
 			privacyTier: strongestPrivacyTier(costRecords),
-			freshness,
+			freshness: findingFreshnessForSources(
+				sourceSystems(costRecords),
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			costSignal: `${total > 0 ? `${money(total)} across ` : ""}${costRecords.length} cost observation(s)${
 				estimated > 0 ? `; ${estimated} estimated` : ""
 			}`,
@@ -875,7 +910,11 @@ export function analyzeControlBundle(
 				"The archive includes governance-shaped events such as hooks, permissions, MCP, guardrails, or handoffs.",
 			sourceSystems: [source],
 			privacyTier: strongestPrivacyTier(sourceBoundaryRecords),
-			freshness,
+			freshness: findingFreshnessForSources(
+				[source],
+				reportSummary.sourceFreshness,
+				freshness,
+			),
 			boundaryEvent:
 				actionReasonForSource(source) ?? "hook/permission/MCP/handoff signal",
 			evidenceRefs: sourceBoundaryRecords.slice(0, 5).map(evidence),
