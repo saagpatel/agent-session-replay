@@ -671,6 +671,33 @@ body {
 	gap: 1px;
 	background: var(--line);
 }
+.control-actions__list--secondary {
+	border-top: 1px solid var(--line);
+}
+.control-actions__more {
+	border-top: 1px solid var(--line);
+	background: var(--panel);
+}
+.control-actions__more summary {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 9px 12px;
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 10.5px;
+}
+.control-actions__more summary:hover {
+	color: var(--text);
+	background: var(--panel-2);
+}
+.control-actions__more summary b {
+	color: var(--faint);
+	font-weight: 500;
+	overflow-wrap: anywhere;
+	text-align: right;
+}
 .control-action {
 	min-width: 0;
 	background: var(--panel);
