@@ -107,7 +107,9 @@ presets show why the context is empty plus a read-only latest-timeline command
 for inspection, never a collection command. The action rail also includes a
 command safety ledger that groups every surfaced command by read-only,
 local-write, external-write, or unknown safety while keeping grouped export
-limited to runnable read-only commands.
+limited to runnable read-only commands. Preset switches also show a command
+delta preview, making hidden, appeared, and changed command safety/readiness
+visible before anything is copied or run.
 
 ## Develop
 

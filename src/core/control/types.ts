@@ -109,6 +109,33 @@ export interface ControlCommandSafetyLedger {
 	exportEligibleCount: number;
 }
 
+export interface ControlCommandDeltaPreview {
+	appeared: Array<{
+		command: string;
+		title: string;
+		safety: ControlActionSafety;
+		readiness: ControlActionReadiness;
+	}>;
+	disappeared: Array<{
+		command: string;
+		title: string;
+		safety: ControlActionSafety;
+		readiness: ControlActionReadiness;
+	}>;
+	changed: Array<{
+		command: string;
+		beforeTitle: string;
+		afterTitle: string;
+		beforeSafety: ControlActionSafety;
+		afterSafety: ControlActionSafety;
+		beforeReadiness: ControlActionReadiness;
+		afterReadiness: ControlActionReadiness;
+	}>;
+	unchangedCount: number;
+	totalBefore: number;
+	totalAfter: number;
+}
+
 export interface ControlEvidenceRefExport {
 	groups: Array<{
 		source: string;
