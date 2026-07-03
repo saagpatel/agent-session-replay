@@ -59,6 +59,8 @@ Each action includes a compact decision reason, such as critical eval failures,
 estimated cost signal, or stale source evidence.
 When multiple findings share one safe command, the rail keeps a single row while
 showing every contributing action category and reason.
+Source-specific freshness and routing quirks live in a small source contract
+layer, rather than being scattered through the control engine.
 
 ## Develop
 

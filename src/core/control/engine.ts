@@ -13,6 +13,11 @@ import type {
 	ControlSummary,
 	SourceFreshnessState,
 } from "./types.ts";
+import {
+	routeTitleForSource,
+	sourceFreshnessOverride,
+	staleSourceDecisionReason,
+} from "./source-contracts.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STALE_ARCHIVE_MS = DAY_MS;
@@ -116,11 +121,9 @@ function sourceFreshness(
 			(record) => record.source_system === source,
 		);
 		const newestMs = newestTimestamp(sourceRecords);
-		const freshness = sourceHasHealthyHistoricalArtifactStore(bundle, source)
-			? "historical"
-			: sourceHasHealthyLiveCostFeed(bundle, source)
-				? "fresh"
-				: freshnessForTimestamp(newestMs, nowMs);
+		const freshness =
+			sourceFreshnessOverride(source, reconciliationRowForSource(bundle, source)) ??
+			freshnessForTimestamp(newestMs, nowMs);
 		out[source] = {
 			newestTimestamp:
 				newestMs === null || !Number.isFinite(newestMs)
@@ -194,28 +197,6 @@ function reconciliationRowForSource(
 	);
 }
 
-function sourceHasHealthyLiveCostFeed(
-	bundle: AfrBundle,
-	source: string,
-): boolean {
-	if (source !== "cost-tracker") return false;
-	const row = reconciliationRowForSource(bundle, source);
-	if (!row || row.status !== "ok" || row.severity === "error") return false;
-	if ((row.warnings?.length ?? 0) > 0) return false;
-	return row.source_counts?.ccusage_live_used === true;
-}
-
-function sourceHasHealthyHistoricalArtifactStore(
-	bundle: AfrBundle,
-	source: string,
-): boolean {
-	if (source !== "artifact-store") return false;
-	const row = reconciliationRowForSource(bundle, source);
-	if (!row || row.status !== "ok" || row.severity === "error") return false;
-	if ((row.warnings?.length ?? 0) > 0) return false;
-	return row.source_counts?.artifact_records_sampled !== undefined;
-}
-
 function summary(bundle: AfrBundle, nowMs: number): ControlSummary {
 	const recordTypes = bundle.records.map((record) => record.record_type ?? "unknown");
 	const privacyTiers = bundle.records.map(
@@ -283,16 +264,15 @@ function mergeSeverity(a: Severity, b: Severity): Severity {
 }
 
 function actionTitle(category: ControlActionCategory, sources: string[]): string {
-	const source = sources.length === 1 ? sources[0] : `${sources.length} sources`;
+	const source =
+		sources.length === 1 ? (sources[0] ?? "source") : `${sources.length} sources`;
 	switch (category) {
 		case "repair":
 			return `Repair ${source}`;
 		case "refresh":
 			return `Refresh ${source}`;
 		case "route":
-			if (source === "evals") return "Route eval maintenance";
-			if (source === "cost-tracker") return "Review cost routing";
-			return `Route ${source}`;
+			return routeTitleForSource(source) ?? `Route ${source}`;
 		case "inspect":
 			return `Inspect ${source}`;
 	}
@@ -304,7 +284,7 @@ function actionReason(finding: ControlFinding): string {
 		return finding.severity === "warning" ? "estimated cost signal" : "cost signal";
 	}
 	if (finding.id.startsWith("stale_source:")) {
-		return `stale ${finding.sourceSystems[0] ?? "source"} source`;
+		return staleSourceDecisionReason(finding.sourceSystems[0] ?? "source");
 	}
 	if (finding.kind === "stale_source") return "stale archive";
 	if (finding.kind === "missing_all_source_archive") return "not all-source";
