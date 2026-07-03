@@ -166,6 +166,7 @@ export type ControlActionBundleReplayStatus =
 	| "empty"
 	| "invalid"
 	| "matched"
+	| "hidden_by_preset"
 	| "command_missing"
 	| "blocked";
 
@@ -175,6 +176,8 @@ export interface ControlActionBundleReplayPreview {
 	title: string | null;
 	matchedActionId: string | null;
 	matchedActionTitle: string | null;
+	commandScope: "current_context" | "hidden_by_preset" | "missing_from_archive";
+	commandDrift: string[];
 	importedEvidenceRefs: string[];
 	missingEvidenceRefs: string[];
 	sourceFreshness: ControlActionSourceExplanation[];

@@ -1312,6 +1312,85 @@ test("imported action bundle preview matches current runnable evidence", () => {
 	assert.deepEqual(replay.warnings, []);
 });
 
+test("imported action bundle preview distinguishes hidden preset commands", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "bridge-db:handoff-1",
+					record_type: "handoff",
+					source_system: "bridge-db",
+					timestamp: "2026-06-28T12:03:00Z",
+					evidence_ref: "bridge-db:handoff-1",
+					attributes: { handoff_status: "pending" },
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const bridgeAction = report.actions.find((action) =>
+		action.command.includes("--source bridge-db"),
+	);
+	const evals = filterControlReportBySourcePreset(report, "evals");
+	const replay = previewImportedActionBundle(
+		exportActionBundle(bridgeAction!).text,
+		evals,
+		report,
+	);
+
+	assert.equal(replay.status, "hidden_by_preset");
+	assert.equal(replay.commandScope, "hidden_by_preset");
+	assert.equal(replay.matchedActionTitle, bridgeAction?.title);
+	assert.deepEqual(replay.missingEvidenceRefs, []);
+	assert.match(replay.warnings[0] ?? "", /hidden by the active source preset/);
+});
+
+test("imported action bundle preview reports title safety and readiness drift", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const route = report.actions.find((action) =>
+		action.command.includes("--source evals"),
+	);
+	const staleBundle = exportActionBundle(route!)
+		.text.replace(
+			"# Decision Flight Deck action bundle: Route eval maintenance",
+			"# Decision Flight Deck action bundle: Old eval route",
+		)
+		.replace("- safety: read_only", "- safety: unknown")
+		.replace("- readiness: runnable_now", "- readiness: needs_approval");
+	const replay = previewImportedActionBundle(staleBundle, report);
+
+	assert.equal(replay.status, "matched");
+	assert.equal(replay.commandScope, "current_context");
+	assert.deepEqual(replay.commandDrift, [
+		"Title changed: Old eval route -> Route eval maintenance",
+		"Safety changed: unknown -> read_only",
+		"Readiness changed: needs_approval -> runnable_now",
+	]);
+	assert.match(replay.warnings.join("\n"), /Safety changed/);
+});
+
 test("imported action bundle preview reports missing commands", () => {
 	const replay = previewImportedActionBundle(
 		[

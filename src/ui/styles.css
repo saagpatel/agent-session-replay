@@ -897,6 +897,10 @@ body {
 	border-color: color-mix(in srgb, var(--kind-tool) 35%, var(--line));
 	color: var(--kind-tool);
 }
+.action-replay__status--hidden_by_preset {
+	border-color: color-mix(in srgb, var(--sev-info) 35%, var(--line));
+	color: var(--sev-info);
+}
 .action-replay__status--blocked,
 .action-replay__status--command_missing,
 .action-replay__status--invalid {
