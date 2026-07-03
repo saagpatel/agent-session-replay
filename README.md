@@ -102,7 +102,9 @@ not write the note anywhere automatically. A scope preview shows included
 metadata refs, raw-looking excluded ref count, evidence sources, and privacy tier
 counts before the note is copied. Source presets filter the decision context to
 all, bridge-db, evals, cost, or hooks/MCP so findings, actions, replay preview,
-and decision note scope can narrow without changing the loaded AFR archive.
+and decision note scope can narrow without changing the loaded AFR archive. Empty
+presets show why the context is empty plus a read-only latest-timeline command
+for inspection, never a collection command.
 
 ## Develop
 

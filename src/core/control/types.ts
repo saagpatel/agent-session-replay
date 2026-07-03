@@ -159,6 +159,12 @@ export type ControlSourcePreset =
 	| "cost"
 	| "hooks-mcp";
 
+export interface ControlPresetEmptyGuidance {
+	title: string;
+	detail: string;
+	command: string;
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

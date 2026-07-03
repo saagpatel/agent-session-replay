@@ -5,6 +5,7 @@ import type { AfrBundle } from "../afr/types.ts";
 import {
 	analyzeControlBundle,
 	buildActionBundlePreview,
+	emptyPresetGuidance,
 	exportActionBundle,
 	exportDecisionNote,
 	exportMetadataEvidenceRefs,
@@ -1412,6 +1413,37 @@ test("source presets filter findings actions and freshness by decision source", 
 	assert.deepEqual(hooksMcp.summary.sourceSystems, ["mcp"]);
 	assert.ok(hooksMcp.findings.some((finding) => finding.kind === "boundary_event"));
 	assert.deepEqual(Object.keys(hooksMcp.summary.sourceFreshness), ["mcp"]);
+});
+
+test("empty preset guidance gives read-only inspect command only for empty presets", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const evals = filterControlReportBySourcePreset(report, "evals");
+	const hooksMcp = filterControlReportBySourcePreset(report, "hooks-mcp");
+	const guidance = emptyPresetGuidance("hooks-mcp", hooksMcp);
+
+	assert.equal(emptyPresetGuidance("all", report), null);
+	assert.equal(emptyPresetGuidance("evals", evals), null);
+	assert.equal(guidance?.title, "hooks/MCP has no active control findings");
+	assert.match(guidance?.detail ?? "", /no hooks\/MCP metadata/);
+	assert.equal(
+		guidance?.command,
+		"uv run afr-local latest timeline --source mcp --limit 20",
+	);
+	assert.doesNotMatch(guidance?.command ?? "", /collect|write|sync/i);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
