@@ -592,6 +592,35 @@ body {
 	color: var(--text);
 	overflow-wrap: anywhere;
 }
+.source-presets {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 7px;
+}
+.source-presets button {
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	background: var(--ink);
+	color: var(--muted);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.source-presets button:hover {
+	color: var(--text);
+	border-color: var(--line-bright);
+}
+.source-presets button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.source-presets button.is-active {
+	color: var(--kind-tool);
+	border-color: color-mix(in srgb, var(--kind-tool) 45%, var(--line));
+	background: color-mix(in srgb, var(--kind-tool) 9%, var(--ink));
+}
 .source-freshness {
 	margin-top: 7px;
 	display: flex;

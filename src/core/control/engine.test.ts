@@ -9,6 +9,7 @@ import {
 	exportDecisionNote,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
+	filterControlReportBySourcePreset,
 	previewImportedActionBundle,
 } from "./engine.ts";
 
@@ -1351,6 +1352,66 @@ test("decision note export works without pasted replay preview", () => {
 	assert.deepEqual(note.scope.evidenceSources, ["metadata"]);
 	assert.equal(note.scope.excludedEvidenceRefCount, 0);
 	assert.deepEqual(note.scope.includedEvidenceRefs, ["2026-06-28T12:00:00Z"]);
+});
+
+test("source presets filter findings actions and freshness by decision source", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "bridge-db:handoff-1",
+					record_type: "handoff",
+					source_system: "bridge-db",
+					timestamp: "2026-06-28T12:01:00Z",
+					evidence_ref: "bridge-db:handoff-1",
+					attributes: { handoff_status: "pending" },
+				},
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "cost-tracker:run-1",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-06-28T12:03:00Z",
+					amount_usd: 1.23,
+					cost_quality: "estimated",
+					evidence_ref: "cost-tracker:run-1",
+				},
+				{
+					record_id: "mcp:permission-1",
+					record_type: "boundary_event",
+					source_system: "mcp",
+					summary: "mcp permission boundary",
+					timestamp: "2026-06-28T12:04:00Z",
+					evidence_ref: "mcp:permission-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+
+	const bridge = filterControlReportBySourcePreset(report, "bridge-db");
+	const evals = filterControlReportBySourcePreset(report, "evals");
+	const cost = filterControlReportBySourcePreset(report, "cost");
+	const hooksMcp = filterControlReportBySourcePreset(report, "hooks-mcp");
+
+	assert.equal(filterControlReportBySourcePreset(report, "all"), report);
+	assert.deepEqual(bridge.summary.sourceSystems, ["bridge-db"]);
+	assert.ok(bridge.findings.every((finding) => finding.sourceSystems.includes("bridge-db")));
+	assert.ok(bridge.actions.every((action) => action.sourceSystems.includes("bridge-db")));
+	assert.deepEqual(evals.summary.sourceSystems, ["evals"]);
+	assert.ok(evals.findings.some((finding) => finding.kind === "eval_failure"));
+	assert.deepEqual(cost.summary.sourceSystems, ["cost-tracker"]);
+	assert.ok(cost.findings.some((finding) => finding.kind === "cost_attention"));
+	assert.deepEqual(hooksMcp.summary.sourceSystems, ["mcp"]);
+	assert.ok(hooksMcp.findings.some((finding) => finding.kind === "boundary_event"));
+	assert.deepEqual(Object.keys(hooksMcp.summary.sourceFreshness), ["mcp"]);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

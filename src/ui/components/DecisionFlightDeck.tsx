@@ -7,12 +7,14 @@ import {
 	exportDecisionNote,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
+	filterControlReportBySourcePreset,
 	previewImportedActionBundle,
 } from "../../core/control/engine.ts";
 import type {
 	ControlAction,
 	ControlFinding,
 	ControlReport,
+	ControlSourcePreset,
 } from "../../core/control/types.ts";
 
 const ACTION_SAFETY_LABELS: Record<ControlAction["commandSafety"], string> = {
@@ -49,6 +51,14 @@ const FINDING_COLOR: Record<ControlFinding["severity"], string> = {
 	warning: "var(--sev-warning)",
 	info: "var(--sev-info)",
 };
+
+const SOURCE_PRESETS: Array<{ id: ControlSourcePreset; label: string }> = [
+	{ id: "all", label: "all" },
+	{ id: "bridge-db", label: "bridge-db" },
+	{ id: "evals", label: "evals" },
+	{ id: "cost", label: "cost" },
+	{ id: "hooks-mcp", label: "hooks/MCP" },
+];
 
 function status(ok: boolean | null): string {
 	if (ok === true) return "ok";
@@ -558,7 +568,10 @@ export function DecisionFlightDeck({
 	report: ControlReport;
 }) {
 	const { summary } = report;
-	const freshnessRows = sourceFreshnessRows(summary.sourceFreshness);
+	const [sourcePreset, setSourcePreset] = useState<ControlSourcePreset>("all");
+	const filteredReport = filterControlReportBySourcePreset(report, sourcePreset);
+	const filteredSummary = filteredReport.summary;
+	const filteredFreshnessRows = sourceFreshnessRows(filteredSummary.sourceFreshness);
 	return (
 		<main className="control-deck">
 			<section className="stats">
@@ -593,14 +606,33 @@ export function DecisionFlightDeck({
 			<section className="control-deck__body">
 				<div className="control-deck__summary">
 					<div>
+						<span className="label">Source preset</span>
+						<div className="source-presets" role="group" aria-label="Source filter">
+							{SOURCE_PRESETS.map((preset) => (
+								<button
+									key={preset.id}
+									type="button"
+									className={sourcePreset === preset.id ? "is-active" : ""}
+									onClick={() => setSourcePreset(preset.id)}
+								>
+									{preset.label}
+								</button>
+							))}
+						</div>
+						<p>
+							{filteredReport.findings.length} finding(s) /{" "}
+							{filteredReport.actions.length} action(s)
+						</p>
+					</div>
+					<div>
 						<span className="label">Sources</span>
-						<p>{list(summary.sourceSystems)}</p>
+						<p>{list(filteredSummary.sourceSystems)}</p>
 					</div>
 					<div>
 						<span className="label">Source freshness</span>
 						<div className="source-freshness">
-							{freshnessRows.length > 0 ? (
-								freshnessRows.map(([source, row]) => (
+							{filteredFreshnessRows.length > 0 ? (
+								filteredFreshnessRows.map(([source, row]) => (
 									<div className="source-freshness__row" key={source}>
 										<div className="source-freshness__top">
 											<strong>{source}</strong>
@@ -625,7 +657,7 @@ export function DecisionFlightDeck({
 					</div>
 					<div>
 						<span className="label">Record types</span>
-						<p>{sourceCounts(summary.recordTypeCounts) || "none"}</p>
+						<p>{sourceCounts(filteredSummary.recordTypeCounts) || "none"}</p>
 					</div>
 					<div>
 						<span className="label">Created</span>
@@ -633,19 +665,22 @@ export function DecisionFlightDeck({
 					</div>
 				</div>
 				<div className="control-deck__findings">
-					{report.actions.length > 0 ? (
+					{filteredReport.actions.length > 0 ? (
 						<>
-							<ActionRail actions={report.actions} />
-							<ActionBundleReplayPreview archiveName={bundle.name} report={report} />
+							<ActionRail actions={filteredReport.actions} />
+							<ActionBundleReplayPreview
+								archiveName={bundle.name}
+								report={filteredReport}
+							/>
 						</>
 					) : null}
 					<div className="findings__head">
 						<span className="label">Ranked Control Findings</span>
 						<span className="chip">{bundle.malformedRecords} malformed</span>
 					</div>
-					{report.findings.length > 0 ? (
+					{filteredReport.findings.length > 0 ? (
 						<div className="control-deck__list">
-							{report.findings.map((finding) => (
+							{filteredReport.findings.map((finding) => (
 								<FindingCard key={finding.id} finding={finding} />
 							))}
 						</div>
