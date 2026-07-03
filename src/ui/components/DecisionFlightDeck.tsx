@@ -78,6 +78,16 @@ function ActionRow({ action }: { action: ControlAction }) {
 				<div>
 					<strong>{action.title}</strong>
 					<span>{action.rationale}</span>
+					<span>{action.safetyNote}</span>
+					{action.sourceExplanations.length > 0 ? (
+						<div className="control-action__sources">
+							{action.sourceExplanations.map((row) => (
+								<span key={row.source}>
+									<b>{row.source}</b> {row.freshness}: {row.freshnessReason}
+								</span>
+							))}
+						</div>
+					) : null}
 				</div>
 				<code>{action.command}</code>
 			</div>
