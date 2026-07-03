@@ -131,7 +131,15 @@ source prefixes such as `evals:` even when a note is scoped to another preset,
 while generic report/timestamp refs stay in a metadata bucket. The same trace is
 visible inside each action's "Why this command" preview before copying anything,
 sorted by impact with lower-signal rows tucked behind a small disclosure when
-needed.
+needed. Validation warnings are bucketed into decision-oriented signals such as
+cost-quality, correlation-confidence, multiple-trace, and schema-field warnings,
+then routed to the likely source when the warning text carries a source-shaped
+record id. Copied decision notes lead with a Decision Pressure Map that
+compresses top actions by reason, source freshness, labeled signals, and safe
+command. Notes copied from filtered source presets include a Scope Caveat with
+hidden all-source finding/action counts, and empty presets can copy a scoped note
+with the safe read-only inspect command. A filtered or empty preset note is
+therefore a scoped handoff, not an all-clear.
 
 ## Develop
 
@@ -152,3 +160,12 @@ pnpm afr:archives
 
 Drop the printed `BEST` folder path into the app. The helper reads existing
 metadata archives only; it does not create, modify, or upload archives.
+
+Inside the deck:
+
+- Use source presets to narrow the view without changing the loaded archive.
+- Use action bundles when you want to replay one command against current evidence.
+- Use decision notes when handing off context; they include pressure map, scope
+  caveat, replay verdict, and metadata-only evidence refs.
+- Empty preset notes are copyable too, and include the safe inspect command plus
+  hidden all-source counts.
