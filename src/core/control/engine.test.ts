@@ -1706,6 +1706,31 @@ test("empty preset guidance gives read-only inspect command only for empty prese
 	assert.doesNotMatch(guidance?.command ?? "", /collect|write|sync/i);
 });
 
+test("empty preset guidance distinguishes quiet metadata from absent metadata", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "mcp:ok-1",
+					record_type: "event",
+					source_system: "mcp",
+					status: "ok",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "mcp:ok-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const hooksMcp = filterControlReportBySourcePreset(report, "hooks-mcp");
+	const guidance = emptyPresetGuidance("hooks-mcp", hooksMcp);
+
+	assert.deepEqual(hooksMcp.summary.sourceSystems, ["mcp"]);
+	assert.equal(guidance?.title, "hooks/MCP has no active control findings");
+	assert.match(guidance?.detail ?? "", /has hooks\/MCP metadata/);
+	assert.doesNotMatch(guidance?.detail ?? "", /has no hooks\/MCP metadata/);
+});
+
 test("malformed records are surfaced as archive integrity risk", () => {
 	const report = analyzeControlBundle(bundle({ malformedRecords: 2 }));
 	const finding = report.findings.find(
