@@ -60,6 +60,9 @@
   behind a source-labeled expander for dense all-source archives. Commands carry
   a compact read-only/local-write/external-write/unknown safety chip and can be
   copied by explicit user click; passive viewing never writes the clipboard.
+  Each action expands into a compact preview explaining why the command was
+  suggested, what boundary it crosses, and which metadata-only evidence refs
+  triggered it.
 - **Quality** — 107 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier

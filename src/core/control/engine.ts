@@ -349,6 +349,22 @@ function commandSafety(command: string): ControlActionSafety {
 	return "unknown";
 }
 
+function commandBoundary(
+	commandSafetyValue: ControlActionSafety,
+	safetyNote: string,
+): string {
+	switch (commandSafetyValue) {
+		case "read_only":
+			return `Read-only inspection. ${safetyNote}`;
+		case "local_write":
+			return `Local write. ${safetyNote}`;
+		case "external_write":
+			return `External write risk. ${safetyNote}`;
+		case "unknown":
+			return `Unknown command boundary. ${safetyNote}`;
+	}
+}
+
 function sourceExplanation(
 	source: string,
 	sourceFreshness: ControlSummary["sourceFreshness"],
@@ -384,6 +400,10 @@ function buildActions(
 				SEVERITY_RANK[finding.severity] > SEVERITY_RANK[existing.severity] ||
 				finding.score > existing.priority;
 			existing.findingIds.push(finding.id);
+			existing.evidenceRefs = uniqInOrder([
+				...existing.evidenceRefs,
+				...finding.evidenceRefs,
+			]);
 			existing.sourceSystems = uniq([
 				...existing.sourceSystems,
 				...finding.sourceSystems,
@@ -410,6 +430,11 @@ function buildActions(
 				existing.sourceSystems,
 				sourceFreshness,
 			);
+			existing.preview = {
+				why: existing.decisionReasons,
+				boundary: commandBoundary(existing.commandSafety, existing.safetyNote),
+				evidenceRefs: existing.evidenceRefs,
+			};
 			if (replaceReason) {
 				existing.category = category;
 				existing.rationale = finding.title;
@@ -418,6 +443,8 @@ function buildActions(
 			existing.title = actionTitle(existing.category, existing.sourceSystems);
 			continue;
 		}
+		const safetyNote = safetyNoteForCommand(finding.nextCommand);
+		const safety = commandSafety(finding.nextCommand);
 		actions.set(key, {
 			id: key,
 			category,
@@ -425,17 +452,23 @@ function buildActions(
 			priority: finding.score,
 			title: actionTitle(category, finding.sourceSystems),
 			command: finding.nextCommand,
-			commandSafety: commandSafety(finding.nextCommand),
+			commandSafety: safety,
 			sourceSystems: finding.sourceSystems,
 			findingIds: [finding.id],
+			evidenceRefs: finding.evidenceRefs,
 			severity: finding.severity,
 			privacyTier: finding.privacyTier,
 			rationale: finding.title,
 			decisionReason: reason,
 			decisionReasons: [reason],
 			boundaryEvents: uniqInOrder([finding.boundaryEvent]),
-			safetyNote: safetyNoteForCommand(finding.nextCommand),
+			safetyNote,
 			sourceExplanations: sourceExplanations(finding.sourceSystems, sourceFreshness),
+			preview: {
+				why: [reason],
+				boundary: commandBoundary(safety, safetyNote),
+				evidenceRefs: finding.evidenceRefs,
+			},
 		});
 	}
 	return [...actions.values()].sort(

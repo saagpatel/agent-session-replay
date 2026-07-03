@@ -841,6 +841,37 @@ body {
 	color: var(--faint);
 	font-size: 10px;
 }
+.control-action__preview {
+	border-top: 1px solid var(--line);
+	margin-top: 2px;
+	padding-top: 6px;
+}
+.control-action__preview summary {
+	color: var(--muted);
+	cursor: pointer;
+	font-size: 10px;
+}
+.control-action__preview summary:hover {
+	color: var(--text);
+}
+.control-action__preview-grid {
+	display: grid;
+	grid-template-columns: 62px 1fr;
+	gap: 4px 8px;
+	margin-top: 6px;
+}
+.control-action__preview-grid span {
+	color: var(--faint);
+	font-size: 9px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+.control-action__preview-grid b {
+	color: var(--text);
+	font-size: 10px;
+	font-weight: 500;
+	overflow-wrap: anywhere;
+}
 .control-deck__list {
 	overflow-y: auto;
 	padding: 12px;

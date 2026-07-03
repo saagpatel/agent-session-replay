@@ -45,6 +45,12 @@ export interface ControlActionSourceExplanation {
 	freshnessReason: string;
 }
 
+export interface ControlActionPreview {
+	why: string[];
+	boundary: string;
+	evidenceRefs: string[];
+}
+
 export interface ControlAction {
 	id: string;
 	category: ControlActionCategory;
@@ -55,6 +61,7 @@ export interface ControlAction {
 	commandSafety: ControlActionSafety;
 	sourceSystems: string[];
 	findingIds: string[];
+	evidenceRefs: string[];
 	severity: Severity;
 	privacyTier: PrivacyTier;
 	rationale: string;
@@ -63,6 +70,7 @@ export interface ControlAction {
 	boundaryEvents: string[];
 	safetyNote: string;
 	sourceExplanations: ControlActionSourceExplanation[];
+	preview: ControlActionPreview;
 }
 
 export interface ControlSummary {
