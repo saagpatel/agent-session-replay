@@ -198,7 +198,9 @@ test("failure, cost, and boundary records become ranked evidence findings", () =
 
 	assert.ok(report.findings.some((finding) => finding.id === "failure_marker"));
 	assert.ok(report.findings.some((finding) => finding.id === "cost_attention"));
-	assert.ok(report.findings.some((finding) => finding.id === "boundary_event"));
+	assert.ok(
+		report.findings.some((finding) => finding.id === "boundary_event:codex"),
+	);
 	assert.equal(
 		report.findings.find((finding) => finding.id === "cost_attention")
 			?.privacyTier,
@@ -384,10 +386,14 @@ test("boundary event actions use source contract wording", () => {
 	);
 
 	const action = report.actions.find((item) =>
-		item.findingIds.includes("boundary_event"),
+		item.findingIds.includes("boundary_event:notification-hub"),
 	);
 	assert.equal(action?.title, "Inspect notification routing");
 	assert.equal(action?.decisionReason, "notification delivery boundary");
+	assert.equal(
+		action?.command,
+		"uv run afr-local latest timeline --source notification-hub --limit 20",
+	);
 });
 
 test("hook and MCP source contracts provide boundary wording", () => {
@@ -419,24 +425,83 @@ test("hook and MCP source contracts provide boundary wording", () => {
 	);
 
 	assert.equal(
-		hookReport.actions.find((item) => item.findingIds.includes("boundary_event"))
-			?.title,
+		hookReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:codex-hooks"),
+		)?.title,
 		"Inspect hook boundary",
 	);
 	assert.equal(
-		hookReport.actions.find((item) => item.findingIds.includes("boundary_event"))
-			?.decisionReason,
+		hookReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:codex-hooks"),
+		)?.decisionReason,
 		"hook boundary event",
 	);
 	assert.equal(
-		mcpReport.actions.find((item) => item.findingIds.includes("boundary_event"))
-			?.title,
+		mcpReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:mcp-config"),
+		)?.title,
 		"Inspect MCP boundary",
 	);
 	assert.equal(
-		mcpReport.actions.find((item) => item.findingIds.includes("boundary_event"))
-			?.decisionReason,
+		mcpReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:mcp-config"),
+		)?.decisionReason,
 		"MCP boundary event",
+	);
+});
+
+test("mixed boundary sources produce separate action rows", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "hook1",
+					record_type: "event",
+					event_kind: "pre_tool_hook",
+					source_system: "codex-hooks",
+					timestamp: "2026-06-28T12:00:01Z",
+				},
+				{
+					record_id: "mcp1",
+					record_type: "event",
+					event_kind: "mcp_permission",
+					source_system: "mcp-config",
+					timestamp: "2026-06-28T12:00:02Z",
+				},
+				{
+					record_id: "notify1",
+					record_type: "event",
+					event_kind: "guardrail_delivery",
+					source_system: "notification-hub",
+					timestamp: "2026-06-28T12:00:03Z",
+				},
+			],
+		}),
+	);
+
+	assert.deepEqual(
+		report.findings
+			.filter((finding) => finding.kind === "boundary_event")
+			.map((finding) => finding.id)
+			.sort(),
+		[
+			"boundary_event:codex-hooks",
+			"boundary_event:mcp-config",
+			"boundary_event:notification-hub",
+		],
+	);
+	assert.deepEqual(
+		report.actions
+			.filter((action) =>
+				action.findingIds.some((id) => id.startsWith("boundary_event:")),
+			)
+			.map((action) => action.title)
+			.sort(),
+		[
+			"Inspect MCP boundary",
+			"Inspect hook boundary",
+			"Inspect notification routing",
+		],
 	);
 });
 
