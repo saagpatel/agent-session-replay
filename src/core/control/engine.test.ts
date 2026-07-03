@@ -361,12 +361,14 @@ test("bridge-db pending handoff records become control findings", () => {
 		(item) => item.id === "bridge_pending_handoff",
 	);
 	assert.equal(finding?.severity, "warning");
+	assert.equal(finding?.boundaryEvent, "bridge handoff pressure");
 	assert.equal(finding?.nextCommand, "bridge-db:get_pending_handoffs");
 	const action = report.actions.find((item) =>
 		item.findingIds.includes("bridge_pending_handoff"),
 	);
 	assert.equal(action?.title, "Review bridge handoffs");
 	assert.equal(action?.decisionReason, "bridge handoff pressure");
+	assert.deepEqual(action?.boundaryEvents, ["bridge handoff pressure"]);
 });
 
 test("boundary event actions use source contract wording", () => {
@@ -388,8 +390,13 @@ test("boundary event actions use source contract wording", () => {
 	const action = report.actions.find((item) =>
 		item.findingIds.includes("boundary_event:notification-hub"),
 	);
+	const finding = report.findings.find(
+		(item) => item.id === "boundary_event:notification-hub",
+	);
+	assert.equal(finding?.boundaryEvent, "notification delivery boundary");
 	assert.equal(action?.title, "Inspect notification routing");
 	assert.equal(action?.decisionReason, "notification delivery boundary");
+	assert.deepEqual(action?.boundaryEvents, ["notification delivery boundary"]);
 	assert.equal(
 		action?.command,
 		"uv run afr-local latest timeline --source notification-hub --limit 20",
@@ -436,6 +443,12 @@ test("hook and MCP source contracts provide boundary wording", () => {
 		)?.decisionReason,
 		"hook boundary event",
 	);
+	assert.deepEqual(
+		hookReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:codex-hooks"),
+		)?.boundaryEvents,
+		["hook boundary event"],
+	);
 	assert.equal(
 		mcpReport.actions.find((item) =>
 			item.findingIds.includes("boundary_event:mcp-config"),
@@ -447,6 +460,12 @@ test("hook and MCP source contracts provide boundary wording", () => {
 			item.findingIds.includes("boundary_event:mcp-config"),
 		)?.decisionReason,
 		"MCP boundary event",
+	);
+	assert.deepEqual(
+		mcpReport.actions.find((item) =>
+			item.findingIds.includes("boundary_event:mcp-config"),
+		)?.boundaryEvents,
+		["MCP boundary event"],
 	);
 });
 
@@ -501,6 +520,19 @@ test("mixed boundary sources produce separate action rows", () => {
 			"Inspect MCP boundary",
 			"Inspect hook boundary",
 			"Inspect notification routing",
+		],
+	);
+	assert.deepEqual(
+		report.actions
+			.filter((action) =>
+				action.findingIds.some((id) => id.startsWith("boundary_event:")),
+			)
+			.map((action) => action.boundaryEvents[0])
+			.sort(),
+		[
+			"MCP boundary event",
+			"hook boundary event",
+			"notification delivery boundary",
 		],
 	);
 });

@@ -49,7 +49,14 @@ function actionReasons(action: ControlAction): string {
 		: action.decisionReason;
 }
 
+function actionBoundaries(action: ControlAction): string {
+	return action.boundaryEvents.length > 0
+		? action.boundaryEvents.join(" / ")
+		: "";
+}
+
 function ActionRow({ action }: { action: ControlAction }) {
+	const boundaries = actionBoundaries(action);
 	return (
 		<div className="control-action">
 			<div className="control-action__meta">
@@ -59,6 +66,9 @@ function ActionRow({ action }: { action: ControlAction }) {
 				<span>{action.severity}</span>
 				<span>{actionReasons(action)}</span>
 				<span>{list(action.sourceSystems)}</span>
+				{boundaries ? (
+					<span className="control-action__boundary">boundary: {boundaries}</span>
+				) : null}
 				<span>
 					{action.findingIds.length} finding
 					{action.findingIds.length === 1 ? "" : "s"}

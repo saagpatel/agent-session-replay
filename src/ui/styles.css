@@ -682,10 +682,14 @@ body {
 .control-action__meta {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 8px;
 	color: var(--faint);
 	font-size: 10px;
 	overflow-wrap: anywhere;
+}
+.control-action__boundary {
+	color: var(--accent);
 }
 .action-kind {
 	border: 1px solid var(--line-bright);
