@@ -152,6 +152,13 @@ export interface ControlDecisionNoteExport {
 	};
 }
 
+export type ControlSourcePreset =
+	| "all"
+	| "bridge-db"
+	| "evals"
+	| "cost"
+	| "hooks-mcp";
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

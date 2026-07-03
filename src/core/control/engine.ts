@@ -20,6 +20,7 @@ import type {
 	ControlFinding,
 	ControlReport,
 	ControlSummary,
+	ControlSourcePreset,
 	SourceFreshnessState,
 } from "./types.ts";
 import {
@@ -1233,5 +1234,67 @@ export function exportDecisionNote(input: {
 			evidenceSources: evidenceExport.groups.map((group) => group.source),
 			privacyTierCounts: report.summary.privacyTierCounts,
 		},
+	};
+}
+
+function sourceMatchesPreset(source: string, preset: ControlSourcePreset): boolean {
+	const normalized = source.toLowerCase().replaceAll("_", "-");
+	if (preset === "all") return true;
+	if (preset === "bridge-db") return normalized === "bridge-db";
+	if (preset === "evals") return normalized === "evals";
+	if (preset === "cost") return normalized.includes("cost");
+	return normalized.includes("hook") || normalized.includes("mcp");
+}
+
+function anySourceMatchesPreset(
+	sources: string[],
+	preset: ControlSourcePreset,
+): boolean {
+	return preset === "all" || sources.some((source) => sourceMatchesPreset(source, preset));
+}
+
+function filteredCounts(values: string[]): Record<string, number> {
+	return countBy(values.filter(Boolean));
+}
+
+export function filterControlReportBySourcePreset(
+	report: ControlReport,
+	preset: ControlSourcePreset,
+): ControlReport {
+	if (preset === "all") return report;
+	const findings = report.findings.filter((finding) =>
+		anySourceMatchesPreset(finding.sourceSystems, preset),
+	);
+	const findingIds = new Set(findings.map((finding) => finding.id));
+	const actions = report.actions.filter(
+		(action) =>
+			anySourceMatchesPreset(action.sourceSystems, preset) ||
+			action.findingIds.some((id) => findingIds.has(id)),
+	);
+	const sourceSystems = uniq([
+		...findings.flatMap((finding) => finding.sourceSystems),
+		...actions.flatMap((action) => action.sourceSystems),
+	]).filter((source) => sourceMatchesPreset(source, preset));
+	const sourceFreshness = Object.fromEntries(
+		Object.entries(report.summary.sourceFreshness).filter(([source]) =>
+			sourceMatchesPreset(source, preset),
+		),
+	);
+	return {
+		summary: {
+			...report.summary,
+			sourceSystems,
+			sourceFreshness,
+			privacyTierCounts: filteredCounts(findings.map((finding) => finding.privacyTier)),
+			statusCounts: report.summary.statusCounts,
+			failureRecordCount: findings.filter((finding) =>
+				["failure_marker", "eval_failure"].includes(finding.kind),
+			).length,
+			costRecordCount: findings.filter((finding) => finding.kind === "cost_attention")
+				.length,
+			decisionRecordCount: actions.length,
+		},
+		findings,
+		actions,
 	};
 }

@@ -81,7 +81,10 @@
   metadata evidence refs; the app does not write that note anywhere automatically.
   A scope preview shows included metadata refs, raw-looking excluded ref count,
   evidence sources, and privacy tier counts before the note is copied.
-- **Quality** — 118 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  Source presets filter the decision context to all, bridge-db, evals, cost, or
+  hooks/MCP so findings, actions, replay preview, and decision note scope can
+  narrow without changing the loaded AFR archive.
+- **Quality** — 119 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

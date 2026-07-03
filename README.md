@@ -100,7 +100,9 @@ replay preview can also copy an export-only markdown decision note with top
 findings, next actions, replay verdict, and metadata evidence refs; the app does
 not write the note anywhere automatically. A scope preview shows included
 metadata refs, raw-looking excluded ref count, evidence sources, and privacy tier
-counts before the note is copied.
+counts before the note is copied. Source presets filter the decision context to
+all, bridge-db, evals, cost, or hooks/MCP so findings, actions, replay preview,
+and decision note scope can narrow without changing the loaded AFR archive.
 
 ## Develop
 
