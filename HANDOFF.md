@@ -31,9 +31,11 @@
   signals, bridge handoff/eval outcome checks, evidence refs, and safe next
   commands. Pure parser + engine, no new collector or daemon. Real all-source
   smoke confirmed reconciliation row support and stale per-source evidence
-  findings. The deck now derives a compact action rail from ranked findings,
-  grouping safe next commands by route/inspect/refresh/repair.
-- **Quality** — 66 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  findings. Stale archives collapse to one refresh decision while per-source
+  freshness stays visible in the summary. The deck now derives a compact action
+  rail from ranked findings, grouping safe next commands by
+  route/inspect/refresh/repair.
+- **Quality** — 85 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -67,5 +69,5 @@
 
 ## Verify / Run
 
-`pnpm test` (66) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (85) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

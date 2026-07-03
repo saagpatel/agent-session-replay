@@ -308,26 +308,28 @@ export function analyzeControlBundle(
 		});
 	}
 
-	for (const [source, sourceState] of Object.entries(
-		summary(bundle, nowMs).sourceFreshness,
-	)) {
-		if (sourceState.freshness !== "stale") continue;
-		add(findings, {
-			id: `stale_source:${source}`,
-			kind: "stale_source",
-			severity: "warning",
-			title: `Stale source evidence: ${source}`,
-			detail:
-				"This source's newest AFR record is more than 24 hours old. Treat source-specific routing and outcome conclusions as stale until a fresh metadata-only archive is collected intentionally.",
-			sourceSystems: [source],
-			privacyTier: strongestPrivacyTier(
-				bundle.records.filter((record) => record.source_system === source),
-			),
-			freshness: "stale",
-			evidenceRefs: [sourceState.newestTimestamp ?? source],
-			nextCommand: "uv run afr-local collect all --limit 50",
-			score: 120,
-		});
+	if (freshness !== "stale") {
+		for (const [source, sourceState] of Object.entries(
+			summary(bundle, nowMs).sourceFreshness,
+		)) {
+			if (sourceState.freshness !== "stale") continue;
+			add(findings, {
+				id: `stale_source:${source}`,
+				kind: "stale_source",
+				severity: "warning",
+				title: `Stale source evidence: ${source}`,
+				detail:
+					"This source's newest AFR record is more than 24 hours old. Treat source-specific routing and outcome conclusions as stale until a fresh metadata-only archive is collected intentionally.",
+				sourceSystems: [source],
+				privacyTier: strongestPrivacyTier(
+					bundle.records.filter((record) => record.source_system === source),
+				),
+				freshness: "stale",
+				evidenceRefs: [sourceState.newestTimestamp ?? source],
+				nextCommand: "uv run afr-local collect all --limit 50",
+				score: 120,
+			});
+		}
 	}
 
 	if (bundle.malformedRecords > 0) {
