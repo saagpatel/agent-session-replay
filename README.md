@@ -69,7 +69,10 @@ Source contracts also carry decision wording for bridge handoffs,
 notification routing, hook boundaries, and MCP boundary evidence, keeping those
 action labels declarative instead of embedded in the control engine.
 Boundary/control findings are split per source, so mixed hook, MCP, and
-notification evidence routes into separate source-filtered action rows.
+notification evidence routes into separate source-filtered action rows. Boundary
+summaries now ride along on the action rows too, so follow-up commands show
+whether they came from bridge handoff pressure, notification routing, hooks, MCP,
+or a generic control signal without opening evidence refs.
 
 ## Develop
 

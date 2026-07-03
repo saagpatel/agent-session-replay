@@ -48,6 +48,7 @@ export interface ControlAction {
 	rationale: string;
 	decisionReason: string;
 	decisionReasons: string[];
+	boundaryEvents: string[];
 }
 
 export interface ControlSummary {

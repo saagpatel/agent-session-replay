@@ -345,6 +345,10 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 				...existing.decisionReasons,
 				reason,
 			]);
+			existing.boundaryEvents = uniqInOrder([
+				...existing.boundaryEvents,
+				finding.boundaryEvent,
+			]);
 			if (replaceReason) {
 				existing.category = category;
 				existing.rationale = finding.title;
@@ -367,6 +371,7 @@ function buildActions(findings: ControlFinding[]): ControlAction[] {
 			rationale: finding.title,
 			decisionReason: reason,
 			decisionReasons: [reason],
+			boundaryEvents: uniqInOrder([finding.boundaryEvent]),
 		});
 	}
 	return [...actions.values()].sort(
@@ -636,6 +641,8 @@ export function analyzeControlBundle(
 			sourceSystems: ["bridge-db"],
 			privacyTier: strongestPrivacyTier(pendingHandoffRecords),
 			freshness,
+			boundaryEvent:
+				actionReasonForSource("bridge-db") ?? "bridge handoff pressure",
 			outcomeSignal: `${pendingHandoffRecords.length} pending handoff record(s)`,
 			evidenceRefs: pendingHandoffRecords.slice(0, 5).map(evidence),
 			nextCommand: "bridge-db:get_pending_handoffs",
@@ -705,7 +712,8 @@ export function analyzeControlBundle(
 			sourceSystems: [source],
 			privacyTier: strongestPrivacyTier(sourceBoundaryRecords),
 			freshness,
-			boundaryEvent: "hook/permission/MCP/handoff signal",
+			boundaryEvent:
+				actionReasonForSource(source) ?? "hook/permission/MCP/handoff signal",
 			evidenceRefs: sourceBoundaryRecords.slice(0, 5).map(evidence),
 			nextCommand: `uv run afr-local latest timeline --source ${source} --limit 20`,
 			score: 40 + sourceBoundaryRecords.length,
