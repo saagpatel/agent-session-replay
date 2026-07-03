@@ -23,7 +23,7 @@ export interface ControlFinding {
 	detail: string;
 	sourceSystems: string[];
 	privacyTier: PrivacyTier;
-	freshness: "fresh" | "stale" | "unknown";
+	freshness: SourceFreshnessState;
 	boundaryEvent?: string;
 	costSignal?: string;
 	outcomeSignal?: string;
@@ -63,7 +63,7 @@ export interface ControlSummary {
 	archiveSuffix: string | null;
 	sourceFreshness: Record<
 		string,
-		{ newestTimestamp: string | null; freshness: "fresh" | "stale" | "unknown" }
+		{ newestTimestamp: string | null; freshness: SourceFreshnessState }
 	>;
 }
 
@@ -72,3 +72,5 @@ export interface ControlReport {
 	findings: ControlFinding[];
 	actions: ControlAction[];
 }
+
+export type SourceFreshnessState = "fresh" | "stale" | "historical" | "unknown";
