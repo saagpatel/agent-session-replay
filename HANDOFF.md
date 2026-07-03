@@ -97,7 +97,8 @@
   handoffs preserve why a pasted command is runnable, hidden, stale, or gone.
   Action bundles and decision notes also include a compact finding-to-command
   trace with finding kind, severity, source, signal, and metadata-ref count, so
-  the handoff explains why each command exists.
+  the handoff explains why each command exists. The same trace is visible inside
+  each action's "Why this command" preview before copying anything.
 - **Quality** — 125 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier

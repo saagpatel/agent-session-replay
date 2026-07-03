@@ -110,6 +110,15 @@ function actionBoundaries(action: ControlAction): string {
 		: "";
 }
 
+function actionTraceSignal(trace: ControlAction["trace"][number]): string {
+	return (
+		trace.boundaryEvent ??
+		trace.costSignal ??
+		trace.outcomeSignal ??
+		"no extra signal"
+	);
+}
+
 function excludedReasonText(
 	reasons: ReturnType<typeof exportRunnableReadOnlyCommands>["excludedReasons"],
 ): string {
@@ -454,6 +463,19 @@ function ActionRow({ action }: { action: ControlAction }) {
 											.join(" / ")
 									: "none"}
 							</b>
+						</div>
+						<div className="control-action__trace">
+							{action.trace.map((trace) => (
+								<div className="control-action__trace-row" key={trace.findingId}>
+									<span className={`sev-tag control-action__trace-sev`}>
+										{trace.severity}
+									</span>
+									<strong>{trace.kind}</strong>
+									<em>{list(trace.sourceSystems)}</em>
+									<b>{actionTraceSignal(trace)}</b>
+									<small>{trace.evidenceRefCount} ref(s)</small>
+								</div>
+							))}
 						</div>
 						<details className="control-action__bundle">
 							<summary>Action bundle preview</summary>
