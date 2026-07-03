@@ -49,6 +49,17 @@ function uniq(values: Array<string | undefined>): string[] {
 		.sort();
 }
 
+function uniqInOrder(values: Array<string | undefined>): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const value of values) {
+		if (!value || seen.has(value)) continue;
+		seen.add(value);
+		out.push(value);
+	}
+	return out;
+}
+
 function evidence(record: AfrRecord): string {
 	return record.evidence_ref ?? record.record_id ?? "-";
 }
@@ -89,7 +100,10 @@ function add(
 	findings: ControlFinding[],
 	finding: Omit<ControlFinding, "id"> & { id: string },
 ): void {
-	findings.push(finding);
+	findings.push({
+		...finding,
+		evidenceRefs: uniqInOrder(finding.evidenceRefs),
+	});
 }
 
 function sourceFreshness(
@@ -276,7 +290,9 @@ function actionTitle(category: ControlActionCategory, sources: string[]): string
 		case "refresh":
 			return `Refresh ${source}`;
 		case "route":
-			return "Review routing signal";
+			if (source === "evals") return "Route eval maintenance";
+			if (source === "cost-tracker") return "Review cost routing";
+			return `Route ${source}`;
 		case "inspect":
 			return `Inspect ${source}`;
 	}

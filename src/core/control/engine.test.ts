@@ -298,6 +298,7 @@ test("failed eval observations stay useful when assertion counts are redacted", 
 					status: "failed",
 					privacy_tier: "P0",
 					timestamp: "2026-06-28T12:00:01Z",
+					evidence_ref: "evals:root-1#file-1",
 				},
 				{
 					record_id: "e2",
@@ -307,6 +308,7 @@ test("failed eval observations stay useful when assertion counts are redacted", 
 					status: "failed",
 					privacy_tier: "P0",
 					timestamp: "2026-06-28T12:10:01Z",
+					evidence_ref: "evals:root-1#file-1",
 				},
 			],
 		}),
@@ -321,6 +323,13 @@ test("failed eval observations stay useful when assertion counts are redacted", 
 	assert.match(
 		finding?.outcomeSignal ?? "",
 		/failed window 2026-06-28T12:00:01Z to 2026-06-28T12:10:01Z/,
+	);
+	assert.deepEqual(finding?.evidenceRefs, ["evals:root-1#file-1"]);
+	assert.equal(
+		report.actions.find((action) =>
+			action.findingIds.includes("eval_failure"),
+		)?.title,
+		"Route eval maintenance",
 	);
 });
 
@@ -615,6 +624,28 @@ test("control actions group repeated safe commands by priority and source", () =
 					"uv run afr-local latest timeline --source evals --limit 20",
 		),
 	);
+});
+
+test("route actions get source-specific decision titles", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "c1",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-06-28T12:00:00Z",
+					cost_quality: "estimated",
+				},
+			],
+		}),
+	);
+
+	const action = report.actions.find((item) =>
+		item.findingIds.includes("cost_attention"),
+	);
+	assert.equal(action?.category, "route");
+	assert.equal(action?.title, "Review cost routing");
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
