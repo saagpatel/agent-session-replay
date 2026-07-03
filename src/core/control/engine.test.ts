@@ -677,6 +677,59 @@ test("inspect actions explain stale source reasons", () => {
 	assert.equal(action?.decisionReason, "stale evals source");
 });
 
+test("actions merge route and inspect pressure for the same command", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:00:00Z",
+			records: [
+				{
+					record_id: "old-eval",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					validation_status: "failed",
+					timestamp: "2026-04-13T05:59:47Z",
+					attributes: { tests_failed_count: 2 },
+				},
+				{
+					record_id: "old-eval-2",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					validation_status: "failed",
+					timestamp: "2026-04-13T06:00:47Z",
+				},
+				{
+					record_id: "old-eval-3",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					validation_status: "failed",
+					timestamp: "2026-04-13T06:01:47Z",
+				},
+			],
+		}),
+		Date.parse("2026-07-03T02:30:00Z"),
+	);
+
+	const actions = report.actions.filter(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	assert.equal(actions.length, 1);
+	assert.deepEqual(actions[0]?.findingIds.sort(), [
+		"eval_failure",
+		"stale_source:evals",
+	]);
+	assert.equal(actions[0]?.category, "route");
+	assert.deepEqual(actions[0]?.categories, ["inspect", "route"]);
+	assert.equal(actions[0]?.title, "Route eval maintenance");
+	assert.deepEqual(actions[0]?.decisionReasons, [
+		"critical eval failures",
+		"stale evals source",
+	]);
+});
+
 test("malformed records are surfaced as archive integrity risk", () => {
 	const report = analyzeControlBundle(bundle({ malformedRecords: 2 }));
 	const finding = report.findings.find(

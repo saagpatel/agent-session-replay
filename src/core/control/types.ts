@@ -37,6 +37,7 @@ export type ControlActionCategory = "repair" | "refresh" | "inspect" | "route";
 export interface ControlAction {
 	id: string;
 	category: ControlActionCategory;
+	categories: ControlActionCategory[];
 	priority: number;
 	title: string;
 	command: string;
@@ -46,6 +47,7 @@ export interface ControlAction {
 	privacyTier: PrivacyTier;
 	rationale: string;
 	decisionReason: string;
+	decisionReasons: string[];
 }
 
 export interface ControlSummary {
