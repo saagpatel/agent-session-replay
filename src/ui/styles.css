@@ -590,6 +590,34 @@ body {
 	padding: 7px 8px;
 	text-align: left;
 }
+.empty-note-copy {
+	align-items: center;
+	display: flex;
+	gap: 7px;
+	justify-content: center;
+	margin-top: 12px;
+}
+.empty-note-copy button {
+	background: transparent;
+	border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+	border-radius: 3px;
+	color: var(--accent);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.empty-note-copy button:hover {
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.empty-note-copy button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.empty-note-copy span {
+	color: var(--faint);
+	font-size: 10px;
+}
 
 /* ---- decision flight deck ---- */
 .control-deck {
