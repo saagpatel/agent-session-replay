@@ -112,8 +112,13 @@
   preset, while generic report/timestamp refs stay in a metadata bucket. The same
   trace is visible inside each action's "Why this command" preview before copying
   anything, sorted by impact with lower-signal rows tucked behind a small
-  disclosure when needed.
-- **Quality** — 129 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  disclosure when needed. Validation warnings now collapse into cost-quality,
+  correlation-confidence, multiple-trace, schema-field, or fallback buckets and
+  route to the likely source when possible. Copied decision notes now include a
+  Decision Pressure Map, filtered-preset Scope Caveat, hidden finding/action
+  counts, and copyable empty-preset guidance with a safe read-only inspect
+  command. Filtered notes are explicitly scoped handoffs, not all-clear signals.
+- **Quality** — 133 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -129,10 +134,12 @@
   ready. Distribute the DMG via a GitHub *Release* (binaries are gitignored under `target/`).
 - **Minor:** `parseJsonl` already counts malformed lines; `readEntry` (DropZone) still
   silently resolves on per-entry I/O error (graceful-degrade, acceptable for v1).
-- **Flight Deck confidence:** continue evidence-led polish only where real
-  archives make a decision ambiguous. Current input path is: run
-  `pnpm afr:archives`, drop the printed BEST folder, then use presets/action
-  replay inside the deck. Avoid adding collectors, daemons, or write flows.
+- **Flight Deck confidence:** current operator path is: run `pnpm afr:archives`,
+  drop the printed BEST folder, review the Decision Pressure Map/action rail, use
+  presets only as scoped filters, copy action bundles for single-command replay,
+  and copy decision notes for handoff context. Empty presets can copy a scoped
+  note with hidden all-source counts and a safe inspect command. Avoid adding
+  collectors, daemons, or write flows unless separately approved.
 
 ## Blocked
 
@@ -147,6 +154,6 @@
 
 ## Verify / Run
 
-`pnpm test` (129) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (133) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm afr:archives` (read-only AFR picker helper) · `pnpm dev` (web) ·
 `pnpm tauri dev` / `pnpm tauri build` (desktop).
