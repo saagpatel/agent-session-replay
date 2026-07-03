@@ -553,6 +553,7 @@ export function analyzeControlBundle(
 	const findings: ControlFinding[] = [];
 	const sources = sourceSystems(bundle.records);
 	const freshness = reportFreshness(bundle, nowMs);
+	const reportSummary = summary(bundle, nowMs);
 
 	if (bundle.archiveSuffix !== "all") {
 		add(findings, {
@@ -588,9 +589,9 @@ export function analyzeControlBundle(
 		});
 	}
 
-	if (freshness !== "stale") {
+	if (freshness !== "stale" || bundle.archiveSuffix !== "all") {
 		for (const [source, sourceState] of Object.entries(
-			summary(bundle, nowMs).sourceFreshness,
+			reportSummary.sourceFreshness,
 		)) {
 			if (sourceState.freshness !== "stale") continue;
 			add(findings, {
@@ -890,7 +891,6 @@ export function analyzeControlBundle(
 			(a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
 	);
 
-	const reportSummary = summary(bundle, nowMs);
 	return {
 		summary: reportSummary,
 		findings,
