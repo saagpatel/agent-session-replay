@@ -57,9 +57,10 @@
   visible without opening evidence refs. Action rows also explain their local
   safety boundary and source freshness reasons without exposing raw AFR rows.
   The rail keeps the top three commands visible and folds lower-priority actions
-  behind a source-labeled expander for dense all-source archives. Commands can
-  be copied by explicit user click; passive viewing never writes the clipboard.
-- **Quality** — 106 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  behind a source-labeled expander for dense all-source archives. Commands carry
+  a compact read-only/local-write/external-write/unknown safety chip and can be
+  copied by explicit user click; passive viewing never writes the clipboard.
+- **Quality** — 107 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

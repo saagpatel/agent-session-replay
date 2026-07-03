@@ -33,6 +33,11 @@ export interface ControlFinding {
 }
 
 export type ControlActionCategory = "repair" | "refresh" | "inspect" | "route";
+export type ControlActionSafety =
+	| "read_only"
+	| "local_write"
+	| "external_write"
+	| "unknown";
 
 export interface ControlActionSourceExplanation {
 	source: string;
@@ -47,6 +52,7 @@ export interface ControlAction {
 	priority: number;
 	title: string;
 	command: string;
+	commandSafety: ControlActionSafety;
 	sourceSystems: string[];
 	findingIds: string[];
 	severity: Severity;

@@ -370,6 +370,7 @@ test("bridge-db pending handoff records become control findings", () => {
 	assert.equal(action?.decisionReason, "bridge handoff pressure");
 	assert.deepEqual(action?.boundaryEvents, ["bridge handoff pressure"]);
 	assert.match(action?.safetyNote ?? "", /bridge-db read tool/);
+	assert.equal(action?.commandSafety, "read_only");
 	assert.deepEqual(action?.sourceExplanations, [
 		{
 			source: "bridge-db",
@@ -926,6 +927,7 @@ test("actions merge route and inspect pressure for the same command", () => {
 		"stale evals source",
 	]);
 	assert.match(actions[0]?.safetyNote ?? "", /latest local AFR metadata archive/);
+	assert.equal(actions[0]?.commandSafety, "read_only");
 	assert.deepEqual(actions[0]?.sourceExplanations, [
 		{
 			source: "evals",
@@ -949,7 +951,22 @@ test("refresh actions explain local collection side effects", () => {
 		(item) => item.command === "uv run afr-local collect all --limit 50",
 	);
 	assert.match(action?.safetyNote ?? "", /Creates a fresh local AFR metadata archive/);
+	assert.equal(action?.commandSafety, "local_write");
 	assert.equal(action?.sourceExplanations.length, 0);
+});
+
+test("validation actions are classified as read-only commands", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			validationReport: { ok: false, errors: [{ code: "schema" }] },
+		}),
+	);
+
+	const action = report.actions.find(
+		(item) => item.command === "uv run afr validate <archive>",
+	);
+	assert.equal(action?.commandSafety, "read_only");
+	assert.match(action?.safetyNote ?? "", /without uploading archive contents/);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {

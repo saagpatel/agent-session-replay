@@ -7,6 +7,13 @@ import type {
 	ControlReport,
 } from "../../core/control/types.ts";
 
+const ACTION_SAFETY_LABELS: Record<ControlAction["commandSafety"], string> = {
+	read_only: "read-only",
+	local_write: "local write",
+	external_write: "external write",
+	unknown: "unknown",
+};
+
 const FINDING_COLOR: Record<ControlFinding["severity"], string> = {
 	critical: "var(--sev-critical)",
 	warning: "var(--sev-warning)",
@@ -107,6 +114,11 @@ function ActionRow({ action }: { action: ControlAction }) {
 				<div className="control-action__command">
 					<code>{action.command}</code>
 					<div className="control-action__copy">
+						<span
+							className={`control-action__safety control-action__safety--${action.commandSafety}`}
+						>
+							{ACTION_SAFETY_LABELS[action.commandSafety]}
+						</span>
 						<button type="button" onClick={copyCommand}>
 							Copy command
 						</button>
