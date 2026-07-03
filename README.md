@@ -74,7 +74,9 @@ summaries now ride along on the action rows too, so follow-up commands show
 whether they came from bridge handoff pressure, notification routing, hooks, MCP,
 or a generic control signal without opening evidence refs. Each action also
 explains its local safety boundary and the source freshness reason behind the
-command, keeping command choice inspectable without exposing raw AFR rows.
+command, keeping command choice inspectable without exposing raw AFR rows. The
+rail keeps the top three commands visible and folds lower-priority actions behind
+a source-labeled expander so dense all-source archives stay scannable.
 
 ## Develop
 

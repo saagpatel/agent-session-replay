@@ -56,6 +56,8 @@
   handoff pressure, notification routing, hook, MCP, and generic control signals
   visible without opening evidence refs. Action rows also explain their local
   safety boundary and source freshness reasons without exposing raw AFR rows.
+  The rail keeps the top three commands visible and folds lower-priority actions
+  behind a source-labeled expander for dense all-source archives.
 - **Quality** — 106 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
@@ -90,5 +92,5 @@
 
 ## Verify / Run
 
-`pnpm test` (105) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (106) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

@@ -23,6 +23,10 @@ function list(values: string[]): string {
 	return values.length > 0 ? values.join(", ") : "none";
 }
 
+function uniqueList(values: string[]): string {
+	return list([...new Set(values)]);
+}
+
 function sourceCounts(counts: Record<string, number>): string {
 	return Object.entries(counts)
 		.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
@@ -91,6 +95,39 @@ function ActionRow({ action }: { action: ControlAction }) {
 				</div>
 				<code>{action.command}</code>
 			</div>
+		</div>
+	);
+}
+
+function ActionRail({ actions }: { actions: ControlAction[] }) {
+	const primaryActions = actions.slice(0, 3);
+	const secondaryActions = actions.slice(3);
+	return (
+		<div className="control-actions">
+			<div className="findings__head">
+				<span className="label">Next Safe Commands</span>
+				<span className="chip">{actions.length} action(s)</span>
+			</div>
+			<div className="control-actions__list">
+				{primaryActions.map((action) => (
+					<ActionRow key={action.id} action={action} />
+				))}
+			</div>
+			{secondaryActions.length > 0 ? (
+				<details className="control-actions__more">
+					<summary>
+						<span>Show {secondaryActions.length} lower-priority action(s)</span>
+						<b>
+							{uniqueList(secondaryActions.flatMap((action) => action.sourceSystems))}
+						</b>
+					</summary>
+					<div className="control-actions__list control-actions__list--secondary">
+						{secondaryActions.map((action) => (
+							<ActionRow key={action.id} action={action} />
+						))}
+					</div>
+				</details>
+			) : null}
 		</div>
 	);
 }
@@ -229,17 +266,7 @@ export function DecisionFlightDeck({
 				</div>
 				<div className="control-deck__findings">
 					{report.actions.length > 0 ? (
-						<div className="control-actions">
-							<div className="findings__head">
-								<span className="label">Next Safe Commands</span>
-								<span className="chip">{report.actions.length} action(s)</span>
-							</div>
-							<div className="control-actions__list">
-								{report.actions.map((action) => (
-									<ActionRow key={action.id} action={action} />
-								))}
-							</div>
-						</div>
+						<ActionRail actions={report.actions} />
 					) : null}
 					<div className="findings__head">
 						<span className="label">Ranked Control Findings</span>
