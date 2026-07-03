@@ -116,9 +116,12 @@ delta preview, making hidden, appeared, and changed command safety/readiness
 visible before anything is copied or run. Pasted action-bundle replay uses the
 same context awareness, distinguishing commands hidden by the active preset from
 commands missing from the archive and surfacing title, safety, and readiness
-drift from older bundles. Copied decision notes include that replay scope and
-drift, so handoffs preserve why a pasted command is runnable, hidden, stale, or
-gone. Action bundles and decision notes also include a compact finding-to-command
+drift from older bundles. Replay previews also include an operator next-step hint
+for matched, hidden, missing, and blocked bundles, so the UI says whether to
+switch presets, inspect evidence, refresh, or resolve approval first. Copied
+decision notes include that replay scope, drift, and next-step hint, so handoffs
+preserve why a pasted command is runnable, hidden, stale, or gone. Action bundles
+and decision notes also include a compact finding-to-command
 trace with finding kind, severity, source, signal, and metadata-ref count, so the
 handoff explains why each command exists. Decision note evidence keeps explicit
 source prefixes such as `evals:` even when a note is scoped to another preset,

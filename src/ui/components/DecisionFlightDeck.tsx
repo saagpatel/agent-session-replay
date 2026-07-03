@@ -281,6 +281,8 @@ function ActionBundleReplayPreview({
 				</b>
 				<span>drift</span>
 				<b>{preview.commandDrift.length > 0 ? preview.commandDrift.join(" / ") : "none"}</b>
+				<span>next</span>
+				<b>{preview.operatorHint}</b>
 			</div>
 			{preview.warnings.length > 0 ? (
 				<div className="action-replay__warnings">
