@@ -194,6 +194,7 @@ export interface ControlActionBundleReplayPreview {
 	missingEvidenceRefs: string[];
 	sourceFreshness: ControlActionSourceExplanation[];
 	warnings: string[];
+	operatorHint: string;
 }
 
 export interface ControlDecisionNoteExport {
