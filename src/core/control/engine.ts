@@ -1510,15 +1510,16 @@ export function filterControlReportBySourcePreset(
 			anySourceMatchesPreset(action.sourceSystems, preset) ||
 			action.findingIds.some((id) => findingIds.has(id)),
 	);
-	const sourceSystems = uniq([
-		...findings.flatMap((finding) => finding.sourceSystems),
-		...actions.flatMap((action) => action.sourceSystems),
-	]).filter((source) => sourceMatchesPreset(source, preset));
 	const sourceFreshness = Object.fromEntries(
 		Object.entries(report.summary.sourceFreshness).filter(([source]) =>
 			sourceMatchesPreset(source, preset),
 		),
 	);
+	const sourceSystems = uniq([
+		...Object.keys(sourceFreshness),
+		...findings.flatMap((finding) => finding.sourceSystems),
+		...actions.flatMap((action) => action.sourceSystems),
+	]).filter((source) => sourceMatchesPreset(source, preset));
 	return {
 		summary: {
 			...report.summary,
