@@ -120,6 +120,25 @@ export interface ControlActionBundleExport {
 	text: string;
 }
 
+export type ControlActionBundleReplayStatus =
+	| "empty"
+	| "invalid"
+	| "matched"
+	| "command_missing"
+	| "blocked";
+
+export interface ControlActionBundleReplayPreview {
+	status: ControlActionBundleReplayStatus;
+	command: string | null;
+	title: string | null;
+	matchedActionId: string | null;
+	matchedActionTitle: string | null;
+	importedEvidenceRefs: string[];
+	missingEvidenceRefs: string[];
+	sourceFreshness: ControlActionSourceExplanation[];
+	warnings: string[];
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];

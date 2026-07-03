@@ -8,6 +8,7 @@ import {
 	exportActionBundle,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
+	previewImportedActionBundle,
 } from "./engine.ts";
 
 function bundle(overrides: Partial<AfrBundle> = {}): AfrBundle {
@@ -1172,6 +1173,117 @@ test("action bundle export blocks approval-required commands", () => {
 	assert.equal(actionBundle.preview.commandSafety, "local_write");
 	assert.equal(actionBundle.preview.commandReadiness.state, "needs_approval");
 	assert.equal(actionBundle.text, "");
+});
+
+test("imported action bundle preview matches current runnable evidence", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const route = report.actions.find(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	const exported = exportActionBundle(route!);
+	const replay = previewImportedActionBundle(exported.text, report);
+
+	assert.equal(replay.status, "matched");
+	assert.equal(replay.command, route?.command);
+	assert.equal(replay.matchedActionTitle, "Route eval maintenance");
+	assert.deepEqual(replay.importedEvidenceRefs, ["evals:case-1"]);
+	assert.deepEqual(replay.missingEvidenceRefs, []);
+	assert.deepEqual(replay.warnings, []);
+});
+
+test("imported action bundle preview reports missing commands", () => {
+	const replay = previewImportedActionBundle(
+		[
+			"# Decision Flight Deck action bundle: Old command",
+			"## Command",
+			"uv run afr-local latest timeline --source missing --limit 20",
+			"## Evidence refs",
+			"- missing:case-1",
+		].join("\n"),
+		analyzeControlBundle(bundle()),
+	);
+
+	assert.equal(replay.status, "command_missing");
+	assert.equal(replay.matchedActionId, null);
+	assert.deepEqual(replay.missingEvidenceRefs, ["missing:case-1"]);
+	assert.match(replay.warnings[0] ?? "", /not present/);
+});
+
+test("imported action bundle preview reports missing metadata refs", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const route = report.actions.find(
+		(action) =>
+			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+	);
+	const replay = previewImportedActionBundle(
+		[
+			"# Decision Flight Deck action bundle: Route eval maintenance",
+			"## Command",
+			route?.command,
+			"## Evidence refs",
+			"- evals:case-1",
+			"- evals:case-2",
+		].join("\n"),
+		report,
+	);
+
+	assert.equal(replay.status, "matched");
+	assert.deepEqual(replay.missingEvidenceRefs, ["evals:case-2"]);
+	assert.match(replay.warnings[0] ?? "", /Missing metadata ref/);
+});
+
+test("imported action bundle preview blocks commands that are no longer exportable", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			name: "20260620T120000Z-latest",
+			archiveSuffix: "latest",
+			createdAt: "2026-06-20T12:00:00Z",
+		}),
+		Date.parse("2026-06-28T12:00:00Z"),
+	);
+	const replay = previewImportedActionBundle(
+		[
+			"# Decision Flight Deck action bundle: Refresh all-source archive",
+			"## Command",
+			"uv run afr-local collect all --limit 50",
+			"## Evidence refs",
+			"none",
+		].join("\n"),
+		report,
+	);
+
+	assert.equal(replay.status, "blocked");
+	assert.equal(replay.matchedActionTitle, "Refresh 0 sources");
+	assert.match(replay.warnings.at(-1) ?? "", /approv/i);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
