@@ -129,10 +129,10 @@
   ready. Distribute the DMG via a GitHub *Release* (binaries are gitignored under `target/`).
 - **Minor:** `parseJsonl` already counts malformed lines; `readEntry` (DropZone) still
   silently resolves on per-entry I/O error (graceful-degrade, acceptable for v1).
-- **Flight Deck confidence:** keep the next pass evidence-led: test several
-  existing AFR archives (empty, stale, dense all-source, and source-specific) and
-  tighten labels only where a real archive makes a decision ambiguous. Avoid
-  adding collectors, daemons, or write flows; keep the deck a decision surface.
+- **Flight Deck confidence:** continue evidence-led polish only where real
+  archives make a decision ambiguous. Current input path is: run
+  `pnpm afr:archives`, drop the printed BEST folder, then use presets/action
+  replay inside the deck. Avoid adding collectors, daemons, or write flows.
 
 ## Blocked
 
