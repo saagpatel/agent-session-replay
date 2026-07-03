@@ -144,6 +144,12 @@ export interface ControlDecisionNoteExport {
 	findingCount: number;
 	actionCount: number;
 	evidenceRefCount: number;
+	scope: {
+		includedEvidenceRefs: string[];
+		excludedEvidenceRefCount: number;
+		evidenceSources: string[];
+		privacyTierCounts: Record<string, number>;
+	};
 }
 
 export interface ControlSummary {

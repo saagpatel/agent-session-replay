@@ -173,6 +173,21 @@ function ActionBundleReplayPreview({
 			) : (
 				<div className="action-replay__ready">Still runnable against this archive.</div>
 			)}
+			<details className="decision-note-scope">
+				<summary>Decision note scope</summary>
+				<div className="action-replay__grid">
+					<span>privacy</span>
+					<b>{sourceCounts(decisionNote.scope.privacyTierCounts) || "unknown"}</b>
+					<span>included</span>
+					<b>{decisionNote.scope.includedEvidenceRefs.length} metadata refs</b>
+					<span>excluded</span>
+					<b>{decisionNote.scope.excludedEvidenceRefCount} raw-looking refs</b>
+					<span>sources</span>
+					<b>{list(decisionNote.scope.evidenceSources)}</b>
+					<span>refs</span>
+					<b>{list(decisionNote.scope.includedEvidenceRefs.slice(0, 8))}</b>
+				</div>
+			</details>
 			<div className="decision-note-copy">
 				<button type="button" onClick={copyDecisionNote}>
 					Copy decision note

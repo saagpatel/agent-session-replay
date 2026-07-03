@@ -1325,6 +1325,10 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.equal(note.findingCount, Math.min(report.findings.length, 5));
 	assert.equal(note.actionCount, Math.min(report.actions.length, 3));
 	assert.ok(note.evidenceRefCount > 0);
+	assert.deepEqual(note.scope.evidenceSources, ["evals"]);
+	assert.equal(note.scope.excludedEvidenceRefCount, 1);
+	assert.ok(note.scope.includedEvidenceRefs.includes("evals:case-1"));
+	assert.equal(note.scope.privacyTierCounts.unknown, 2);
 	assert.match(note.text, /^# Decision Flight Deck Note/);
 	assert.match(note.text, /- archive: 20260628T120000Z-all/);
 	assert.match(note.text, /## Top Findings/);
@@ -1344,6 +1348,9 @@ test("decision note export works without pasted replay preview", () => {
 	assert.match(note.text, /## Replay Preview\n- status: no pasted bundle preview/);
 	assert.match(note.text, /## Metadata Evidence Refs\n## metadata/);
 	assert.match(note.text, /- 2026-06-28T12:00:00Z/);
+	assert.deepEqual(note.scope.evidenceSources, ["metadata"]);
+	assert.equal(note.scope.excludedEvidenceRefCount, 0);
+	assert.deepEqual(note.scope.includedEvidenceRefs, ["2026-06-28T12:00:00Z"]);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
