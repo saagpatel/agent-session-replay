@@ -1927,6 +1927,22 @@ test("empty preset guidance gives read-only inspect command only for empty prese
 		"uv run afr-local latest timeline --source mcp --limit 20",
 	);
 	assert.doesNotMatch(guidance?.command ?? "", /collect|write|sync/i);
+	const note = exportDecisionNote({
+		archiveName: "20260628T120000Z-all",
+		report: hooksMcp,
+		fullReport: report,
+		emptyPresetGuidance: guidance,
+	});
+	assert.equal(note.scope.hiddenFindingCount, report.findings.length);
+	assert.equal(note.scope.hiddenActionCount, report.actions.length);
+	assert.match(note.text, /## Scope Caveat/);
+	assert.match(note.text, /filtered view is not an all-clear/);
+	assert.match(note.text, /## Empty Preset Guidance/);
+	assert.match(note.text, /hooks\/MCP has no active control findings/);
+	assert.match(
+		note.text,
+		/safe inspect command: uv run afr-local latest timeline --source mcp --limit 20/,
+	);
 });
 
 test("empty preset guidance distinguishes quiet metadata from absent metadata", () => {
