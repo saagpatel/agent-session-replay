@@ -757,6 +757,50 @@ function FindingCard({ finding }: { finding: ControlFinding }) {
 	);
 }
 
+function EmptyPresetNoteCopy({
+	archiveName,
+	report,
+	fullReport,
+	guidance,
+}: {
+	archiveName: string;
+	report: ControlReport;
+	fullReport: ControlReport;
+	guidance: NonNullable<ReturnType<typeof emptyPresetGuidance>>;
+}) {
+	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
+		"idle",
+	);
+	const decisionNote = exportDecisionNote({
+		archiveName,
+		report,
+		fullReport,
+		emptyPresetGuidance: guidance,
+	});
+	const copyNote = async () => {
+		try {
+			await navigator.clipboard.writeText(decisionNote.text);
+			setCopyStatus("copied");
+		} catch {
+			setCopyStatus("failed");
+		}
+	};
+	return (
+		<div className="empty-note-copy">
+			<button type="button" onClick={copyNote}>
+				Copy preset note
+			</button>
+			<span aria-live="polite">
+				{copyStatus === "copied"
+					? "Copied note"
+					: copyStatus === "failed"
+						? "Copy failed"
+						: `${decisionNote.scope.hiddenFindingCount} hidden finding(s)`}
+			</span>
+		</div>
+	);
+}
+
 export function DecisionFlightDeck({
 	bundle,
 	report,
@@ -892,6 +936,12 @@ export function DecisionFlightDeck({
 									<strong>{presetEmptyGuidance.title}</strong>
 									<span>{presetEmptyGuidance.detail}</span>
 									<code>{presetEmptyGuidance.command}</code>
+									<EmptyPresetNoteCopy
+										archiveName={bundle.name}
+										report={filteredReport}
+										fullReport={report}
+										guidance={presetEmptyGuidance}
+									/>
 								</>
 							) : (
 								"No control findings in this AFR bundle."
