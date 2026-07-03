@@ -3,6 +3,7 @@ import { useState, type CSSProperties } from "react";
 import type { AfrBundle } from "../../core/afr/types.ts";
 import {
 	buildActionBundlePreview,
+	emptyPresetGuidance,
 	exportActionBundle,
 	exportDecisionNote,
 	exportMetadataEvidenceRefs,
@@ -572,6 +573,7 @@ export function DecisionFlightDeck({
 	const filteredReport = filterControlReportBySourcePreset(report, sourcePreset);
 	const filteredSummary = filteredReport.summary;
 	const filteredFreshnessRows = sourceFreshnessRows(filteredSummary.sourceFreshness);
+	const presetEmptyGuidance = emptyPresetGuidance(sourcePreset, filteredReport);
 	return (
 		<main className="control-deck">
 			<section className="stats">
@@ -686,7 +688,15 @@ export function DecisionFlightDeck({
 						</div>
 					) : (
 						<div className="findings__empty">
-							No control findings in this AFR bundle.
+							{presetEmptyGuidance ? (
+								<>
+									<strong>{presetEmptyGuidance.title}</strong>
+									<span>{presetEmptyGuidance.detail}</span>
+									<code>{presetEmptyGuidance.command}</code>
+								</>
+							) : (
+								"No control findings in this AFR bundle."
+							)}
 						</div>
 					)}
 				</div>

@@ -18,6 +18,7 @@ import type {
 	ControlActionSafety,
 	ControlActionSourceExplanation,
 	ControlFinding,
+	ControlPresetEmptyGuidance,
 	ControlReport,
 	ControlSummary,
 	ControlSourcePreset,
@@ -1246,6 +1247,19 @@ function sourceMatchesPreset(source: string, preset: ControlSourcePreset): boole
 	return normalized.includes("hook") || normalized.includes("mcp");
 }
 
+function presetInspectSource(preset: ControlSourcePreset): string {
+	if (preset === "bridge-db") return "bridge-db";
+	if (preset === "evals") return "evals";
+	if (preset === "cost") return "cost-tracker";
+	if (preset === "hooks-mcp") return "mcp";
+	return "all";
+}
+
+function presetLabel(preset: ControlSourcePreset): string {
+	if (preset === "hooks-mcp") return "hooks/MCP";
+	return preset;
+}
+
 function anySourceMatchesPreset(
 	sources: string[],
 	preset: ControlSourcePreset,
@@ -1296,5 +1310,26 @@ export function filterControlReportBySourcePreset(
 		},
 		findings,
 		actions,
+	};
+}
+
+export function emptyPresetGuidance(
+	preset: ControlSourcePreset,
+	report: ControlReport,
+): ControlPresetEmptyGuidance | null {
+	if (preset === "all" || report.findings.length > 0 || report.actions.length > 0) {
+		return null;
+	}
+	const source = presetInspectSource(preset);
+	const label = presetLabel(preset);
+	const sourceKnown = report.summary.sourceSystems.some((item) =>
+		sourceMatchesPreset(item, preset),
+	);
+	return {
+		title: `${label} has no active control findings`,
+		detail: sourceKnown
+			? `The loaded AFR archive has ${label} metadata, but no findings or actions matched this preset.`
+			: `The loaded AFR archive has no ${label} metadata matching this preset.`,
+		command: `uv run afr-local latest timeline --source ${source} --limit 20`,
 	};
 }

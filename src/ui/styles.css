@@ -563,6 +563,33 @@ body {
 	font-size: 12px;
 	text-align: center;
 }
+.findings__empty strong,
+.findings__empty span,
+.findings__empty code {
+	display: block;
+	margin: 0 auto;
+	max-width: 560px;
+}
+.findings__empty strong {
+	color: var(--text);
+	font-size: 13px;
+	font-weight: 600;
+}
+.findings__empty span {
+	color: var(--muted);
+	line-height: 1.45;
+	margin-top: 6px;
+}
+.findings__empty code {
+	background: var(--ink);
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	color: var(--kind-tool);
+	margin-top: 10px;
+	overflow-wrap: anywhere;
+	padding: 7px 8px;
+	text-align: left;
+}
 
 /* ---- decision flight deck ---- */
 .control-deck {
