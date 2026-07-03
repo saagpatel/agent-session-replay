@@ -188,6 +188,9 @@ function actionCategory(finding: ControlFinding): ControlActionCategory {
 	) {
 		return "repair";
 	}
+	if (finding.id.startsWith("stale_source:")) {
+		return "inspect";
+	}
 	if (
 		finding.kind === "stale_source" ||
 		finding.kind === "missing_all_source_archive"
@@ -326,7 +329,7 @@ export function analyzeControlBundle(
 				),
 				freshness: "stale",
 				evidenceRefs: [sourceState.newestTimestamp ?? source],
-				nextCommand: "uv run afr-local collect all --limit 50",
+				nextCommand: `uv run afr-local latest timeline --source ${source} --limit 20`,
 				score: 120,
 			});
 		}

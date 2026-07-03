@@ -325,9 +325,14 @@ test("summary includes per-source freshness", () => {
 	assert.ok(
 		report.actions.some(
 			(action) =>
-				action.category === "refresh" &&
+				action.category === "inspect" &&
 				action.findingIds.includes("stale_source:bridge-db"),
 		),
+	);
+	assert.equal(
+		report.findings.find((finding) => finding.id === "stale_source:bridge-db")
+			?.nextCommand,
+		"uv run afr-local latest timeline --source bridge-db --limit 20",
 	);
 });
 
@@ -391,17 +396,23 @@ test("control actions group repeated safe commands by priority and source", () =
 		Date.parse("2026-06-28T12:00:00Z"),
 	);
 
-	const refresh = report.actions.find(
+	const inspect = report.actions.find(
 		(action) =>
-			action.category === "refresh" &&
-			action.command === "uv run afr-local collect all --limit 50",
+			action.category === "inspect" &&
+			action.command ===
+				"uv run afr-local latest timeline --source artifact-store --limit 20",
 	);
-	assert.deepEqual(refresh?.sourceSystems, ["artifact-store", "evals"]);
-	assert.deepEqual(refresh?.findingIds, [
-		"stale_source:artifact-store",
-		"stale_source:evals",
-	]);
-	assert.equal(refresh?.title, "Refresh 2 sources");
+	assert.deepEqual(inspect?.sourceSystems, ["artifact-store"]);
+	assert.deepEqual(inspect?.findingIds, ["stale_source:artifact-store"]);
+	assert.equal(inspect?.title, "Inspect artifact-store");
+	assert.ok(
+		report.actions.some(
+			(action) =>
+				action.category === "inspect" &&
+				action.command ===
+					"uv run afr-local latest timeline --source evals --limit 20",
+		),
+	);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
