@@ -385,6 +385,10 @@ test("summary includes per-source freshness", () => {
 
 	assert.equal(report.summary.sourceFreshness["bridge-db"]?.freshness, "stale");
 	assert.equal(report.summary.sourceFreshness.codex?.freshness, "fresh");
+	assert.equal(
+		report.summary.sourceFreshness["bridge-db"]?.reason,
+		"derived from newest source record timestamp",
+	);
 	assert.ok(
 		report.findings.some((finding) => finding.id === "stale_source:bridge-db"),
 	);
@@ -434,6 +438,10 @@ test("healthy live cost feeds are fresh despite period-boundary timestamps", () 
 	assert.equal(
 		report.summary.sourceFreshness["cost-tracker"]?.freshness,
 		"fresh",
+	);
+	assert.match(
+		report.summary.sourceFreshness["cost-tracker"]?.reason ?? "",
+		/live ccusage/,
 	);
 	assert.equal(
 		report.findings.some((finding) => finding.id === "stale_source:cost-tracker"),
@@ -510,6 +518,10 @@ test("healthy artifact-store samples are historical instead of stale", () => {
 	assert.equal(
 		report.summary.sourceFreshness["artifact-store"]?.freshness,
 		"historical",
+	);
+	assert.match(
+		report.summary.sourceFreshness["artifact-store"]?.reason ?? "",
+		/historical/,
 	);
 	assert.equal(
 		report.findings.some((finding) => finding.id === "stale_source:artifact-store"),

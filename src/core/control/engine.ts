@@ -16,6 +16,7 @@ import type {
 import {
 	routeTitleForSource,
 	sourceFreshnessOverride,
+	sourceFreshnessReason,
 	staleSourceDecisionReason,
 } from "./source-contracts.ts";
 
@@ -121,8 +122,9 @@ function sourceFreshness(
 			(record) => record.source_system === source,
 		);
 		const newestMs = newestTimestamp(sourceRecords);
+		const reconciliationRow = reconciliationRowForSource(bundle, source);
 		const freshness =
-			sourceFreshnessOverride(source, reconciliationRowForSource(bundle, source)) ??
+			sourceFreshnessOverride(source, reconciliationRow) ??
 			freshnessForTimestamp(newestMs, nowMs);
 		out[source] = {
 			newestTimestamp:
@@ -130,6 +132,11 @@ function sourceFreshness(
 					? null
 					: new Date(newestMs).toISOString(),
 			freshness,
+			reason:
+				sourceFreshnessReason(source, reconciliationRow) ??
+				(newestMs === null || !Number.isFinite(newestMs)
+					? "no timestamped source records"
+					: "derived from newest source record timestamp"),
 		};
 	}
 	return out;

@@ -66,7 +66,11 @@ export interface ControlSummary {
 	archiveSuffix: string | null;
 	sourceFreshness: Record<
 		string,
-		{ newestTimestamp: string | null; freshness: SourceFreshnessState }
+		{
+			newestTimestamp: string | null;
+			freshness: SourceFreshnessState;
+			reason: string;
+		}
 	>;
 }
 
