@@ -414,6 +414,79 @@ test("cost feeds with reconciliation warnings still surface stale source finding
 	);
 });
 
+test("healthy artifact-store samples are historical instead of stale", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:00:00Z",
+			records: [
+				{
+					record_id: "artifact-old",
+					record_type: "artifact_ref",
+					source_system: "artifact-store",
+					timestamp: "2026-06-28T11:48:27Z",
+				},
+			],
+			reconciliationReport: {
+				ok: true,
+				sources: [
+					{
+						source: "artifact-store",
+						status: "ok",
+						warnings: [],
+						source_counts: { artifact_records_sampled: 50 },
+					},
+				],
+			},
+		}),
+		Date.parse("2026-07-03T02:30:00Z"),
+	);
+
+	assert.equal(
+		report.summary.sourceFreshness["artifact-store"]?.freshness,
+		"historical",
+	);
+	assert.equal(
+		report.findings.some((finding) => finding.id === "stale_source:artifact-store"),
+		false,
+	);
+});
+
+test("artifact-store reconciliation warnings still surface stale source findings", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			createdAt: "2026-07-03T02:00:00Z",
+			records: [
+				{
+					record_id: "artifact-old",
+					record_type: "artifact_ref",
+					source_system: "artifact-store",
+					timestamp: "2026-06-28T11:48:27Z",
+				},
+			],
+			reconciliationReport: {
+				ok: false,
+				sources: [
+					{
+						source: "artifact-store",
+						status: "warning",
+						warnings: ["digest_skipped"],
+						source_counts: { artifact_records_sampled: 50 },
+					},
+				],
+			},
+		}),
+		Date.parse("2026-07-03T02:30:00Z"),
+	);
+
+	assert.equal(
+		report.summary.sourceFreshness["artifact-store"]?.freshness,
+		"stale",
+	);
+	assert.ok(
+		report.findings.some((finding) => finding.id === "stale_source:artifact-store"),
+	);
+});
+
 test("stale archives do not fan out per-source stale findings", () => {
 	const report = analyzeControlBundle(
 		bundle({

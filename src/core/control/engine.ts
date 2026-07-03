@@ -11,6 +11,7 @@ import type {
 	ControlFinding,
 	ControlReport,
 	ControlSummary,
+	SourceFreshnessState,
 } from "./types.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -70,12 +71,12 @@ function newestTimestamp(records: AfrRecord[]): number | null {
 function freshnessForTimestamp(
 	timestampMs: number | null,
 	nowMs: number,
-): ControlFinding["freshness"] {
+): SourceFreshnessState {
 	if (timestampMs === null || !Number.isFinite(timestampMs)) return "unknown";
 	return nowMs - timestampMs > STALE_ARCHIVE_MS ? "stale" : "fresh";
 }
 
-function reportFreshness(bundle: AfrBundle, nowMs: number): ControlFinding["freshness"] {
+function reportFreshness(bundle: AfrBundle, nowMs: number): SourceFreshnessState {
 	const createdAtMs = bundle.createdAt ? Date.parse(bundle.createdAt) : NaN;
 	const newestRecordMs = newestTimestamp(bundle.records);
 	const observedMs = Number.isFinite(createdAtMs)
@@ -101,9 +102,11 @@ function sourceFreshness(
 			(record) => record.source_system === source,
 		);
 		const newestMs = newestTimestamp(sourceRecords);
-		const freshness = sourceHasHealthyLiveCostFeed(bundle, source)
-			? "fresh"
-			: freshnessForTimestamp(newestMs, nowMs);
+		const freshness = sourceHasHealthyHistoricalArtifactStore(bundle, source)
+			? "historical"
+			: sourceHasHealthyLiveCostFeed(bundle, source)
+				? "fresh"
+				: freshnessForTimestamp(newestMs, nowMs);
 		out[source] = {
 			newestTimestamp:
 				newestMs === null || !Number.isFinite(newestMs)
@@ -170,6 +173,17 @@ function sourceHasHealthyLiveCostFeed(
 	if (!row || row.status !== "ok" || row.severity === "error") return false;
 	if ((row.warnings?.length ?? 0) > 0) return false;
 	return row.source_counts?.ccusage_live_used === true;
+}
+
+function sourceHasHealthyHistoricalArtifactStore(
+	bundle: AfrBundle,
+	source: string,
+): boolean {
+	if (source !== "artifact-store") return false;
+	const row = reconciliationRowForSource(bundle, source);
+	if (!row || row.status !== "ok" || row.severity === "error") return false;
+	if ((row.warnings?.length ?? 0) > 0) return false;
+	return row.source_counts?.artifact_records_sampled !== undefined;
 }
 
 function summary(bundle: AfrBundle, nowMs: number): ControlSummary {
