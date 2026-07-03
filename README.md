@@ -65,6 +65,9 @@ freshness summary shows the contract or timestamp reason behind each state, so
 `historical` and live-billing freshness are legible without opening raw AFR rows.
 Freshness override contracts carry representative reconciliation-row fixtures, so
 new source-specific contracts have to document their expected decision shape.
+Source contracts also carry decision wording for bridge handoffs,
+notification routing, hook boundaries, and MCP boundary evidence, keeping those
+action labels declarative instead of embedded in the control engine.
 
 ## Develop
 

@@ -360,6 +360,84 @@ test("bridge-db pending handoff records become control findings", () => {
 	);
 	assert.equal(finding?.severity, "warning");
 	assert.equal(finding?.nextCommand, "bridge-db:get_pending_handoffs");
+	const action = report.actions.find((item) =>
+		item.findingIds.includes("bridge_pending_handoff"),
+	);
+	assert.equal(action?.title, "Review bridge handoffs");
+	assert.equal(action?.decisionReason, "bridge handoff pressure");
+});
+
+test("boundary event actions use source contract wording", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "n1",
+					record_type: "event",
+					event_kind: "guardrail_delivery",
+					source_system: "notification-hub",
+					privacy_tier: "P2",
+					timestamp: "2026-06-28T12:00:01Z",
+				},
+			],
+		}),
+	);
+
+	const action = report.actions.find((item) =>
+		item.findingIds.includes("boundary_event"),
+	);
+	assert.equal(action?.title, "Inspect notification routing");
+	assert.equal(action?.decisionReason, "notification delivery boundary");
+});
+
+test("hook and MCP source contracts provide boundary wording", () => {
+	const hookReport = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "hook1",
+					record_type: "event",
+					event_kind: "pre_tool_hook",
+					source_system: "codex-hooks",
+					timestamp: "2026-06-28T12:00:01Z",
+				},
+			],
+		}),
+	);
+	const mcpReport = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "mcp1",
+					record_type: "event",
+					event_kind: "mcp_permission",
+					source_system: "mcp-config",
+					timestamp: "2026-06-28T12:00:01Z",
+				},
+			],
+		}),
+	);
+
+	assert.equal(
+		hookReport.actions.find((item) => item.findingIds.includes("boundary_event"))
+			?.title,
+		"Inspect hook boundary",
+	);
+	assert.equal(
+		hookReport.actions.find((item) => item.findingIds.includes("boundary_event"))
+			?.decisionReason,
+		"hook boundary event",
+	);
+	assert.equal(
+		mcpReport.actions.find((item) => item.findingIds.includes("boundary_event"))
+			?.title,
+		"Inspect MCP boundary",
+	);
+	assert.equal(
+		mcpReport.actions.find((item) => item.findingIds.includes("boundary_event"))
+			?.decisionReason,
+		"MCP boundary event",
+	);
 });
 
 test("summary includes per-source freshness", () => {
