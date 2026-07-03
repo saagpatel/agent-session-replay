@@ -9,6 +9,7 @@ import type {
 	ControlAction,
 	ControlActionBundleExport,
 	ControlActionBundlePreview,
+	ControlActionBundleReplayPreview,
 	ControlActionCategory,
 	ControlCommandExport,
 	ControlEvidenceRefExport,
@@ -1030,5 +1031,121 @@ export function exportActionBundle(action: ControlAction): ControlActionBundleEx
 			"## Evidence refs",
 			refsBlock,
 		].join("\n"),
+	};
+}
+
+function sectionText(lines: string[], heading: string): string {
+	const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+	if (start < 0) return "";
+	const out: string[] = [];
+	for (const line of lines.slice(start + 1)) {
+		if (line.startsWith("## ")) break;
+		out.push(line);
+	}
+	return out.join("\n").trim();
+}
+
+function parseActionBundleText(text: string): {
+	title: string | null;
+	command: string | null;
+	evidenceRefs: string[];
+} {
+	const lines = text.split(/\r?\n/);
+	const heading = lines.find((line) =>
+		line.startsWith("# Decision Flight Deck action bundle: "),
+	);
+	const title = heading
+		? heading.replace("# Decision Flight Deck action bundle: ", "").trim() || null
+		: null;
+	const command = sectionText(lines, "Command").split(/\r?\n/)[0]?.trim() || null;
+	const evidenceStart = lines.findIndex(
+		(line) => line.trim() === "## Evidence refs",
+	);
+	const evidenceLines = evidenceStart >= 0 ? lines.slice(evidenceStart + 1) : [];
+	const evidenceRefs = evidenceLines
+		.map((line) => line.trim())
+		.filter((line) => line.startsWith("- "))
+		.map((line) => line.slice(2).trim())
+		.filter(Boolean);
+	return {
+		title,
+		command,
+		evidenceRefs: uniqInOrder(evidenceRefs),
+	};
+}
+
+export function previewImportedActionBundle(
+	text: string,
+	report: ControlReport,
+): ControlActionBundleReplayPreview {
+	if (!text.trim()) {
+		return {
+			status: "empty",
+			command: null,
+			title: null,
+			matchedActionId: null,
+			matchedActionTitle: null,
+			importedEvidenceRefs: [],
+			missingEvidenceRefs: [],
+			sourceFreshness: [],
+			warnings: ["Paste an action bundle to preview it."],
+		};
+	}
+	const parsed = parseActionBundleText(text);
+	if (!parsed.command) {
+		return {
+			status: "invalid",
+			command: null,
+			title: parsed.title,
+			matchedActionId: null,
+			matchedActionTitle: null,
+			importedEvidenceRefs: parsed.evidenceRefs,
+			missingEvidenceRefs: parsed.evidenceRefs,
+			sourceFreshness: [],
+			warnings: ["No command section found in pasted bundle."],
+		};
+	}
+	const action = report.actions.find((candidate) => candidate.command === parsed.command);
+	if (!action) {
+		return {
+			status: "command_missing",
+			command: parsed.command,
+			title: parsed.title,
+			matchedActionId: null,
+			matchedActionTitle: null,
+			importedEvidenceRefs: parsed.evidenceRefs,
+			missingEvidenceRefs: parsed.evidenceRefs,
+			sourceFreshness: [],
+			warnings: ["Command is not present in the currently loaded AFR evidence."],
+		};
+	}
+	const currentRefs = new Set(
+		exportMetadataEvidenceRefs({
+			sourceSystems: action.sourceSystems,
+			evidenceRefs: action.evidenceRefs,
+			title: action.title,
+		}).groups.flatMap((group) => group.refs),
+	);
+	const missingEvidenceRefs = parsed.evidenceRefs.filter((ref) => !currentRefs.has(ref));
+	const replayPreview = buildActionBundlePreview(action);
+	const warnings = [
+		...missingEvidenceRefs.map((ref) => `Missing metadata ref: ${ref}`),
+		...action.sourceExplanations
+			.filter((row) => row.freshness !== "fresh" && row.freshness !== "historical")
+			.map((row) => `${row.source} is ${row.freshness}: ${row.freshnessReason}`),
+	];
+	if (!replayPreview.commandExportEligible) {
+		warnings.push(replayPreview.commandReadiness.reason);
+	}
+	return {
+		status: replayPreview.commandExportEligible ? "matched" : "blocked",
+		command: parsed.command,
+		title: parsed.title,
+		matchedActionId: action.id,
+		matchedActionTitle: action.title,
+		importedEvidenceRefs: parsed.evidenceRefs,
+		missingEvidenceRefs,
+		sourceFreshness: action.sourceExplanations,
+		warnings,
 	};
 }

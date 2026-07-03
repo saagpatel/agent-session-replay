@@ -92,7 +92,10 @@ the copied block. Each action also has a compact bundle preview showing command
 export eligibility, readiness, boundary, and evidence-ref counts before anything
 is copied or run. Runnable read-only actions can copy an action bundle with the
 command plus preflight and metadata refs; approval-required or placeholder
-commands keep the bundle copy disabled with the blocked reason visible.
+commands keep the bundle copy disabled with the blocked reason visible. Copied
+action bundles can be pasted back into the deck for a replay preview against the
+currently loaded AFR evidence, surfacing missing commands, missing metadata refs,
+source freshness drift, and blocked export status before anything is run.
 
 ## Develop
 

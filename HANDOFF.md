@@ -73,8 +73,11 @@
   readiness, boundary, and evidence-ref counts before anything is copied or run.
   Runnable read-only actions can copy a command + preflight + metadata-ref bundle;
   approval-required or placeholder commands keep bundle copy disabled with the
-  blocked reason visible.
-- **Quality** — 112 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  blocked reason visible. Copied action bundles can be pasted back into the deck
+  for a replay preview against the current AFR evidence, surfacing missing
+  commands, missing metadata refs, source freshness drift, and blocked export
+  status before anything is run.
+- **Quality** — 116 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

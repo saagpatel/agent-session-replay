@@ -6,6 +6,7 @@ import {
 	exportActionBundle,
 	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
+	previewImportedActionBundle,
 } from "../../core/control/engine.ts";
 import type {
 	ControlAction,
@@ -100,6 +101,57 @@ function excludedReasonText(
 	return reasons
 		.map((row) => `${row.count} ${EXPORT_EXCLUDED_LABELS[row.reason]}`)
 		.join(" / ");
+}
+
+function ActionBundleReplayPreview({ report }: { report: ControlReport }) {
+	const [bundleText, setBundleText] = useState("");
+	const preview = previewImportedActionBundle(bundleText, report);
+	return (
+		<section className="action-replay">
+			<div className="findings__head">
+				<span className="label">Action Bundle Replay Preview</span>
+				<span className={`chip action-replay__status--${preview.status}`}>
+					{preview.status.replace("_", " ")}
+				</span>
+			</div>
+			<textarea
+				aria-label="Paste action bundle"
+				value={bundleText}
+				onChange={(event) => setBundleText(event.target.value)}
+				placeholder="Paste a copied action bundle to check it against this AFR evidence."
+			/>
+			<div className="action-replay__grid">
+				<span>command</span>
+				<b>{preview.command ?? "none"}</b>
+				<span>match</span>
+				<b>{preview.matchedActionTitle ?? "none"}</b>
+				<span>refs</span>
+				<b>
+					{preview.importedEvidenceRefs.length} imported
+					{preview.missingEvidenceRefs.length > 0
+						? ` / ${preview.missingEvidenceRefs.length} missing`
+						: ""}
+				</b>
+				<span>freshness</span>
+				<b>
+					{preview.sourceFreshness.length > 0
+						? preview.sourceFreshness
+								.map((row) => `${row.source} ${row.freshness}`)
+								.join(" / ")
+						: "unknown"}
+				</b>
+			</div>
+			{preview.warnings.length > 0 ? (
+				<div className="action-replay__warnings">
+					{preview.warnings.slice(0, 4).map((warning) => (
+						<span key={warning}>{warning}</span>
+					))}
+				</div>
+			) : (
+				<div className="action-replay__ready">Still runnable against this archive.</div>
+			)}
+		</section>
+	);
 }
 
 function EvidenceRefCopy({
@@ -532,7 +584,10 @@ export function DecisionFlightDeck({
 				</div>
 				<div className="control-deck__findings">
 					{report.actions.length > 0 ? (
-						<ActionRail actions={report.actions} />
+						<>
+							<ActionRail actions={report.actions} />
+							<ActionBundleReplayPreview report={report} />
+						</>
 					) : null}
 					<div className="findings__head">
 						<span className="label">Ranked Control Findings</span>
