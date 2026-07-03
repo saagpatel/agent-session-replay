@@ -1307,6 +1307,45 @@ body {
 	font-weight: 500;
 	overflow-wrap: anywhere;
 }
+.control-action__trace {
+	border-top: 1px solid var(--line);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 7px;
+	padding-top: 7px;
+}
+.control-action__trace-row {
+	display: grid;
+	grid-template-columns: auto minmax(80px, 0.7fr) minmax(70px, 0.4fr) minmax(120px, 1fr) auto;
+	align-items: start;
+	gap: 6px;
+	min-width: 0;
+}
+.control-action__trace-row strong,
+.control-action__trace-row em,
+.control-action__trace-row b,
+.control-action__trace-row small {
+	font-size: 10px;
+	font-style: normal;
+	font-weight: 500;
+	overflow-wrap: anywhere;
+}
+.control-action__trace-row strong {
+	color: var(--text);
+}
+.control-action__trace-row em,
+.control-action__trace-row small {
+	color: var(--faint);
+}
+.control-action__trace-row b {
+	color: var(--muted);
+}
+.control-action__trace-sev {
+	font-size: 9px;
+	line-height: 1;
+	padding: 3px 5px;
+}
 .evidence-copy {
 	display: flex;
 	align-items: center;
