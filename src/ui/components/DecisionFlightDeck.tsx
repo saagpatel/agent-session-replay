@@ -194,12 +194,14 @@ function CommandDeltaPreview({
 function ActionBundleReplayPreview({
 	archiveName,
 	report,
+	fullReport,
 }: {
 	archiveName: string;
 	report: ControlReport;
+	fullReport: ControlReport;
 }) {
 	const [bundleText, setBundleText] = useState("");
-	const preview = previewImportedActionBundle(bundleText, report);
+	const preview = previewImportedActionBundle(bundleText, report, fullReport);
 	const decisionNote = exportDecisionNote({
 		archiveName,
 		report,
@@ -235,6 +237,8 @@ function ActionBundleReplayPreview({
 				<b>{preview.command ?? "none"}</b>
 				<span>match</span>
 				<b>{preview.matchedActionTitle ?? "none"}</b>
+				<span>scope</span>
+				<b>{preview.commandScope.replaceAll("_", " ")}</b>
 				<span>refs</span>
 				<b>
 					{preview.importedEvidenceRefs.length} imported
@@ -250,6 +254,8 @@ function ActionBundleReplayPreview({
 								.join(" / ")
 						: "unknown"}
 				</b>
+				<span>drift</span>
+				<b>{preview.commandDrift.length > 0 ? preview.commandDrift.join(" / ") : "none"}</b>
 			</div>
 			{preview.warnings.length > 0 ? (
 				<div className="action-replay__warnings">
@@ -788,6 +794,7 @@ export function DecisionFlightDeck({
 							<ActionBundleReplayPreview
 								archiveName={bundle.name}
 								report={filteredReport}
+								fullReport={report}
 							/>
 						</>
 					) : null}

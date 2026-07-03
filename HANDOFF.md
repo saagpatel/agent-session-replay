@@ -90,8 +90,11 @@
   unknown safety while keeping grouped export limited to runnable read-only
   commands. Preset switches also show a command delta preview, making hidden,
   appeared, and changed command safety/readiness visible before anything is
-  copied or run.
-- **Quality** — 122 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  copied or run. Pasted action-bundle replay uses the same context awareness,
+  distinguishing commands hidden by the active preset from commands missing from
+  the archive and surfacing title, safety, and readiness drift from older
+  bundles.
+- **Quality** — 124 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -125,5 +128,5 @@
 
 ## Verify / Run
 
-`pnpm test` (122) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (124) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).

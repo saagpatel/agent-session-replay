@@ -1158,6 +1158,8 @@ function parseActionBundleText(text: string): {
 	title: string | null;
 	command: string | null;
 	evidenceRefs: string[];
+	safety: ControlActionSafety | null;
+	readiness: ControlActionReadiness["state"] | null;
 } {
 	const lines = text.split(/\r?\n/);
 	const heading = lines.find((line) =>
@@ -1171,6 +1173,16 @@ function parseActionBundleText(text: string): {
 		(line) => line.trim() === "## Evidence refs",
 	);
 	const evidenceLines = evidenceStart >= 0 ? lines.slice(evidenceStart + 1) : [];
+	const preflightLines = sectionText(lines, "Preflight")
+		.split(/\r?\n/)
+		.map((line) => line.trim());
+	const preflightValue = (key: string): string | null => {
+		const prefix = `- ${key}: `;
+		const line = preflightLines.find((item) => item.startsWith(prefix));
+		return line ? line.slice(prefix.length).trim() || null : null;
+	};
+	const safety = preflightValue("safety");
+	const readiness = preflightValue("readiness");
 	const evidenceRefs = evidenceLines
 		.map((line) => line.trim())
 		.filter((line) => line.startsWith("- "))
@@ -1180,53 +1192,116 @@ function parseActionBundleText(text: string): {
 		title,
 		command,
 		evidenceRefs: uniqInOrder(evidenceRefs),
+		safety:
+			safety === "read_only" ||
+			safety === "local_write" ||
+			safety === "external_write" ||
+			safety === "unknown"
+				? safety
+				: null,
+		readiness:
+			readiness === "runnable_now" ||
+			readiness === "needs_placeholder" ||
+			readiness === "needs_approval"
+				? readiness
+				: null,
 	};
+}
+
+function replayEmpty(status: ControlActionBundleReplayPreview["status"], input: {
+	command?: string | null;
+	title?: string | null;
+	importedEvidenceRefs?: string[];
+	missingEvidenceRefs?: string[];
+	warnings: string[];
+	commandScope?: ControlActionBundleReplayPreview["commandScope"];
+	commandDrift?: string[];
+}): ControlActionBundleReplayPreview {
+	return {
+		status,
+		command: input.command ?? null,
+		title: input.title ?? null,
+		matchedActionId: null,
+		matchedActionTitle: null,
+		commandScope: input.commandScope ?? "missing_from_archive",
+		commandDrift: input.commandDrift ?? [],
+		importedEvidenceRefs: input.importedEvidenceRefs ?? [],
+		missingEvidenceRefs: input.missingEvidenceRefs ?? [],
+		sourceFreshness: [],
+		warnings: input.warnings,
+	};
+}
+
+function commandDriftForParsedBundle(
+	parsed: ReturnType<typeof parseActionBundleText>,
+	action: ControlAction,
+): string[] {
+	const drift: string[] = [];
+	if (parsed.title && parsed.title !== action.title) {
+		drift.push(`Title changed: ${parsed.title} -> ${action.title}`);
+	}
+	if (parsed.safety && parsed.safety !== action.commandSafety) {
+		drift.push(`Safety changed: ${parsed.safety} -> ${action.commandSafety}`);
+	}
+	if (parsed.readiness && parsed.readiness !== action.commandReadiness.state) {
+		drift.push(
+			`Readiness changed: ${parsed.readiness} -> ${action.commandReadiness.state}`,
+		);
+	}
+	return drift;
 }
 
 export function previewImportedActionBundle(
 	text: string,
 	report: ControlReport,
+	fullReport: ControlReport = report,
 ): ControlActionBundleReplayPreview {
 	if (!text.trim()) {
-		return {
-			status: "empty",
-			command: null,
-			title: null,
-			matchedActionId: null,
-			matchedActionTitle: null,
-			importedEvidenceRefs: [],
-			missingEvidenceRefs: [],
-			sourceFreshness: [],
+		return replayEmpty("empty", {
 			warnings: ["Paste an action bundle to preview it."],
-		};
+		});
 	}
 	const parsed = parseActionBundleText(text);
 	if (!parsed.command) {
-		return {
-			status: "invalid",
-			command: null,
+		return replayEmpty("invalid", {
 			title: parsed.title,
-			matchedActionId: null,
-			matchedActionTitle: null,
 			importedEvidenceRefs: parsed.evidenceRefs,
 			missingEvidenceRefs: parsed.evidenceRefs,
-			sourceFreshness: [],
 			warnings: ["No command section found in pasted bundle."],
-		};
+		});
 	}
 	const action = report.actions.find((candidate) => candidate.command === parsed.command);
 	if (!action) {
-		return {
-			status: "command_missing",
+		const archiveAction = fullReport.actions.find(
+			(candidate) => candidate.command === parsed.command,
+		);
+		if (archiveAction) {
+			const drift = commandDriftForParsedBundle(parsed, archiveAction);
+			return {
+				status: "hidden_by_preset",
+				command: parsed.command,
+				title: parsed.title,
+				matchedActionId: archiveAction.id,
+				matchedActionTitle: archiveAction.title,
+				commandScope: "hidden_by_preset",
+				commandDrift: drift,
+				importedEvidenceRefs: parsed.evidenceRefs,
+				missingEvidenceRefs: [],
+				sourceFreshness: archiveAction.sourceExplanations,
+				warnings: [
+					"Command exists in the loaded AFR archive but is hidden by the active source preset.",
+					...drift,
+				],
+			};
+		}
+		return replayEmpty("command_missing", {
 			command: parsed.command,
 			title: parsed.title,
-			matchedActionId: null,
-			matchedActionTitle: null,
 			importedEvidenceRefs: parsed.evidenceRefs,
 			missingEvidenceRefs: parsed.evidenceRefs,
-			sourceFreshness: [],
+			commandScope: "missing_from_archive",
 			warnings: ["Command is not present in the currently loaded AFR evidence."],
-		};
+		});
 	}
 	const currentRefs = new Set(
 		exportMetadataEvidenceRefs({
@@ -1237,7 +1312,9 @@ export function previewImportedActionBundle(
 	);
 	const missingEvidenceRefs = parsed.evidenceRefs.filter((ref) => !currentRefs.has(ref));
 	const replayPreview = buildActionBundlePreview(action);
+	const commandDrift = commandDriftForParsedBundle(parsed, action);
 	const warnings = [
+		...commandDrift,
 		...missingEvidenceRefs.map((ref) => `Missing metadata ref: ${ref}`),
 		...action.sourceExplanations
 			.filter((row) => row.freshness !== "fresh" && row.freshness !== "historical")
@@ -1252,6 +1329,8 @@ export function previewImportedActionBundle(
 		title: parsed.title,
 		matchedActionId: action.id,
 		matchedActionTitle: action.title,
+		commandScope: "current_context",
+		commandDrift,
 		importedEvidenceRefs: parsed.evidenceRefs,
 		missingEvidenceRefs,
 		sourceFreshness: action.sourceExplanations,

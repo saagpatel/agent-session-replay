@@ -109,7 +109,10 @@ command safety ledger that groups every surfaced command by read-only,
 local-write, external-write, or unknown safety while keeping grouped export
 limited to runnable read-only commands. Preset switches also show a command
 delta preview, making hidden, appeared, and changed command safety/readiness
-visible before anything is copied or run.
+visible before anything is copied or run. Pasted action-bundle replay uses the
+same context awareness, distinguishing commands hidden by the active preset from
+commands missing from the archive and surfacing title, safety, and readiness
+drift from older bundles.
 
 ## Develop
 
