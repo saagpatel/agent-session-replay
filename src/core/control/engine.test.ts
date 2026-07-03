@@ -928,6 +928,17 @@ test("actions merge route and inspect pressure for the same command", () => {
 	]);
 	assert.match(actions[0]?.safetyNote ?? "", /latest local AFR metadata archive/);
 	assert.equal(actions[0]?.commandSafety, "read_only");
+	assert.match(actions[0]?.preview.boundary ?? "", /Read-only inspection/);
+	assert.deepEqual(actions[0]?.preview.why, [
+		"critical eval failures",
+		"stale evals source",
+	]);
+	assert.deepEqual(actions[0]?.preview.evidenceRefs, [
+		"old-eval",
+		"old-eval-2",
+		"old-eval-3",
+		"2026-04-13T06:01:47.000Z",
+	]);
 	assert.deepEqual(actions[0]?.sourceExplanations, [
 		{
 			source: "evals",
@@ -952,6 +963,11 @@ test("refresh actions explain local collection side effects", () => {
 	);
 	assert.match(action?.safetyNote ?? "", /Creates a fresh local AFR metadata archive/);
 	assert.equal(action?.commandSafety, "local_write");
+	assert.match(action?.preview.boundary ?? "", /Local write/);
+	assert.deepEqual(action?.preview.evidenceRefs, [
+		"20260620T120000Z-latest",
+		"2026-06-20T12:00:00Z",
+	]);
 	assert.equal(action?.sourceExplanations.length, 0);
 });
 

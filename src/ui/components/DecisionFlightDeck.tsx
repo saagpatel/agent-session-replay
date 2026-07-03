@@ -128,6 +128,25 @@ function ActionRow({ action }: { action: ControlAction }) {
 							</span>
 						) : null}
 					</div>
+					<details className="control-action__preview">
+						<summary>Why this command</summary>
+						<div className="control-action__preview-grid">
+							<span>boundary</span>
+							<b>{action.preview.boundary}</b>
+							<span>why</span>
+							<b>{list(action.preview.why)}</b>
+							<span>evidence</span>
+							<b>{list(action.preview.evidenceRefs)}</b>
+							<span>freshness</span>
+							<b>
+								{action.sourceExplanations.length > 0
+									? action.sourceExplanations
+											.map((row) => `${row.source} ${row.freshness}`)
+											.join(" / ")
+									: "none"}
+							</b>
+						</div>
+					</details>
 				</div>
 			</div>
 		</div>
