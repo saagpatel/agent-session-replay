@@ -8,6 +8,7 @@ import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
 	ControlActionCategory,
+	ControlCommandExport,
 	ControlActionReadiness,
 	ControlActionSafety,
 	ControlActionSourceExplanation,
@@ -869,5 +870,30 @@ export function analyzeControlBundle(
 		summary: reportSummary,
 		findings,
 		actions: buildActions(findings, reportSummary.sourceFreshness),
+	};
+}
+
+export function exportRunnableReadOnlyCommands(
+	actions: ControlAction[],
+): ControlCommandExport {
+	const commands = actions
+		.filter(
+			(action) =>
+				action.commandSafety === "read_only" &&
+				action.commandReadiness.state === "runnable_now",
+		)
+		.map((action) => action.command);
+	const text =
+		commands.length > 0
+			? [
+					"# Decision Flight Deck runnable read-only commands",
+					...commands,
+				].join("\n")
+			: "";
+	return {
+		commands,
+		text,
+		includedCount: commands.length,
+		excludedCount: actions.length - commands.length,
 	};
 }

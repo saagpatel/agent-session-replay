@@ -64,8 +64,11 @@
   value, or needs explicit approval because it creates local artifacts or crosses
   an unknown/write boundary. Each action expands into a compact preview explaining
   why the command was suggested, what boundary it crosses, and which
-  metadata-only evidence refs triggered it.
-- **Quality** — 107 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  metadata-only evidence refs triggered it. The rail can also export one grouped
+  command block by explicit click, limited to read-only commands that are
+  runnable now; placeholder and approval-required commands are excluded by
+  default.
+- **Quality** — 108 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

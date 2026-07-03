@@ -800,6 +800,40 @@ body {
 	flex-wrap: wrap;
 	gap: 8px;
 }
+.control-actions__export {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	gap: 8px;
+	min-width: 0;
+}
+.control-actions__export button {
+	border: 1px solid color-mix(in srgb, var(--kind-tool) 40%, var(--line));
+	border-radius: 3px;
+	background: transparent;
+	color: var(--kind-tool);
+	cursor: pointer;
+	font: inherit;
+	font-size: 10px;
+	padding: 4px 7px;
+}
+.control-actions__export button:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--kind-tool) 10%, transparent);
+}
+.control-actions__export button:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+.control-actions__export button:disabled {
+	border-color: var(--line);
+	color: var(--faint);
+	cursor: default;
+}
+.control-actions__export span {
+	color: var(--faint);
+	font-size: 10px;
+}
 .control-action__safety {
 	border: 1px solid var(--line);
 	border-radius: 3px;
