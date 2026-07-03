@@ -44,8 +44,9 @@
   and failed observation windows for safer routing decisions. The action rail now
   deduplicates repeated evidence refs, uses source-specific route titles, and
   adds compact decision reasons. Shared commands stay in one row while preserving
-  every contributing category and reason.
-- **Quality** — 93 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  every contributing category and reason. Source-specific freshness/routing quirks
+  are centralized in a small source contract layer.
+- **Quality** — 97 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.
@@ -79,5 +80,5 @@
 
 ## Verify / Run
 
-`pnpm test` (93) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
+`pnpm test` (97) · `pnpm typecheck` · `pnpm build` · `pnpm render:smoke <main.jsonl> [sidechains]`
 · `pnpm dev` (web) · `pnpm tauri dev` / `pnpm tauri build` (desktop).
