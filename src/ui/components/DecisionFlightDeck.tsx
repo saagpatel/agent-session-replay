@@ -48,6 +48,7 @@ function ActionRow({ action }: { action: ControlAction }) {
 					{action.category}
 				</span>
 				<span>{action.severity}</span>
+				<span>{action.decisionReason}</span>
 				<span>{list(action.sourceSystems)}</span>
 				<span>
 					{action.findingIds.length} finding

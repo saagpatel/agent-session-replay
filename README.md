@@ -55,6 +55,8 @@ observation counts, assertion counts when available, command-result counts, and
 the failed observation time window for safer routing decisions.
 The action rail deduplicates repeated evidence refs and uses source-specific route
 titles so eval and cost follow-up are decision commands rather than generic alerts.
+Each action includes a compact decision reason, such as critical eval failures,
+estimated cost signal, or stale source evidence.
 
 ## Develop
 
