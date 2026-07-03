@@ -86,7 +86,9 @@ preview explaining why the command was suggested, what boundary it crosses, and
 which metadata-only evidence refs triggered it. The rail can also export one
 grouped command block by explicit click, limited to commands that are both
 read-only and runnable now; placeholder and approval-required commands stay out
-of the exported block by default.
+of the exported block by default. Actions and findings can also copy grouped
+metadata evidence refs by explicit click, with raw-looking values excluded from
+the copied block.
 
 ## Develop
 

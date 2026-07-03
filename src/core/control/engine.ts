@@ -9,6 +9,7 @@ import type {
 	ControlAction,
 	ControlActionCategory,
 	ControlCommandExport,
+	ControlEvidenceRefExport,
 	ControlActionReadiness,
 	ControlActionSafety,
 	ControlActionSourceExplanation,
@@ -908,5 +909,61 @@ export function exportRunnableReadOnlyCommands(
 			reason: reason as ControlCommandExport["excludedReasons"][number]["reason"],
 			count,
 		})),
+	};
+}
+
+function isMetadataEvidenceRef(ref: string): boolean {
+	const trimmed = ref.trim();
+	return (
+		trimmed.length > 0 &&
+		trimmed.length <= 200 &&
+		!trimmed.includes("\n") &&
+		!trimmed.includes("\r") &&
+		!trimmed.startsWith("{") &&
+		!trimmed.startsWith("[")
+	);
+}
+
+function evidenceRefSource(ref: string, sourceSystems: string[]): string {
+	const [prefix] = ref.split(":", 1);
+	if (prefix && sourceSystems.includes(prefix)) return prefix;
+	if (sourceSystems.length === 1) return sourceSystems[0] ?? "metadata";
+	return "metadata";
+}
+
+export function exportMetadataEvidenceRefs(input: {
+	sourceSystems: string[];
+	evidenceRefs: string[];
+	title?: string;
+}): ControlEvidenceRefExport {
+	const groups = new Map<string, string[]>();
+	let excludedCount = 0;
+	for (const ref of uniqInOrder(input.evidenceRefs)) {
+		if (!isMetadataEvidenceRef(ref)) {
+			excludedCount += 1;
+			continue;
+		}
+		const source = evidenceRefSource(ref, input.sourceSystems);
+		groups.set(source, [...(groups.get(source) ?? []), ref]);
+	}
+	const grouped = [...groups.entries()].map(([source, refs]) => ({
+		source,
+		refs,
+	}));
+	const text =
+		grouped.length > 0
+			? [
+					`# Decision Flight Deck evidence refs${input.title ? `: ${input.title}` : ""}`,
+					...grouped.flatMap((group) => [
+						`## ${group.source}`,
+						...group.refs.map((ref) => `- ${ref}`),
+					]),
+				].join("\n")
+			: "";
+	return {
+		groups: grouped,
+		text,
+		includedCount: grouped.reduce((total, group) => total + group.refs.length, 0),
+		excludedCount,
 	};
 }

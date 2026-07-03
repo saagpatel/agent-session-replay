@@ -94,6 +94,16 @@ export interface ControlCommandExport {
 	}>;
 }
 
+export interface ControlEvidenceRefExport {
+	groups: Array<{
+		source: string;
+		refs: string[];
+	}>;
+	text: string;
+	includedCount: number;
+	excludedCount: number;
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];
