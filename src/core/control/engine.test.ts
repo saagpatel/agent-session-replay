@@ -1237,7 +1237,7 @@ test("action bundle preview summarizes command eligibility and evidence refs", (
 	assert.equal(routePreview.commandSafety, "read_only");
 	assert.equal(routePreview.commandReadiness.state, "runnable_now");
 	assert.equal(routePreview.evidenceRefCount, 2);
-	assert.deepEqual(routePreview.evidenceSources, ["evals"]);
+	assert.deepEqual(routePreview.evidenceSources, ["evals", "metadata"]);
 	assert.match(routePreview.boundary, /Read-only inspection/);
 	assert.equal(refreshPreview.commandExportEligible, false);
 	assert.equal(refreshPreview.commandSafety, "local_write");
@@ -1599,6 +1599,51 @@ test("decision note export includes replay scope and command drift", () => {
 	assert.match(note.text, /- drift: Title changed: Old bridge route ->/);
 	assert.match(note.text, /Safety changed: unknown -> read_only/);
 	assert.match(note.text, /hidden by the active source preset/);
+});
+
+test("decision note export preserves imported ref source prefixes across presets", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "evals:case-1",
+					record_type: "eval_observation",
+					source_system: "evals",
+					status: "failed",
+					timestamp: "2026-06-28T12:02:00Z",
+					evidence_ref: "evals:case-1",
+				},
+				{
+					record_id: "bridge-db:handoff-1",
+					record_type: "handoff",
+					source_system: "bridge-db",
+					timestamp: "2026-06-28T12:03:00Z",
+					evidence_ref: "bridge-db:handoff-1",
+					attributes: { handoff_status: "pending" },
+				},
+			],
+		}),
+		Date.parse("2026-06-28T12:05:00Z"),
+	);
+	const evalAction = report.actions.find((action) =>
+		action.command.includes("--source evals"),
+	);
+	const bridge = filterControlReportBySourcePreset(report, "bridge-db");
+	const replay = previewImportedActionBundle(
+		exportActionBundle(evalAction!).text,
+		bridge,
+		report,
+	);
+	const note = exportDecisionNote({
+		archiveName: "20260628T120000Z-all",
+		report: bridge,
+		replayPreview: replay,
+	});
+
+	assert.equal(replay.status, "hidden_by_preset");
+	assert.match(note.text, /## bridge-db\n- bridge-db:handoff-1/);
+	assert.match(note.text, /## evals\n- evals:case-1/);
+	assert.deepEqual(note.scope.evidenceSources, ["bridge-db", "evals"]);
 });
 
 test("decision note export works without pasted replay preview", () => {
