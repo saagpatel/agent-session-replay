@@ -49,6 +49,10 @@ function ActionRow({ action }: { action: ControlAction }) {
 				</span>
 				<span>{action.severity}</span>
 				<span>{list(action.sourceSystems)}</span>
+				<span>
+					{action.findingIds.length} finding
+					{action.findingIds.length === 1 ? "" : "s"}
+				</span>
 			</div>
 			<div className="control-action__main">
 				<div>

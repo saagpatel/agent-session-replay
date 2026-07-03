@@ -53,6 +53,8 @@ the deck focused on operationally risky freshness gaps.
 Eval failures preserve AFR's redaction boundary while still surfacing failed
 observation counts, assertion counts when available, command-result counts, and
 the failed observation time window for safer routing decisions.
+The action rail deduplicates repeated evidence refs and uses source-specific route
+titles so eval and cost follow-up are decision commands rather than generic alerts.
 
 ## Develop
 
