@@ -7,6 +7,7 @@ import type {
 import { SEVERITY_RANK, type Severity } from "../detect/types.ts";
 import type {
 	ControlAction,
+	ControlActionBundlePreview,
 	ControlActionCategory,
 	ControlCommandExport,
 	ControlEvidenceRefExport,
@@ -965,5 +966,27 @@ export function exportMetadataEvidenceRefs(input: {
 		text,
 		includedCount: grouped.reduce((total, group) => total + group.refs.length, 0),
 		excludedCount,
+	};
+}
+
+export function buildActionBundlePreview(
+	action: ControlAction,
+): ControlActionBundlePreview {
+	const evidenceExport = exportMetadataEvidenceRefs({
+		sourceSystems: action.sourceSystems,
+		evidenceRefs: action.evidenceRefs,
+		title: action.title,
+	});
+	return {
+		commandExportEligible:
+			action.commandSafety === "read_only" &&
+			action.commandReadiness.state === "runnable_now",
+		commandSafety: action.commandSafety,
+		commandReadiness: action.commandReadiness,
+		command: action.command,
+		boundary: action.preview.boundary,
+		evidenceRefCount: evidenceExport.includedCount,
+		excludedEvidenceRefCount: evidenceExport.excludedCount,
+		evidenceSources: evidenceExport.groups.map((group) => group.source),
 	};
 }

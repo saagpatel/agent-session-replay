@@ -104,6 +104,17 @@ export interface ControlEvidenceRefExport {
 	excludedCount: number;
 }
 
+export interface ControlActionBundlePreview {
+	commandExportEligible: boolean;
+	commandSafety: ControlActionSafety;
+	commandReadiness: ControlActionReadiness;
+	command: string;
+	boundary: string;
+	evidenceRefCount: number;
+	excludedEvidenceRefCount: number;
+	evidenceSources: string[];
+}
+
 export interface ControlSummary {
 	recordCount: number;
 	sourceSystems: string[];
