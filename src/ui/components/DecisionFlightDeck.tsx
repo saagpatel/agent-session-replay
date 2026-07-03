@@ -1,7 +1,10 @@
 import { useState, type CSSProperties } from "react";
 
 import type { AfrBundle } from "../../core/afr/types.ts";
-import { exportRunnableReadOnlyCommands } from "../../core/control/engine.ts";
+import {
+	exportMetadataEvidenceRefs,
+	exportRunnableReadOnlyCommands,
+} from "../../core/control/engine.ts";
 import type {
 	ControlAction,
 	ControlFinding,
@@ -97,6 +100,60 @@ function excludedReasonText(
 		.join(" / ");
 }
 
+function EvidenceRefCopy({
+	evidenceRefs,
+	sourceSystems,
+	title,
+}: {
+	evidenceRefs: string[];
+	sourceSystems: string[];
+	title: string;
+}) {
+	const evidenceExport = exportMetadataEvidenceRefs({
+		evidenceRefs,
+		sourceSystems,
+		title,
+	});
+	const [copyStatus, setCopyStatus] = useState<
+		"idle" | "copied" | "failed" | "empty"
+	>("idle");
+	const copyRefs = async () => {
+		if (evidenceExport.includedCount === 0) {
+			setCopyStatus("empty");
+			return;
+		}
+		try {
+			await navigator.clipboard.writeText(evidenceExport.text);
+			setCopyStatus("copied");
+		} catch {
+			setCopyStatus("failed");
+		}
+	};
+	return (
+		<div className="evidence-copy">
+			<button
+				type="button"
+				onClick={copyRefs}
+				disabled={evidenceExport.includedCount === 0}
+			>
+				Copy refs
+			</button>
+			<span aria-live="polite">
+				{copyStatus === "copied"
+					? `Copied ${evidenceExport.includedCount}`
+					: copyStatus === "failed"
+						? "Copy failed"
+						: copyStatus === "empty"
+							? "No refs"
+							: `${evidenceExport.includedCount} refs`}
+			</span>
+			{evidenceExport.excludedCount > 0 ? (
+				<span>{evidenceExport.excludedCount} raw-looking excluded</span>
+			) : null}
+		</div>
+	);
+}
+
 function ActionRow({ action }: { action: ControlAction }) {
 	const boundaries = actionBoundaries(action);
 	const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">(
@@ -184,6 +241,11 @@ function ActionRow({ action }: { action: ControlAction }) {
 									: "none"}
 							</b>
 						</div>
+						<EvidenceRefCopy
+							evidenceRefs={action.evidenceRefs}
+							sourceSystems={action.sourceSystems}
+							title={action.title}
+						/>
 					</details>
 				</div>
 			</div>
@@ -310,6 +372,11 @@ function FindingCard({ finding }: { finding: ControlFinding }) {
 					<code>{finding.nextCommand}</code>
 				</div>
 			) : null}
+			<EvidenceRefCopy
+				evidenceRefs={finding.evidenceRefs}
+				sourceSystems={finding.sourceSystems}
+				title={finding.title}
+			/>
 		</article>
 	);
 }

@@ -67,8 +67,9 @@
   metadata-only evidence refs triggered it. The rail can also export one grouped
   command block by explicit click, limited to read-only commands that are
   runnable now; placeholder and approval-required commands are excluded by
-  default.
-- **Quality** — 108 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
+  default. Actions and findings can copy grouped metadata evidence refs by
+  explicit click, with raw-looking values excluded from the copied block.
+- **Quality** — 109 tests; `pnpm typecheck` gate (`@types/react` dev-only, core stays
   zero-dep); independent `/code-review` of the warp algo + parser → zero findings.
 - **Desktop** — Tauri 2 shell (`src-tauri/`, no IPC; neutral identifier
   `dev.localfirst.agentsessionreplay`). `pnpm tauri build` → `.app` + 3.3MB DMG.

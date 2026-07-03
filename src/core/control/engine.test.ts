@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { AfrBundle } from "../afr/types.ts";
 import {
 	analyzeControlBundle,
+	exportMetadataEvidenceRefs,
 	exportRunnableReadOnlyCommands,
 } from "./engine.ts";
 
@@ -1046,6 +1047,34 @@ test("command export includes only runnable read-only actions", () => {
 	]);
 	assert.doesNotMatch(commandExport.text, /<archive>/);
 	assert.doesNotMatch(commandExport.text, /collect all/);
+});
+
+test("metadata evidence export groups refs by source and excludes raw-looking values", () => {
+	const evidenceExport = exportMetadataEvidenceRefs({
+		title: "Review bridge handoffs",
+		sourceSystems: ["bridge-db", "evals"],
+		evidenceRefs: [
+			"bridge-db:handoff-21",
+			"evals:case-3#run",
+			"bridge-db:handoff-21",
+			"{\"raw\":\"row\"}",
+			"line one\nline two",
+		],
+	});
+
+	assert.deepEqual(evidenceExport.groups, [
+		{ source: "bridge-db", refs: ["bridge-db:handoff-21"] },
+		{ source: "evals", refs: ["evals:case-3#run"] },
+	]);
+	assert.equal(evidenceExport.includedCount, 2);
+	assert.equal(evidenceExport.excludedCount, 2);
+	assert.match(
+		evidenceExport.text,
+		/^# Decision Flight Deck evidence refs: Review bridge handoffs/,
+	);
+	assert.match(evidenceExport.text, /## bridge-db\n- bridge-db:handoff-21/);
+	assert.doesNotMatch(evidenceExport.text, /raw/);
+	assert.doesNotMatch(evidenceExport.text, /line two/);
 });
 
 test("malformed records are surfaced as archive integrity risk", () => {
