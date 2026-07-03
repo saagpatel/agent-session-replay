@@ -1653,6 +1653,12 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.equal(note.scope.privacyTierCounts.unknown, 2);
 	assert.match(note.text, /^# Decision Flight Deck Note/);
 	assert.match(note.text, /- archive: 20260628T120000Z-all/);
+	assert.match(note.text, /## Decision Pressure Map/);
+	assert.match(
+		note.text,
+		/Route eval maintenance \/ reasons=warning eval failures/,
+	);
+	assert.match(note.text, /freshness=evals fresh/);
 	assert.match(note.text, /## Top Findings/);
 	assert.match(note.text, /## Next Actions/);
 	assert.match(note.text, /eval_failure \[warning\]/);
@@ -1666,6 +1672,45 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	assert.match(note.text, /## Metadata Evidence Refs/);
 	assert.match(note.text, /- evals:case-1/);
 	assert.doesNotMatch(note.text, /raw\":\"value/);
+});
+
+test("decision note pressure map compresses merged cost validation signals", () => {
+	const report = analyzeControlBundle(
+		bundle({
+			records: [
+				{
+					record_id: "cost-row",
+					record_type: "cost_observation",
+					source_system: "cost-tracker",
+					timestamp: "2026-06-28T12:00:00Z",
+					amount_usd: 12.5,
+					cost_quality: "estimated",
+					evidence_ref: "cost-tracker:session-1",
+				},
+			],
+			validationReport: {
+				ok: true,
+				warnings: [
+					"line 124: cost-tracker-snapshot-20260702T000000Z-session-0016: cost quality is estimated",
+					"line 124: cost-tracker-snapshot-20260702T000000Z-session-0016: correlation confidence is heuristic",
+				],
+			},
+		}),
+	);
+
+	const note = exportDecisionNote({
+		archiveName: "20260628T120000Z-all",
+		report,
+	});
+
+	assert.match(
+		note.text,
+		/Review estimated cost signals \/ reasons=estimated cost signal \/ validation warnings/,
+	);
+	assert.match(note.text, /sources=cost-tracker/);
+	assert.match(note.text, /signals=cost=\$12\.50 across 1 cost observation/);
+	assert.match(note.text, /validation=correlation_confidence_heuristic 1/);
+	assert.match(note.text, /command=uv run afr-local latest costs --limit 5/);
 });
 
 test("decision note export includes replay scope and command drift", () => {
