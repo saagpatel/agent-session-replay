@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,7 +126,6 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 			codexSessionsDir: codexRoot,
 			hubUrl,
 			windowMinutes: 30,
-			quietSeconds: 120,
 			stallQuietSeconds: 600,
 			maxSessionBytes: 64 * 1024 * 1024,
 			statePath: join(base, "state.json"),
@@ -154,9 +153,9 @@ function writeCodexSession(codexRoot: string, text: string): string {
 
 /* ---------- tests ---------- */
 
-test("a grinding CC session posts one grind_loop alert; the next tick dedupes it", async () => {
+test("a grinding CC session posts one grind_loop alert; the next tick skips the unchanged file", async () => {
 	const { config, claudeRoot } = fixture();
-	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
 	posts.length = 0;
 
 	const first = await tick(config, Date.now());
@@ -170,9 +169,20 @@ test("a grinding CC session posts one grind_loop alert; the next tick dedupes it
 	assert.equal(event.project, "bridge-db");
 	assert.ok(event.title.length <= 200);
 
+	// Unchanged mtime + nothing pending -> the session is not even re-parsed.
 	const second = await tick(config, Date.now());
 	assert.equal(second.alertsPosted, 0);
-	assert.ok(second.alertsDeduped >= 1);
+	assert.equal(second.skippedUnchanged, 1);
+	assert.equal(second.scannedSessions, 0);
+	assert.equal(posts.length, 1);
+
+	// A new write re-opens the session, and dedupe (not skip) suppresses the
+	// already-alerted finding.
+	appendFileSync(path, ccGrindTranscript(2));
+	const third = await tick(config, Date.now());
+	assert.equal(third.scannedSessions, 1);
+	assert.equal(third.alertsPosted, 0);
+	assert.ok(third.alertsDeduped >= 1);
 	assert.equal(posts.length, 1);
 });
 

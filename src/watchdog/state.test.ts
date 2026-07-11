@@ -6,10 +6,12 @@ import { test } from "node:test";
 
 import type { Finding } from "../core/detect/types.ts";
 import {
+	canSkip,
 	findingKey,
 	hasAlerted,
 	loadState,
 	markAlerted,
+	markProcessed,
 	pruneState,
 	saveState,
 } from "./state.ts";
@@ -67,7 +69,26 @@ test("pruneState drops sessions untouched for over a week, keeps fresh ones", ()
 	const now = 10 * 24 * 60 * 60 * 1000;
 	markAlerted(state, "/old.jsonl", "k@warning", now - 8 * 24 * 60 * 60 * 1000);
 	markAlerted(state, "/new.jsonl", "k@warning", now - 60 * 1000);
-	pruneState(state, now);
+	const removed = pruneState(state, now);
+	assert.equal(removed, 1);
 	assert.ok(!hasAlerted(state, "/old.jsonl", "k@warning"));
 	assert.ok(hasAlerted(state, "/new.jsonl", "k@warning"));
+});
+
+test("canSkip requires an identical mtime and nothing pending from last pass", () => {
+	const state = loadState(join(dir(), "none.json"));
+	assert.ok(!canSkip(state, "/s.jsonl", 100)); // never processed
+	markProcessed(state, "/s.jsonl", 100, false, 1000);
+	assert.ok(canSkip(state, "/s.jsonl", 100));
+	assert.ok(!canSkip(state, "/s.jsonl", 200)); // file advanced
+	markProcessed(state, "/s.jsonl", 200, true, 2000); // held/failed work pending
+	assert.ok(!canSkip(state, "/s.jsonl", 200));
+});
+
+test("markProcessed reports whether the entry actually changed", () => {
+	const state = loadState(join(dir(), "none.json"));
+	assert.equal(markProcessed(state, "/s.jsonl", 100, false, 1000), true);
+	assert.equal(markProcessed(state, "/s.jsonl", 100, false, 2000), false);
+	assert.equal(markProcessed(state, "/s.jsonl", 100, true, 3000), true);
+	assert.equal(markProcessed(state, "/s.jsonl", 300, true, 4000), true);
 });

@@ -12,19 +12,29 @@ import { join } from "node:path";
 
 import type { SessionFile } from "./types.ts";
 
+/** ENOENT/ENOTDIR are expected (file vanished mid-scan, no sidechain dir);
+ * anything else (EACCES, EIO) is a real problem worth a trace in the log. */
+function logUnexpected(context: string, err: unknown): void {
+	const code = (err as { code?: string }).code;
+	if (code === "ENOENT" || code === "ENOTDIR") return;
+	console.error(`watchdog: ${context}: ${String(err)}`);
+}
+
 function mtimeAndSize(path: string): { mtimeMs: number; size: number } | null {
 	try {
 		const st = statSync(path);
 		return st.isFile() ? { mtimeMs: st.mtimeMs, size: st.size } : null;
-	} catch {
-		return null; // vanished between readdir and stat
+	} catch (err) {
+		logUnexpected(`stat failed for ${path}`, err);
+		return null;
 	}
 }
 
 function listDir(path: string): string[] {
 	try {
 		return readdirSync(path);
-	} catch {
+	} catch (err) {
+		logUnexpected(`readdir failed for ${path}`, err);
 		return [];
 	}
 }
@@ -74,7 +84,12 @@ export function scanClaudeProjects(
 	return out;
 }
 
-/** Codex layout: <root>/YYYY/MM/DD/rollout-*.jsonl. */
+/** Codex layout: <root>/YYYY/MM/DD/rollout-*.jsonl.
+ *
+ * Deliberately walks the whole tree every tick rather than pruning to recent
+ * day directories: `codex exec resume` appends to the ORIGINAL rollout file
+ * under its start date, so an active session can live in an arbitrarily old
+ * day dir. The full walk is a few ms; missing a resumed session is not. */
 export function scanCodexSessions(
 	root: string,
 	cutoffMs: number,
@@ -82,7 +97,8 @@ export function scanCodexSessions(
 	let entries: string[];
 	try {
 		entries = readdirSync(root, { recursive: true }) as string[];
-	} catch {
+	} catch (err) {
+		logUnexpected(`recursive readdir failed for ${root}`, err);
 		return [];
 	}
 	const out: SessionFile[] = [];

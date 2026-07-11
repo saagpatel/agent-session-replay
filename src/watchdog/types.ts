@@ -32,12 +32,10 @@ export interface WatchdogConfig {
 	hubUrl: string;
 	/** Only sessions written within this many minutes are scanned. */
 	windowMinutes: number;
-	/** No writes for this long = session considered settled. */
-	quietSeconds: number;
 	/**
-	 * Stricter settle bar for silent_stall only: a Codex session "ends" in the
-	 * parser's eyes on every event, so quiescence is the real end-of-run signal
-	 * and a short pause must not read as a stall.
+	 * Silence required before silent_stall may alert: a Codex session "ends" in
+	 * the parser's eyes on every event, so quiescence is the real end-of-run
+	 * signal and a short pause must not read as a stall.
 	 */
 	stallQuietSeconds: number;
 	/** Skip transcripts larger than this (pathological-file defense). */
@@ -63,6 +61,8 @@ export interface HubEvent {
 export interface TickReport {
 	scannedSessions: number;
 	skippedOversize: number;
+	/** In-window sessions skipped: unchanged mtime and nothing pending. */
+	skippedUnchanged: number;
 	parseFailures: number;
 	findings: number;
 	alertsPosted: number;

@@ -14,6 +14,10 @@ import type { Finding } from "../core/detect/types.ts";
 interface SessionAlerts {
 	findings: string[];
 	updatedMs: number;
+	/** mtime of the transcript when it was last parsed; unchanged -> skippable. */
+	processedMtimeMs?: number;
+	/** Held findings or failed posts from the last pass: never skip these. */
+	pending?: boolean;
 }
 
 export interface WatchdogState {
@@ -74,11 +78,51 @@ export function markAlerted(
 	state.sessions[sessionPath] = entry;
 }
 
-/** Drop sessions untouched for a week; they will never re-enter the window. */
-export function pruneState(state: WatchdogState, nowMs: number): void {
+/** True when the session can be skipped: transcript unchanged since it was
+ * last parsed AND nothing from that pass (held finding, failed post) is
+ * waiting on time or the hub to advance. */
+export function canSkip(
+	state: WatchdogState,
+	sessionPath: string,
+	mtimeMs: number,
+): boolean {
+	const entry = state.sessions[sessionPath];
+	return entry?.processedMtimeMs === mtimeMs && !entry.pending;
+}
+
+/** Record the parse pass; returns whether the entry actually changed so the
+ * caller can decide if the state file needs rewriting. */
+export function markProcessed(
+	state: WatchdogState,
+	sessionPath: string,
+	mtimeMs: number,
+	pending: boolean,
+	nowMs: number,
+): boolean {
+	const entry = state.sessions[sessionPath] ?? {
+		findings: [],
+		updatedMs: nowMs,
+	};
+	const changed =
+		entry.processedMtimeMs !== mtimeMs || (entry.pending ?? false) !== pending;
+	if (changed) {
+		entry.processedMtimeMs = mtimeMs;
+		entry.pending = pending;
+		entry.updatedMs = nowMs;
+	}
+	state.sessions[sessionPath] = entry;
+	return changed;
+}
+
+/** Drop sessions untouched for a week; they will never re-enter the window.
+ * Returns the number of entries removed. */
+export function pruneState(state: WatchdogState, nowMs: number): number {
+	let removed = 0;
 	for (const [path, entry] of Object.entries(state.sessions)) {
 		if (nowMs - entry.updatedMs > STATE_MAX_AGE_MS) {
 			delete state.sessions[path];
+			removed += 1;
 		}
 	}
+	return removed;
 }

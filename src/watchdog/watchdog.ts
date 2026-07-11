@@ -17,10 +17,12 @@ import { buildEvent, liveVerdict } from "./policy.ts";
 import { scanSessions } from "./scan.ts";
 import { postEvent } from "./sink.ts";
 import {
+	canSkip,
 	findingKey,
 	hasAlerted,
 	loadState,
 	markAlerted,
+	markProcessed,
 	pruneState,
 	saveState,
 } from "./state.ts";
@@ -46,6 +48,7 @@ export async function tick(
 	const report: TickReport = {
 		scannedSessions: 0,
 		skippedOversize: 0,
+		skippedUnchanged: 0,
 		parseFailures: 0,
 		findings: 0,
 		alertsPosted: 0,
@@ -53,6 +56,7 @@ export async function tick(
 		alertsHeld: 0,
 		postFailures: 0,
 	};
+	let dirty = false;
 
 	const cutoffMs = nowMs - config.windowMinutes * 60 * 1000;
 	const sessions = scanSessions(
@@ -65,6 +69,13 @@ export async function tick(
 	for (const session of sessions) {
 		if (session.sizeBytes > config.maxSessionBytes) {
 			report.skippedOversize += 1;
+			continue;
+		}
+		// Idle sessions linger in the mtime window for many ticks; skip the
+		// re-parse when nothing changed AND the last pass left nothing pending
+		// (a held silent_stall waiting out quiescence, or a failed post).
+		if (canSkip(state, session.path, session.mtimeMs)) {
+			report.skippedUnchanged += 1;
 			continue;
 		}
 		report.scannedSessions += 1;
@@ -83,6 +94,8 @@ export async function tick(
 		const findings = detect(trace);
 		report.findings += findings.length;
 		const quietMs = nowMs - session.mtimeMs;
+		let held = 0;
+		let failed = 0;
 
 		for (const finding of findings) {
 			const verdict = liveVerdict(
@@ -92,6 +105,7 @@ export async function tick(
 			);
 			if (verdict === "never") continue;
 			if (verdict === "hold") {
+				held += 1;
 				report.alertsHeld += 1;
 				continue;
 			}
@@ -105,25 +119,37 @@ export async function tick(
 			if (config.dryRun) {
 				console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
 				markAlerted(state, session.path, key, nowMs);
+				dirty = true;
 				report.alertsPosted += 1;
 				continue;
 			}
 			const result = await postEvent(config.hubUrl, event);
 			if (result.ok) {
 				markAlerted(state, session.path, key, nowMs);
+				dirty = true;
 				report.alertsPosted += 1;
 				console.log(`watchdog: posted ${event.level} '${event.title}'`);
 			} else {
 				// Not marked alerted -> retries next tick once the hub is back.
+				failed += 1;
 				report.postFailures += 1;
 				console.error(
 					`watchdog: post failed (${result.status ?? "no-response"}): ${result.error ?? ""}`,
 				);
 			}
 		}
+
+		dirty =
+			markProcessed(
+				state,
+				session.path,
+				session.mtimeMs,
+				held > 0 || failed > 0,
+				nowMs,
+			) || dirty;
 	}
 
-	pruneState(state, nowMs);
-	saveState(config.statePath, state);
+	const pruned = pruneState(state, nowMs);
+	if (dirty || pruned > 0) saveState(config.statePath, state);
 	return report;
 }

@@ -2,8 +2,10 @@
  * Watchdog CLI entry.
  *
  *   node --experimental-strip-types src/watchdog/main.ts [--once] [--dry-run]
- *     [--interval 45] [--window 30] [--quiet 120] [--stall-quiet 600]
- *     [--hub http://127.0.0.1:9199] [--state <path>]
+ *     [--interval 45] [--window 30] [--stall-quiet 600]
+ *     [--hub <url>] [--state <path>]
+ *
+ * Hub URL resolution: --hub flag > WATCHDOG_HUB_URL env > localhost default.
  *
  * Alert-only by contract: the only side effects are POST /events to
  * notification-hub and the dedupe-state file.
@@ -24,11 +26,12 @@ const { values: args } = parseArgs({
 		interval: { type: "string", default: "45" },
 		/** minutes of transcript-write recency to watch */
 		window: { type: "string", default: "30" },
-		/** seconds of silence before a session counts as settled */
-		quiet: { type: "string", default: "120" },
 		/** seconds of silence before silent_stall may fire */
 		"stall-quiet": { type: "string", default: "600" },
-		hub: { type: "string", default: "http://127.0.0.1:9199" },
+		hub: {
+			type: "string",
+			default: process.env["WATCHDOG_HUB_URL"] ?? "http://127.0.0.1:9199",
+		},
 		state: {
 			type: "string",
 			default: join(
@@ -55,7 +58,6 @@ const config: WatchdogConfig = {
 	codexSessionsDir: join(homedir(), ".codex", "sessions"),
 	hubUrl: args.hub,
 	windowMinutes: num("window", args.window),
-	quietSeconds: num("quiet", args.quiet),
 	stallQuietSeconds: num("stall-quiet", args["stall-quiet"]),
 	maxSessionBytes: 64 * 1024 * 1024,
 	statePath: args.state,
