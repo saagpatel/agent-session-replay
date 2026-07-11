@@ -13,6 +13,7 @@
 		"typecheck": "tsc -p tsconfig.app.json",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
+		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
 		"render:smoke": "node scripts/ssr-run.mjs",
 		"tauri": "tauri"
@@ -22,6 +23,7 @@
 	},
 	"devDependencies": {
 		"@tauri-apps/cli": "^2.11.3",
+		"@types/node": "26.1.1",
 		"@types/react": "^19.2.17",
 		"@types/react-dom": "^19.2.3",
 		"@vitejs/plugin-react": "^6.0.3",
