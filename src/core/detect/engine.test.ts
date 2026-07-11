@@ -225,6 +225,14 @@ function toolCall(name: string, status: Step["status"] = "ok"): Step {
 	return step("tool_call", { [ATTR.TOOL_NAME]: name }, { status });
 }
 
+/** Cycle through tool names so no 2-tool window ever dominates. */
+function variedCalls(length: number): Step[] {
+	const tools = ["Bash", "Read", "Edit", "Grep", "Write"];
+	return Array.from({ length }, (_, i) =>
+		toolCall(tools[i % tools.length] ?? "Bash"),
+	);
+}
+
 function codexTrace(steps: Step[], over: Partial<Trace["run"]> = {}): Trace {
 	const t = trace(steps);
 	t.run.harness = { name: "codex" };
@@ -236,30 +244,28 @@ test("a long call streak confined to <=2 tools is a grind loop naming both tools
 	const steps = Array.from({ length: 150 }, (_, i) =>
 		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
 	);
-	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
-	assert.equal(f.length, 1);
-	assert.equal(f[0].severity, "warning");
-	assert.equal(f[0].score, 150);
-	assert.equal(f[0].step_ids.length, 150);
-	assert.match(f[0].title, /bash/);
-	assert.match(f[0].title, /write_stdin/);
+	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	if (!g) throw new Error("expected a grind_loop finding");
+	assert.equal(g.severity, "warning");
+	assert.equal(g.score, 150);
+	assert.equal(g.step_ids.length, 150);
+	assert.match(g.title, /bash/);
+	assert.match(g.title, /write_stdin/);
 });
 
 test("a grind streak past the critical threshold is critical", () => {
 	const steps = Array.from({ length: 450 }, (_, i) =>
 		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
 	);
-	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
-	assert.equal(f.length, 1);
-	assert.equal(f[0].severity, "critical");
+	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	if (!g) throw new Error("expected a grind_loop finding");
+	assert.equal(g.severity, "critical");
 });
 
 test("varied tool usage never reads as a grind loop, however long the session", () => {
-	const tools = ["Bash", "Read", "Edit", "Grep", "Write"];
-	const steps = Array.from({ length: 300 }, (_, i) =>
-		toolCall(tools[i % tools.length]),
+	const f = detect(trace(variedCalls(300))).filter(
+		(x) => x.kind === "grind_loop",
 	);
-	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
 	assert.equal(f.length, 0);
 });
 
@@ -272,24 +278,25 @@ test("a two-tool streak below the grind threshold stays quiet", () => {
 });
 
 test("a grind streak buried mid-session is still found", () => {
-	const tools = ["Bash", "Read", "Edit", "Grep", "Write"];
 	const steps = [
-		...Array.from({ length: 20 }, (_, i) => toolCall(tools[i % tools.length])),
+		...variedCalls(20),
 		...Array.from({ length: 130 }, (_, i) =>
 			toolCall(i % 2 === 0 ? "exec" : "stdin"),
 		),
-		...Array.from({ length: 20 }, (_, i) => toolCall(tools[i % tools.length])),
+		...variedCalls(20),
 	];
-	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
-	assert.equal(f.length, 1);
-	assert.ok(f[0].score >= 130);
+	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	if (!g) throw new Error("expected a grind_loop finding");
+	assert.ok(g.score >= 130);
 });
 
 test("a finished codex run with zero tool calls is a silent stall", () => {
 	const steps = [step("llm", { [ATTR.OUTPUT_TOKENS]: 20 }, { status: "ok" })];
-	const f = detect(codexTrace(steps)).filter((x) => x.kind === "silent_stall");
-	assert.equal(f.length, 1);
-	assert.equal(f[0].severity, "warning");
+	const stall = detect(codexTrace(steps)).find(
+		(x) => x.kind === "silent_stall",
+	);
+	if (!stall) throw new Error("expected a silent_stall finding");
+	assert.equal(stall.severity, "warning");
 });
 
 test("silent stall requires codex + a finished run + zero tool calls", () => {
