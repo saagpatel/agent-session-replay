@@ -31,11 +31,16 @@ export const THRESHOLDS = {
 	/** Compaction boundaries >= this signals context thrash. */
 	compactionThrash: 2,
 	compactionCritical: 4,
-	/** Contiguous tool-call streak confined to <=2 distinct tools reads as a grind loop.
-	 * Calibrated against S3 transcript mining: real grind loops ran 2,228-2,372 calls
-	 * of exec_command/write_stdin; legitimate build-test loops stay well under 100. */
+	/** Contiguous tool-call streak confined to <=2 distinct tools, within one
+	 * execution lane (main context or a single subagent), reads as a grind loop.
+	 * Codex tier calibrated against S3 transcript mining: real grind loops ran
+	 * 2,228-2,372 calls of exec_command/write_stdin; legitimate build-test loops
+	 * stay well under 100. CC tier is set much higher because a long two-tool
+	 * cadence (Bash/Edit across a big sweep) is normal CC working style. */
 	grindStreak: 120,
 	grindStreakCritical: 400,
+	grindStreakCc: 300,
+	grindStreakCcCritical: 900,
 } as const;
 
 function numAttr(s: Step, key: string): number {
@@ -219,11 +224,8 @@ const incompleteRun: Detector = (trace) => {
 	];
 };
 
-/** Longest contiguous tool-call streak drawing on at most 2 distinct tools.
- * Catches the exec/stdin alternation of a Codex grind loop, which a
- * same-tool-only streak would miss. Sliding window, O(n). */
-const grindLoop: Detector = (trace) => {
-	const calls = trace.steps.filter((s) => s.kind === "tool_call");
+/** Longest window of `calls` drawing on at most 2 distinct tool names. */
+function longestTwoToolStreak(calls: readonly Step[]): Step[] {
 	let bestStart = 0;
 	let bestLen = 0;
 	let start = 0;
@@ -232,10 +234,9 @@ const grindLoop: Detector = (trace) => {
 		const name = strAttr(call, ATTR.TOOL_NAME) ?? "unknown";
 		counts.set(name, (counts.get(name) ?? 0) + 1);
 		while (counts.size > 2) {
-			const evicted = calls[start];
+			// start <= end here, so the index is always in-bounds.
+			const drop = strAttr(calls[start] as Step, ATTR.TOOL_NAME) ?? "unknown";
 			start++;
-			if (!evicted) break; // unreachable: start <= end always in-bounds
-			const drop = strAttr(evicted, ATTR.TOOL_NAME) ?? "unknown";
 			const n = (counts.get(drop) ?? 0) - 1;
 			if (n === 0) counts.delete(drop);
 			else counts.set(drop, n);
@@ -245,8 +246,35 @@ const grindLoop: Detector = (trace) => {
 			bestStart = start;
 		}
 	}
-	if (bestLen < THRESHOLDS.grindStreak) return [];
-	const streak = calls.slice(bestStart, bestStart + bestLen);
+	return calls.slice(bestStart, bestStart + bestLen);
+}
+
+/** Longest contiguous tool-call streak drawing on at most 2 distinct tools.
+ * Catches the exec/stdin alternation of a Codex grind loop, which a
+ * same-tool-only streak would miss. Partitioned by execution lane: the parsers
+ * merge main + subagent sidechains into one timestamp-sorted stream, and
+ * parallel healthy subagents interleaving Read/Grep must not add up to one
+ * fake streak. Sliding window, O(n). */
+const grindLoop: Detector = (trace) => {
+	const lanes = new Map<string | null, Step[]>();
+	for (const s of trace.steps) {
+		if (s.kind !== "tool_call") continue;
+		const lane = s.subagent_id ?? null;
+		const bucket = lanes.get(lane);
+		if (bucket) bucket.push(s);
+		else lanes.set(lane, [s]);
+	}
+	let streak: Step[] = [];
+	for (const calls of lanes.values()) {
+		const candidate = longestTwoToolStreak(calls);
+		if (candidate.length > streak.length) streak = candidate;
+	}
+	const isCodex = trace.run.harness.name === "codex";
+	const warnAt = isCodex ? THRESHOLDS.grindStreak : THRESHOLDS.grindStreakCc;
+	const critAt = isCodex
+		? THRESHOLDS.grindStreakCritical
+		: THRESHOLDS.grindStreakCcCritical;
+	if (streak.length < warnAt) return [];
 	const names = [
 		...new Set(streak.map((s) => strAttr(s, ATTR.TOOL_NAME) ?? "unknown")),
 	];
@@ -254,26 +282,25 @@ const grindLoop: Detector = (trace) => {
 		{
 			id: "grind_loop",
 			kind: "grind_loop",
-			severity: tier(
-				bestLen,
-				THRESHOLDS.grindStreak,
-				THRESHOLDS.grindStreakCritical,
-			),
-			title: `Grind loop: ${bestLen} consecutive calls cycling ${names.join(" / ")}`,
+			severity: tier(streak.length, warnAt, critAt),
+			title: `Grind loop: ${streak.length} consecutive calls cycling ${names.join(" / ")}`,
 			detail:
-				`The session ran ${bestLen} tool calls in a row using only ${names.join(" and ")} — ` +
+				`One execution lane ran ${streak.length} tool calls in a row using only ${names.join(" and ")} — ` +
 				"the churn signature of a grind loop: tools keep firing, tokens keep burning, but the work isn't converging.",
 			step_ids: streak.map((s) => s.step_id),
-			score: bestLen,
+			score: streak.length,
 		},
 	];
 };
 
-/** A finished Codex run with zero tool activity: the silent exit-0 no-op. */
+/** A completed Codex run with zero tool activity: the silent exit-0 no-op.
+ * Gated on a real completion signal (task_complete -> outcome), NOT ended_at:
+ * the Codex parser stamps ended_at from the last event seen, so ended_at is
+ * set on any non-empty trace including one captured mid-run. */
 const silentStall: Detector = (trace) => {
 	if (trace.run.harness.name !== "codex") return [];
-	const ended = trace.run.ended_at != null || trace.run.outcome !== undefined;
-	if (!ended || trace.steps.length === 0) return [];
+	if (trace.run.outcome?.status !== "completed") return [];
+	if (trace.steps.length === 0) return [];
 	if (trace.steps.some((s) => s.kind === "tool_call")) return [];
 	return [
 		{

@@ -1,0 +1,10 @@
+{
+	"//": "Type gate for the node-runtime watchdog daemon. Seeds src/watchdog; imported src/core files are checked transitively. Node ambient types live ONLY here so the browser gate (tsconfig.app.json) keeps rejecting node globals in UI code.",
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"types": ["node"],
+		"lib": ["ES2022"]
+	},
+	"include": ["src/watchdog"],
+	"exclude": ["**/*.test.ts"]
+}

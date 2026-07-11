@@ -82,3 +82,16 @@ test("buildEvent omits project when the trace has no cwd", () => {
 	const e = buildEvent(finding(), session(), undefined);
 	assert.ok(!("project" in e));
 });
+
+test("project and session_label are capped to the hub's rejection limits", () => {
+	// The hub REJECTS (422) over-length fields rather than truncating, and a
+	// rejected post retries forever — so these caps are load-bearing.
+	const longName = "x".repeat(300);
+	const e = buildEvent(
+		finding(),
+		session({ path: `/sessions/${longName}.jsonl` }),
+		`/Users/x/Projects/${longName}`,
+	);
+	assert.ok((e.project ?? "").length <= 100);
+	assert.ok((e.session_label ?? "").length <= 200);
+});

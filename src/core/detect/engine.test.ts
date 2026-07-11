@@ -240,11 +240,11 @@ function codexTrace(steps: Step[], over: Partial<Trace["run"]> = {}): Trace {
 	return t;
 }
 
-test("a long call streak confined to <=2 tools is a grind loop naming both tools", () => {
+test("a long codex call streak confined to <=2 tools is a grind loop naming both tools", () => {
 	const steps = Array.from({ length: 150 }, (_, i) =>
 		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
 	);
-	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	const g = detect(codexTrace(steps)).find((x) => x.kind === "grind_loop");
 	if (!g) throw new Error("expected a grind_loop finding");
 	assert.equal(g.severity, "warning");
 	assert.equal(g.score, 150);
@@ -253,13 +253,56 @@ test("a long call streak confined to <=2 tools is a grind loop naming both tools
 	assert.match(g.title, /write_stdin/);
 });
 
-test("a grind streak past the critical threshold is critical", () => {
+test("a codex grind streak past the critical threshold is critical", () => {
 	const steps = Array.from({ length: 450 }, (_, i) =>
 		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
 	);
-	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	const g = detect(codexTrace(steps)).find((x) => x.kind === "grind_loop");
 	if (!g) throw new Error("expected a grind_loop finding");
 	assert.equal(g.severity, "critical");
+});
+
+test("CC gets a higher grind bar: 150 two-tool calls are normal, 320 are not", () => {
+	const cadence = (n: number) =>
+		Array.from({ length: n }, (_, i) =>
+			toolCall(i % 2 === 0 ? "Bash" : "Edit"),
+		);
+	assert.equal(
+		detect(trace(cadence(150))).filter((x) => x.kind === "grind_loop").length,
+		0,
+	);
+	const g = detect(trace(cadence(320))).find((x) => x.kind === "grind_loop");
+	if (!g) throw new Error("expected a grind_loop finding");
+	assert.equal(g.severity, "warning");
+});
+
+test("parallel subagent lanes never merge into one fake grind streak", () => {
+	// Two healthy subagents interleave 80 calls each; merged order alternates
+	// lanes. Globally that is 160 contiguous two-tool calls — per lane it's 80.
+	const steps: Step[] = [];
+	for (let i = 0; i < 160; i++) {
+		steps.push(
+			step(
+				"tool_call",
+				{ [ATTR.TOOL_NAME]: i % 2 === 0 ? "Read" : "Grep" },
+				{ subagent_id: i % 2 === 0 ? "ag-a" : "ag-b" },
+			),
+		);
+	}
+	assert.equal(
+		detect(codexTrace(steps)).filter((x) => x.kind === "grind_loop").length,
+		0,
+	);
+	// A single lane grinding 130 calls is still caught amid sidechain noise.
+	const oneLane = [
+		...Array.from({ length: 130 }, (_, i) =>
+			toolCall(i % 2 === 0 ? "exec" : "stdin"),
+		),
+		...steps.slice(0, 40),
+	];
+	const g = detect(codexTrace(oneLane)).find((x) => x.kind === "grind_loop");
+	if (!g) throw new Error("expected a grind_loop finding");
+	assert.equal(g.score, 130);
 });
 
 test("varied tool usage never reads as a grind loop, however long the session", () => {
@@ -273,7 +316,7 @@ test("a two-tool streak below the grind threshold stays quiet", () => {
 	const steps = Array.from({ length: 60 }, (_, i) =>
 		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
 	);
-	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	const f = detect(codexTrace(steps)).filter((x) => x.kind === "grind_loop");
 	assert.equal(f.length, 0);
 });
 
@@ -285,7 +328,7 @@ test("a grind streak buried mid-session is still found", () => {
 		),
 		...variedCalls(20),
 	];
-	const g = detect(trace(steps)).find((x) => x.kind === "grind_loop");
+	const g = detect(codexTrace(steps)).find((x) => x.kind === "grind_loop");
 	if (!g) throw new Error("expected a grind_loop finding");
 	assert.ok(g.score >= 130);
 });
@@ -306,10 +349,18 @@ test("silent stall requires codex + a finished run + zero tool calls", () => {
 		detect(trace(llmOnly)).filter((x) => x.kind === "silent_stall").length,
 		0,
 	);
-	// codex but still running (no end marker, no outcome)
-	const live = codexTrace(llmOnly, { ended_at: null });
+	// codex still running: the parser stamps ended_at from the last event seen,
+	// so ended_at alone must never count as "finished" — only outcome does.
+	const live = codexTrace(llmOnly, { ended_at: "2026-06-20T00:00:30.000Z" });
 	live.run.outcome = undefined;
 	assert.equal(detect(live).filter((x) => x.kind === "silent_stall").length, 0);
+	// codex ended with a non-completed outcome (interrupted/unknown): no stall
+	const interrupted = codexTrace(llmOnly);
+	interrupted.run.outcome = { status: "unknown", summary: null };
+	assert.equal(
+		detect(interrupted).filter((x) => x.kind === "silent_stall").length,
+		0,
+	);
 	// codex, finished, but it actually did work
 	const worked = codexTrace([...llmOnly, toolCall("bash")]);
 	assert.equal(

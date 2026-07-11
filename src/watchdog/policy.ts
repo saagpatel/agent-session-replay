@@ -9,6 +9,8 @@
  * rather than "still thinking".
  */
 
+import { basename } from "node:path";
+
 import type { Finding, Severity } from "../core/detect/types.ts";
 import type { HubEvent, SessionFile } from "./types.ts";
 
@@ -38,10 +40,6 @@ function sanitize(text: string, max: number): string {
 	return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function lastSegment(path: string): string {
-	return path.split("/").filter(Boolean).at(-1) ?? path;
-}
-
 export function buildEvent(
 	finding: Finding,
 	session: SessionFile,
@@ -54,8 +52,11 @@ export function buildEvent(
 		level: LEVEL_BY_SEVERITY[finding.severity],
 		title: sanitize(`Watchdog: ${finding.title}`, 200),
 		body: sanitize(`${finding.detail} Transcript: ${session.path}`, 2000),
-		...(cwd ? { project: lastSegment(cwd) } : {}),
-		session_label: lastSegment(session.path),
+		// project/session_label share title/body's sanitizing because the hub
+		// REJECTS (not truncates) over-length fields: an unsanitized value would
+		// 422 deterministically and the finding would retry-fail forever.
+		...(cwd ? { project: sanitize(basename(cwd), 100) } : {}),
+		session_label: sanitize(basename(session.path), 200),
 		intent: "needs_attention",
 		context: {
 			detector: finding.kind,

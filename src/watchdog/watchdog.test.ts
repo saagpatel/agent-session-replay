@@ -156,7 +156,7 @@ function writeCodexSession(codexRoot: string, text: string): string {
 
 test("a grinding CC session posts one grind_loop alert; the next tick dedupes it", async () => {
 	const { config, claudeRoot } = fixture();
-	writeCcSession(claudeRoot, ccGrindTranscript(130));
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	posts.length = 0;
 
 	const first = await tick(config, Date.now());
@@ -207,7 +207,7 @@ test("a settled codex no-op run posts a silent_stall; a fresh one is held", asyn
 
 test("a failed post is retried on the next tick (nothing marked alerted)", async () => {
 	const { config, claudeRoot } = fixture();
-	writeCcSession(claudeRoot, ccGrindTranscript(130));
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	posts.length = 0;
 
 	failNext = true;
@@ -225,7 +225,7 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 		dryRun: true,
 		hubUrl: "http://127.0.0.1:1",
 	});
-	writeCcSession(claudeRoot, ccGrindTranscript(130));
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	posts.length = 0;
 
 	const report = await tick(config, Date.now());
@@ -236,7 +236,7 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 
 test("oversize transcripts are skipped, counted, and never parsed", async () => {
 	const { config, claudeRoot } = fixture({ maxSessionBytes: 10 });
-	writeCcSession(claudeRoot, ccGrindTranscript(130));
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.scannedSessions, 0);

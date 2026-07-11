@@ -10,7 +10,7 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
-		"typecheck": "tsc -p tsconfig.app.json",
+		"typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.watchdog.json",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
