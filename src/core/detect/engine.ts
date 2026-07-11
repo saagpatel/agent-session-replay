@@ -31,6 +31,11 @@ export const THRESHOLDS = {
 	/** Compaction boundaries >= this signals context thrash. */
 	compactionThrash: 2,
 	compactionCritical: 4,
+	/** Contiguous tool-call streak confined to <=2 distinct tools reads as a grind loop.
+	 * Calibrated against S3 transcript mining: real grind loops ran 2,228-2,372 calls
+	 * of exec_command/write_stdin; legitimate build-test loops stay well under 100. */
+	grindStreak: 120,
+	grindStreakCritical: 400,
 } as const;
 
 function numAttr(s: Step, key: string): number {
@@ -214,6 +219,77 @@ const incompleteRun: Detector = (trace) => {
 	];
 };
 
+/** Longest contiguous tool-call streak drawing on at most 2 distinct tools.
+ * Catches the exec/stdin alternation of a Codex grind loop, which a
+ * same-tool-only streak would miss. Sliding window, O(n). */
+const grindLoop: Detector = (trace) => {
+	const calls = trace.steps.filter((s) => s.kind === "tool_call");
+	let bestStart = 0;
+	let bestLen = 0;
+	let start = 0;
+	const counts = new Map<string, number>();
+	for (const [end, call] of calls.entries()) {
+		const name = strAttr(call, ATTR.TOOL_NAME) ?? "unknown";
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+		while (counts.size > 2) {
+			const evicted = calls[start];
+			start++;
+			if (!evicted) break; // unreachable: start <= end always in-bounds
+			const drop = strAttr(evicted, ATTR.TOOL_NAME) ?? "unknown";
+			const n = (counts.get(drop) ?? 0) - 1;
+			if (n === 0) counts.delete(drop);
+			else counts.set(drop, n);
+		}
+		if (end - start + 1 > bestLen) {
+			bestLen = end - start + 1;
+			bestStart = start;
+		}
+	}
+	if (bestLen < THRESHOLDS.grindStreak) return [];
+	const streak = calls.slice(bestStart, bestStart + bestLen);
+	const names = [
+		...new Set(streak.map((s) => strAttr(s, ATTR.TOOL_NAME) ?? "unknown")),
+	];
+	return [
+		{
+			id: "grind_loop",
+			kind: "grind_loop",
+			severity: tier(
+				bestLen,
+				THRESHOLDS.grindStreak,
+				THRESHOLDS.grindStreakCritical,
+			),
+			title: `Grind loop: ${bestLen} consecutive calls cycling ${names.join(" / ")}`,
+			detail:
+				`The session ran ${bestLen} tool calls in a row using only ${names.join(" and ")} — ` +
+				"the churn signature of a grind loop: tools keep firing, tokens keep burning, but the work isn't converging.",
+			step_ids: streak.map((s) => s.step_id),
+			score: bestLen,
+		},
+	];
+};
+
+/** A finished Codex run with zero tool activity: the silent exit-0 no-op. */
+const silentStall: Detector = (trace) => {
+	if (trace.run.harness.name !== "codex") return [];
+	const ended = trace.run.ended_at != null || trace.run.outcome !== undefined;
+	if (!ended || trace.steps.length === 0) return [];
+	if (trace.steps.some((s) => s.kind === "tool_call")) return [];
+	return [
+		{
+			id: "silent_stall",
+			kind: "silent_stall",
+			severity: "warning",
+			title: "Codex run ended with zero tool activity",
+			detail:
+				"The run terminated without making a single tool call — the silent exit-0 no-op signature: " +
+				"it reads as success (clean exit, maybe even a confident summary) while having done no work.",
+			step_ids: [],
+			score: 0,
+		},
+	];
+};
+
 export const ALL_DETECTORS: readonly Detector[] = [
 	guardTripCluster,
 	subagentCostRunaway,
@@ -222,6 +298,8 @@ export const ALL_DETECTORS: readonly Detector[] = [
 	compactionThrash,
 	hookDenial,
 	incompleteRun,
+	grindLoop,
+	silentStall,
 ];
 
 /** Run every detector and rank: severity tier first, magnitude next, id last (stable). */

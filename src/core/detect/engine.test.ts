@@ -221,6 +221,101 @@ test("finding ids are deterministic across repeated runs on the same trace", () 
 	assert.deepEqual(a, b);
 });
 
+function toolCall(name: string, status: Step["status"] = "ok"): Step {
+	return step("tool_call", { [ATTR.TOOL_NAME]: name }, { status });
+}
+
+function codexTrace(steps: Step[], over: Partial<Trace["run"]> = {}): Trace {
+	const t = trace(steps);
+	t.run.harness = { name: "codex" };
+	Object.assign(t.run, over);
+	return t;
+}
+
+test("a long call streak confined to <=2 tools is a grind loop naming both tools", () => {
+	const steps = Array.from({ length: 150 }, (_, i) =>
+		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
+	);
+	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	assert.equal(f.length, 1);
+	assert.equal(f[0].severity, "warning");
+	assert.equal(f[0].score, 150);
+	assert.equal(f[0].step_ids.length, 150);
+	assert.match(f[0].title, /bash/);
+	assert.match(f[0].title, /write_stdin/);
+});
+
+test("a grind streak past the critical threshold is critical", () => {
+	const steps = Array.from({ length: 450 }, (_, i) =>
+		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
+	);
+	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	assert.equal(f.length, 1);
+	assert.equal(f[0].severity, "critical");
+});
+
+test("varied tool usage never reads as a grind loop, however long the session", () => {
+	const tools = ["Bash", "Read", "Edit", "Grep", "Write"];
+	const steps = Array.from({ length: 300 }, (_, i) =>
+		toolCall(tools[i % tools.length]),
+	);
+	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	assert.equal(f.length, 0);
+});
+
+test("a two-tool streak below the grind threshold stays quiet", () => {
+	const steps = Array.from({ length: 60 }, (_, i) =>
+		toolCall(i % 2 === 0 ? "bash" : "write_stdin"),
+	);
+	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	assert.equal(f.length, 0);
+});
+
+test("a grind streak buried mid-session is still found", () => {
+	const tools = ["Bash", "Read", "Edit", "Grep", "Write"];
+	const steps = [
+		...Array.from({ length: 20 }, (_, i) => toolCall(tools[i % tools.length])),
+		...Array.from({ length: 130 }, (_, i) =>
+			toolCall(i % 2 === 0 ? "exec" : "stdin"),
+		),
+		...Array.from({ length: 20 }, (_, i) => toolCall(tools[i % tools.length])),
+	];
+	const f = detect(trace(steps)).filter((x) => x.kind === "grind_loop");
+	assert.equal(f.length, 1);
+	assert.ok(f[0].score >= 130);
+});
+
+test("a finished codex run with zero tool calls is a silent stall", () => {
+	const steps = [step("llm", { [ATTR.OUTPUT_TOKENS]: 20 }, { status: "ok" })];
+	const f = detect(codexTrace(steps)).filter((x) => x.kind === "silent_stall");
+	assert.equal(f.length, 1);
+	assert.equal(f[0].severity, "warning");
+});
+
+test("silent stall requires codex + a finished run + zero tool calls", () => {
+	const llmOnly = [step("llm", { [ATTR.OUTPUT_TOKENS]: 20 }, { status: "ok" })];
+	// claude-code harness: chat-only sessions are legitimate
+	assert.equal(
+		detect(trace(llmOnly)).filter((x) => x.kind === "silent_stall").length,
+		0,
+	);
+	// codex but still running (no end marker, no outcome)
+	const live = codexTrace(llmOnly, { ended_at: null });
+	live.run.outcome = undefined;
+	assert.equal(detect(live).filter((x) => x.kind === "silent_stall").length, 0);
+	// codex, finished, but it actually did work
+	const worked = codexTrace([...llmOnly, toolCall("bash")]);
+	assert.equal(
+		detect(worked).filter((x) => x.kind === "silent_stall").length,
+		0,
+	);
+	// codex, finished, but the transcript parsed to nothing at all
+	assert.equal(
+		detect(codexTrace([])).filter((x) => x.kind === "silent_stall").length,
+		0,
+	);
+});
+
 function rank(s: "critical" | "warning" | "info"): number {
 	return { critical: 3, warning: 2, info: 1 }[s];
 }

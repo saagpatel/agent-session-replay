@@ -26,7 +26,9 @@ export type FindingKind =
 	| "tool_error_spike"
 	| "compaction_thrash"
 	| "hook_denial"
-	| "incomplete_run";
+	| "incomplete_run"
+	| "grind_loop"
+	| "silent_stall";
 
 export interface Finding {
 	/** Deterministic, stable across re-parses of the same trace. */
