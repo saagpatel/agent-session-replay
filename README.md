@@ -148,7 +148,29 @@ pnpm test         # run the full test suite
 pnpm typecheck    # TypeScript gate
 pnpm build        # browser build
 pnpm afr:archives # rank existing local AFR archive folders, read-only
+pnpm watchdog     # live fleet watchdog (see below)
 ```
+
+## Watchdog
+
+`src/watchdog/` is the live counterpart to the forensic viewer: a daemon that
+re-scans recently-written CC / Codex transcripts on an interval, runs them
+through the same parsers + detector engine, and posts new findings to
+notification-hub (`POST /events` on 127.0.0.1:9199). Alert-only by contract —
+it never kills, pauses, or mutates a session.
+
+```bash
+pnpm watchdog -- --once --dry-run   # one tick, log instead of post
+pnpm watchdog                       # 45s loop; --window 30 --stall-quiet 600
+```
+
+Live-mode policy on top of the engine: `incomplete_run` never alerts (every
+running session is incomplete); `silent_stall` waits for real quiescence
+(`--stall-quiet`, default 10 min) because the Codex parser stamps `ended_at`
+on every event. Dedupe state lives at `~/.local/state/agent-watchdog/` keyed
+by (session, finding, severity), so a severity escalation re-alerts once.
+launchd install scripts are staged at `~/.launchd-staging/`
+(`com.saagar.agent-watchdog`).
 
 ## Decision Flight Deck Input
 
