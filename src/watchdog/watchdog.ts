@@ -123,7 +123,10 @@ export async function tick(
 				report.alertsPosted += 1;
 				continue;
 			}
-			const result = await postEvent(config.hubUrl, event);
+			const result = await postEvent(config.hubUrl, event, {
+				producerId: config.hubProducerId,
+				tokenFile: config.hubTokenFile,
+			});
 			if (result.ok) {
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;

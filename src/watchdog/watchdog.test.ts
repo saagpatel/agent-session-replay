@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +19,14 @@ import { tick } from "./watchdog.ts";
 const posts: HubEvent[] = [];
 let failNext = false;
 const server: Server = createServer((req, res) => {
+	if (
+		req.headers.authorization !== "Bearer fixture-watchdog-token" ||
+		req.headers["x-notification-hub-producer"] !== "agent-watchdog"
+	) {
+		res.statusCode = 401;
+		res.end("producer authentication failed");
+		return;
+	}
 	let body = "";
 	req.on("data", (c: unknown) => {
 		body += String(c);
@@ -118,6 +132,9 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 	const codexRoot = join(base, "sessions");
 	mkdirSync(claudeRoot, { recursive: true });
 	mkdirSync(codexRoot, { recursive: true });
+	const tokenFile = join(base, "agent-watchdog.token");
+	writeFileSync(tokenFile, "fixture-watchdog-token\n", { mode: 0o600 });
+	chmodSync(tokenFile, 0o600);
 	return {
 		claudeRoot,
 		codexRoot,
@@ -125,6 +142,8 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 			claudeProjectsDir: claudeRoot,
 			codexSessionsDir: codexRoot,
 			hubUrl,
+			hubProducerId: "agent-watchdog",
+			hubTokenFile: tokenFile,
 			windowMinutes: 30,
 			stallQuietSeconds: 600,
 			maxSessionBytes: 64 * 1024 * 1024,
