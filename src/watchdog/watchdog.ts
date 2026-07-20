@@ -7,7 +7,8 @@
  * with zero incremental-state machinery to get wrong.
  */
 
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { basename } from "node:path";
 
 import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
@@ -26,19 +27,84 @@ import {
 	pruneState,
 	saveState,
 } from "./state.ts";
-import type { SessionFile, TickReport, WatchdogConfig } from "./types.ts";
+import type {
+	HubEvent,
+	SessionFile,
+	TickReport,
+	WatchdogConfig,
+} from "./types.ts";
 
-function read(path: string): string {
-	return readFileSync(path, "utf8");
+class TranscriptBudgetError extends Error {}
+
+function readBounded(path: string, remainingBytes: number): string {
+	const fd = openSync(path, "r");
+	try {
+		const before = fstatSync(fd);
+		if (!before.isFile() || before.size > remainingBytes)
+			throw new TranscriptBudgetError("transcript exceeds remaining byte budget");
+		const chunks: Buffer[] = [];
+		let consumed = 0;
+		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remainingBytes + 1));
+		while (true) {
+			const read = readSync(
+				fd,
+				buffer,
+				0,
+				Math.min(buffer.length, remainingBytes - consumed + 1),
+				null,
+			);
+			if (read === 0) break;
+			consumed += read;
+			if (consumed > remainingBytes)
+				throw new TranscriptBudgetError("transcript grew beyond byte budget");
+			chunks.push(Buffer.from(buffer.subarray(0, read)));
+		}
+		const after = fstatSync(fd);
+		if (
+			before.dev !== after.dev ||
+			before.ino !== after.ino ||
+			before.size !== after.size ||
+			before.mtimeMs !== after.mtimeMs ||
+			consumed !== after.size
+		)
+			throw new TranscriptBudgetError("transcript changed during bounded read");
+		return Buffer.concat(chunks).toString("utf8");
+	} finally {
+		closeSync(fd);
+	}
 }
 
-function parseSession(session: SessionFile): Trace {
+function parseSession(session: SessionFile, maxBytes: number): Trace {
+	let remaining = maxBytes;
+	const read = (path: string): string => {
+		const text = readBounded(path, remaining);
+		remaining -= Buffer.byteLength(text);
+		return text;
+	};
 	if (session.harness === "codex")
 		return parseCodexTranscript(read(session.path));
 	return parseClaudeCodeTranscript(
 		read(session.path),
 		session.subagentPaths.map(read),
 	);
+}
+
+function oversizeEvent(session: SessionFile, limit: number): HubEvent {
+	return {
+		source: session.harness === "codex" ? "codex" : "cc",
+		level: "urgent",
+		title: "Watchdog: transcript exceeded bounded scan budget",
+		body: `The active transcript could not be read consistently within the ${limit}-byte watchdog ceiling. Detection is fail-closed until the session shrinks or rotates. Transcript: ${session.path}`,
+		session_label: basename(session.path),
+		intent: "needs_attention",
+		context: {
+			detector: "transcript_budget_exceeded",
+			severity: "critical",
+			harness: session.harness,
+			transcript_path: session.path,
+			max_session_bytes: limit,
+		},
+	};
 }
 
 export async function tick(
@@ -69,6 +135,30 @@ export async function tick(
 	for (const session of sessions) {
 		if (session.sizeBytes > config.maxSessionBytes) {
 			report.skippedOversize += 1;
+			const key = "transcript_budget_exceeded@critical";
+			if (hasAlerted(state, session.path, key)) {
+				report.alertsDeduped += 1;
+				continue;
+			}
+			const event = oversizeEvent(session, config.maxSessionBytes);
+			if (config.dryRun) {
+				console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
+				markAlerted(state, session.path, key, nowMs);
+				dirty = true;
+				report.alertsPosted += 1;
+				continue;
+			}
+			const result = await postEvent(config.hubUrl, event, {
+				producerId: config.hubProducerId,
+				tokenFile: config.hubTokenFile,
+			});
+			if (result.ok) {
+				markAlerted(state, session.path, key, nowMs);
+				dirty = true;
+				report.alertsPosted += 1;
+			} else {
+				report.postFailures += 1;
+			}
 			continue;
 		}
 		// Idle sessions linger in the mtime window for many ticks; skip the
@@ -82,8 +172,36 @@ export async function tick(
 
 		let trace: Trace;
 		try {
-			trace = parseSession(session);
+			trace = parseSession(session, config.maxSessionBytes);
 		} catch (err) {
+			if (err instanceof TranscriptBudgetError) {
+				report.skippedOversize += 1;
+				const key = "transcript_budget_exceeded@critical";
+				if (!hasAlerted(state, session.path, key)) {
+					const event = oversizeEvent(session, config.maxSessionBytes);
+					if (config.dryRun) {
+						console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
+						markAlerted(state, session.path, key, nowMs);
+						dirty = true;
+						report.alertsPosted += 1;
+					} else {
+						const result = await postEvent(config.hubUrl, event, {
+							producerId: config.hubProducerId,
+							tokenFile: config.hubTokenFile,
+						});
+						if (result.ok) {
+							markAlerted(state, session.path, key, nowMs);
+							dirty = true;
+							report.alertsPosted += 1;
+						} else {
+							report.postFailures += 1;
+						}
+					}
+				} else {
+					report.alertsDeduped += 1;
+				}
+				continue;
+			}
 			report.parseFailures += 1;
 			console.error(
 				`watchdog: parse failed for ${session.path}: ${String(err)}`,
@@ -123,7 +241,10 @@ export async function tick(
 				report.alertsPosted += 1;
 				continue;
 			}
-			const result = await postEvent(config.hubUrl, event);
+			const result = await postEvent(config.hubUrl, event, {
+				producerId: config.hubProducerId,
+				tokenFile: config.hubTokenFile,
+			});
 			if (result.ok) {
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;

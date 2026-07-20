@@ -57,9 +57,20 @@ const config: WatchdogConfig = {
 	claudeProjectsDir: join(homedir(), ".claude", "projects"),
 	codexSessionsDir: join(homedir(), ".codex", "sessions"),
 	hubUrl: args.hub,
+	hubProducerId:
+		process.env["WATCHDOG_HUB_PRODUCER_ID"] ?? "agent-watchdog",
+	hubTokenFile:
+		process.env["WATCHDOG_HUB_TOKEN_FILE"] ??
+		join(
+			homedir(),
+			".config",
+			"notification-hub",
+			"producer-tokens",
+			"agent-watchdog.token",
+		),
 	windowMinutes: num("window", args.window),
 	stallQuietSeconds: num("stall-quiet", args["stall-quiet"]),
-	maxSessionBytes: 64 * 1024 * 1024,
+	maxSessionBytes: 96 * 1024 * 1024,
 	statePath: args.state,
 	dryRun: args["dry-run"],
 };

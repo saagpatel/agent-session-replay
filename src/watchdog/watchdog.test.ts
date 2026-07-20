@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +19,14 @@ import { tick } from "./watchdog.ts";
 const posts: HubEvent[] = [];
 let failNext = false;
 const server: Server = createServer((req, res) => {
+	if (
+		req.headers.authorization !== "Bearer fixture-watchdog-token" ||
+		req.headers["x-notification-hub-producer"] !== "agent-watchdog"
+	) {
+		res.statusCode = 401;
+		res.end("producer authentication failed");
+		return;
+	}
 	let body = "";
 	req.on("data", (c: unknown) => {
 		body += String(c);
@@ -118,6 +132,9 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 	const codexRoot = join(base, "sessions");
 	mkdirSync(claudeRoot, { recursive: true });
 	mkdirSync(codexRoot, { recursive: true });
+	const tokenFile = join(base, "agent-watchdog.token");
+	writeFileSync(tokenFile, "fixture-watchdog-token\n", { mode: 0o600 });
+	chmodSync(tokenFile, 0o600);
 	return {
 		claudeRoot,
 		codexRoot,
@@ -125,6 +142,8 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 			claudeProjectsDir: claudeRoot,
 			codexSessionsDir: codexRoot,
 			hubUrl,
+			hubProducerId: "agent-watchdog",
+			hubTokenFile: tokenFile,
 			windowMinutes: 30,
 			stallQuietSeconds: 600,
 			maxSessionBytes: 64 * 1024 * 1024,
@@ -244,10 +263,29 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 	assert.equal(posts.length, 0);
 });
 
-test("oversize transcripts are skipped, counted, and never parsed", async () => {
+test("oversize transcripts fail closed with one deduplicated alert", async () => {
 	const { config, claudeRoot } = fixture({ maxSessionBytes: 10 });
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.scannedSessions, 0);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(posts[0]?.context["detector"], "transcript_budget_exceeded");
+	const repeat = await tick(config, Date.now());
+	assert.equal(repeat.alertsPosted, 0);
+	assert.equal(repeat.alertsDeduped, 1);
+});
+
+test("aggregate main plus current sidechain bytes enforce the exact ceiling", async () => {
+	const { config, claudeRoot } = fixture({ maxSessionBytes: 32 });
+	const main = writeCcSession(claudeRoot, "{}\n");
+	const sideDir = join(main.slice(0, -6), "subagents");
+	mkdirSync(sideDir, { recursive: true });
+	writeFileSync(join(sideDir, "agent-current.jsonl"), "x".repeat(30));
+	posts.length = 0;
+	const report = await tick(config, Date.now());
+	assert.equal(report.skippedOversize, 1);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(posts[0]?.level, "urgent");
 });
