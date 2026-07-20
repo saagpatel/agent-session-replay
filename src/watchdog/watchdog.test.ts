@@ -179,6 +179,7 @@ test("a grinding CC session posts one grind_loop alert; the next tick skips the 
 
 	const first = await tick(config, Date.now());
 	assert.equal(first.alertsPosted, 1);
+	assert.deepEqual(first.acceptedEventIds, ["e"]);
 	assert.equal(posts.length, 1);
 	const event = posts[0];
 	if (!event) throw new Error("expected a posted event");
@@ -191,6 +192,7 @@ test("a grinding CC session posts one grind_loop alert; the next tick skips the 
 	// Unchanged mtime + nothing pending -> the session is not even re-parsed.
 	const second = await tick(config, Date.now());
 	assert.equal(second.alertsPosted, 0);
+	assert.deepEqual(second.acceptedEventIds, []);
 	assert.equal(second.skippedUnchanged, 1);
 	assert.equal(second.scannedSessions, 0);
 	assert.equal(posts.length, 1);
@@ -228,6 +230,7 @@ test("a settled codex no-op run posts a silent_stall; a fresh one is held", asyn
 	// Settled: pretend 11 minutes elapsed with no further writes.
 	const settled = await tick(fresh.config, Date.now() + 11 * 60 * 1000);
 	assert.equal(settled.alertsPosted, 1);
+	assert.deepEqual(settled.acceptedEventIds, ["e"]);
 	const event = posts[0];
 	if (!event) throw new Error("expected a posted event");
 	assert.equal(event.source, "codex");
@@ -246,6 +249,7 @@ test("a failed post is retried on the next tick (nothing marked alerted)", async
 
 	const second = await tick(config, Date.now());
 	assert.equal(second.alertsPosted, 1);
+	assert.deepEqual(second.acceptedEventIds, ["e"]);
 	assert.equal(posts.length, 1);
 });
 
@@ -259,6 +263,7 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 
 	const report = await tick(config, Date.now());
 	assert.equal(report.alertsPosted, 1);
+	assert.deepEqual(report.acceptedEventIds, []);
 	assert.equal(report.postFailures, 0);
 	assert.equal(posts.length, 0);
 });
@@ -271,6 +276,7 @@ test("oversize transcripts fail closed with one deduplicated alert", async () =>
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.scannedSessions, 0);
 	assert.equal(report.alertsPosted, 1);
+	assert.deepEqual(report.acceptedEventIds, ["e"]);
 	assert.equal(posts[0]?.context["detector"], "transcript_budget_exceeded");
 	const repeat = await tick(config, Date.now());
 	assert.equal(repeat.alertsPosted, 0);
@@ -287,5 +293,6 @@ test("aggregate main plus current sidechain bytes enforce the exact ceiling", as
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.alertsPosted, 1);
+	assert.deepEqual(report.acceptedEventIds, ["e"]);
 	assert.equal(posts[0]?.level, "urgent");
 });

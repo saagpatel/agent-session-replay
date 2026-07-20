@@ -14,7 +14,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-
+import {
+	terminalLine,
+	terminalStateForFailure,
+	terminalStateForReport,
+} from "./terminal.ts";
 import type { WatchdogConfig } from "./types.ts";
 import { tick } from "./watchdog.ts";
 
@@ -57,8 +61,7 @@ const config: WatchdogConfig = {
 	claudeProjectsDir: join(homedir(), ".claude", "projects"),
 	codexSessionsDir: join(homedir(), ".codex", "sessions"),
 	hubUrl: args.hub,
-	hubProducerId:
-		process.env["WATCHDOG_HUB_PRODUCER_ID"] ?? "agent-watchdog",
+	hubProducerId: process.env["WATCHDOG_HUB_PRODUCER_ID"] ?? "agent-watchdog",
 	hubTokenFile:
 		process.env["WATCHDOG_HUB_TOKEN_FILE"] ??
 		join(
@@ -77,13 +80,39 @@ const config: WatchdogConfig = {
 
 const intervalMs = num("interval", args.interval) * 1000;
 
-async function runOnce(): Promise<void> {
-	const report = await tick(config, Date.now());
-	console.log(`watchdog: ${JSON.stringify(report)}`);
+async function runOnce(): Promise<number> {
+	const started = Date.now();
+	try {
+		const report = await tick(config, started);
+		console.log(`watchdog: ${JSON.stringify(report)}`);
+		const observedAt = new Date().toISOString();
+		const terminal = terminalStateForReport(
+			report,
+			config.hubUrl,
+			config.dryRun,
+			observedAt,
+			Date.now() - started,
+		);
+		console.log(terminalLine(terminal));
+		return terminal.exit_code;
+	} catch (err) {
+		const observedAt = new Date().toISOString();
+		console.log(
+			terminalLine(
+				terminalStateForFailure(
+					err,
+					config.hubUrl,
+					observedAt,
+					Date.now() - started,
+				),
+			),
+		);
+		throw err;
+	}
 }
 
 if (args.once) {
-	await runOnce();
+	process.exitCode = await runOnce();
 } else {
 	console.log(
 		`watchdog: watching (interval ${intervalMs / 1000}s, window ${config.windowMinutes}m, ` +
