@@ -263,10 +263,29 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 	assert.equal(posts.length, 0);
 });
 
-test("oversize transcripts are skipped, counted, and never parsed", async () => {
+test("oversize transcripts fail closed with one deduplicated alert", async () => {
 	const { config, claudeRoot } = fixture({ maxSessionBytes: 10 });
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.scannedSessions, 0);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(posts[0]?.context["detector"], "transcript_budget_exceeded");
+	const repeat = await tick(config, Date.now());
+	assert.equal(repeat.alertsPosted, 0);
+	assert.equal(repeat.alertsDeduped, 1);
+});
+
+test("aggregate main plus current sidechain bytes enforce the exact ceiling", async () => {
+	const { config, claudeRoot } = fixture({ maxSessionBytes: 32 });
+	const main = writeCcSession(claudeRoot, "{}\n");
+	const sideDir = join(main.slice(0, -6), "subagents");
+	mkdirSync(sideDir, { recursive: true });
+	writeFileSync(join(sideDir, "agent-current.jsonl"), "x".repeat(30));
+	posts.length = 0;
+	const report = await tick(config, Date.now());
+	assert.equal(report.skippedOversize, 1);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(posts[0]?.level, "urgent");
 });
