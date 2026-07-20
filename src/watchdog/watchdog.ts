@@ -36,6 +36,20 @@ import type {
 
 class TranscriptBudgetError extends Error {}
 
+export function boundedReadSnapshotIsValid(
+	before: { dev: number; ino: number; size: number; mtimeMs: number },
+	after: { dev: number; ino: number; size: number; mtimeMs: number },
+	consumed: number,
+): boolean {
+	return (
+		before.dev === after.dev &&
+		before.ino === after.ino &&
+		after.size >= before.size &&
+		consumed === before.size &&
+		(after.size > before.size || after.mtimeMs === before.mtimeMs)
+	);
+}
+
 function readBounded(path: string, remainingBytes: number): string {
 	const fd = openSync(path, "r");
 	try {
@@ -44,31 +58,31 @@ function readBounded(path: string, remainingBytes: number): string {
 			throw new TranscriptBudgetError(
 				"transcript exceeds remaining byte budget",
 			);
+		const snapshotSize = before.size;
 		const chunks: Buffer[] = [];
 		let consumed = 0;
-		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remainingBytes + 1));
-		while (true) {
+		const buffer = Buffer.allocUnsafe(
+			Math.max(1, Math.min(64 * 1024, snapshotSize)),
+		);
+		while (consumed < snapshotSize) {
 			const read = readSync(
 				fd,
 				buffer,
 				0,
-				Math.min(buffer.length, remainingBytes - consumed + 1),
+				Math.min(buffer.length, snapshotSize - consumed),
 				null,
 			);
-			if (read === 0) break;
+			if (read === 0)
+				throw new TranscriptBudgetError("transcript truncated during bounded read");
 			consumed += read;
-			if (consumed > remainingBytes)
-				throw new TranscriptBudgetError("transcript grew beyond byte budget");
 			chunks.push(Buffer.from(buffer.subarray(0, read)));
 		}
 		const after = fstatSync(fd);
-		if (
-			before.dev !== after.dev ||
-			before.ino !== after.ino ||
-			before.size !== after.size ||
-			before.mtimeMs !== after.mtimeMs ||
-			consumed !== after.size
-		)
+		// Session transcripts are append-only. Accept a stable prefix when the
+		// same inode grew while it was being read; the next tick will inspect
+		// the appended bytes. Replacement, truncation, or same-size mutation
+		// still fails closed.
+		if (!boundedReadSnapshotIsValid(before, after, consumed))
 			throw new TranscriptBudgetError("transcript changed during bounded read");
 		return Buffer.concat(chunks).toString("utf8");
 	} finally {
