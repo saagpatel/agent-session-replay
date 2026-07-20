@@ -73,4 +73,6 @@ export interface TickReport {
 	alertsDeduped: number;
 	alertsHeld: number;
 	postFailures: number;
+	/** Notification Hub event ids from accepted machine-readable receipts. */
+	acceptedEventIds: string[];
 }

@@ -41,7 +41,9 @@ function readBounded(path: string, remainingBytes: number): string {
 	try {
 		const before = fstatSync(fd);
 		if (!before.isFile() || before.size > remainingBytes)
-			throw new TranscriptBudgetError("transcript exceeds remaining byte budget");
+			throw new TranscriptBudgetError(
+				"transcript exceeds remaining byte budget",
+			);
 		const chunks: Buffer[] = [];
 		let consumed = 0;
 		const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remainingBytes + 1));
@@ -121,6 +123,7 @@ export async function tick(
 		alertsDeduped: 0,
 		alertsHeld: 0,
 		postFailures: 0,
+		acceptedEventIds: [],
 	};
 	let dirty = false;
 
@@ -152,10 +155,11 @@ export async function tick(
 				producerId: config.hubProducerId,
 				tokenFile: config.hubTokenFile,
 			});
-			if (result.ok) {
+			if (result.ok && result.eventId) {
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;
 				report.alertsPosted += 1;
+				report.acceptedEventIds.push(result.eventId);
 			} else {
 				report.postFailures += 1;
 			}
@@ -189,10 +193,11 @@ export async function tick(
 							producerId: config.hubProducerId,
 							tokenFile: config.hubTokenFile,
 						});
-						if (result.ok) {
+						if (result.ok && result.eventId) {
 							markAlerted(state, session.path, key, nowMs);
 							dirty = true;
 							report.alertsPosted += 1;
+							report.acceptedEventIds.push(result.eventId);
 						} else {
 							report.postFailures += 1;
 						}
@@ -245,10 +250,11 @@ export async function tick(
 				producerId: config.hubProducerId,
 				tokenFile: config.hubTokenFile,
 			});
-			if (result.ok) {
+			if (result.ok && result.eventId) {
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;
 				report.alertsPosted += 1;
+				report.acceptedEventIds.push(result.eventId);
 				console.log(`watchdog: posted ${event.level} '${event.title}'`);
 			} else {
 				// Not marked alerted -> retries next tick once the hub is back.
