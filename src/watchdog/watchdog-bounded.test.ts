@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import type { WatchdogConfig } from "./types.ts";
-import { tick } from "./watchdog.ts";
+import { boundedReadSnapshotIsValid, tick } from "./watchdog.ts";
 
 function boundedFixture(maxSessionBytes: number): {
 	config: WatchdogConfig;
@@ -49,4 +49,41 @@ test("controlled dry run fails closed at the aggregate transcript ceiling", asyn
 	assert.equal(report.alertsPosted, 1);
 	assert.equal(report.postFailures, 0);
 	assert.deepEqual(report.acceptedEventIds, []);
+});
+
+test("bounded reads accept only same-inode append growth", () => {
+	const before = { dev: 1, ino: 2, size: 100, mtimeMs: 10 };
+
+	assert.equal(
+		boundedReadSnapshotIsValid(
+			before,
+			{ dev: 1, ino: 2, size: 120, mtimeMs: 11 },
+			100,
+		),
+		true,
+	);
+	assert.equal(
+		boundedReadSnapshotIsValid(
+			before,
+			{ dev: 1, ino: 3, size: 120, mtimeMs: 11 },
+			100,
+		),
+		false,
+	);
+	assert.equal(
+		boundedReadSnapshotIsValid(
+			before,
+			{ dev: 1, ino: 2, size: 90, mtimeMs: 11 },
+			90,
+		),
+		false,
+	);
+	assert.equal(
+		boundedReadSnapshotIsValid(
+			before,
+			{ dev: 1, ino: 2, size: 100, mtimeMs: 11 },
+			100,
+		),
+		false,
+	);
 });
