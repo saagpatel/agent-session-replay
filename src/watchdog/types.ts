@@ -42,7 +42,7 @@ export interface WatchdogConfig {
 	 * signal and a short pause must not read as a stall.
 	 */
 	stallQuietSeconds: number;
-	/** Skip transcripts larger than this (pathological-file defense). */
+	/** Aggregate per-session read ceiling; larger JSONL inputs use recent windows. */
 	maxSessionBytes: number;
 	/** Dedupe-state JSON path. */
 	statePath: string;
@@ -64,6 +64,8 @@ export interface HubEvent {
 
 export interface TickReport {
 	scannedSessions: number;
+	/** Sessions parsed from a newline-aligned recent window under the byte ceiling. */
+	windowedSessions: number;
 	skippedOversize: number;
 	/** In-window sessions skipped: unchanged mtime and nothing pending. */
 	skippedUnchanged: number;

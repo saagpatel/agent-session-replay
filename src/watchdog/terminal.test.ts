@@ -6,6 +6,7 @@ import type { TickReport } from "./types.ts";
 
 const clean: TickReport = {
 	scannedSessions: 2,
+	windowedSessions: 0,
 	skippedOversize: 0,
 	skippedUnchanged: 3,
 	parseFailures: 0,
@@ -45,6 +46,21 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 	assert.equal(event.mutation_count, 0);
 	assert.equal(event.destination_readback.required, false);
 	assert.equal(event.destination_readback.verified, false);
+	assert.equal(event.destination_readback.evidence.windowed_sessions, 0);
+});
+
+test("windowed coverage remains successful and explicit", () => {
+	const event = terminalStateForReport(
+		{ ...clean, windowedSessions: 1 },
+		"http://127.0.0.1:9199",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+	);
+	assert.equal(event.state, "succeeded");
+	assert.equal(event.operator_action_required, false);
+	assert.equal(event.destination_readback.evidence.windowed_sessions, 1);
+	assert.equal(event.destination_readback.evidence.skipped_oversize, 0);
 });
 
 test("post or coverage failures emit operator-actionable partial state", () => {

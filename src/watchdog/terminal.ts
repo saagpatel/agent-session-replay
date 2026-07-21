@@ -91,6 +91,7 @@ export function terminalStateForReport(
 				},
 				post_failures: report.postFailures,
 				parse_failures: report.parseFailures,
+				windowed_sessions: report.windowedSessions,
 				skipped_oversize: report.skippedOversize,
 			},
 		},

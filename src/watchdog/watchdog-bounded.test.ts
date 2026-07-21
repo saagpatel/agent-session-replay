@@ -33,20 +33,21 @@ function boundedFixture(maxSessionBytes: number): {
 	};
 }
 
-test("controlled dry run fails closed at the aggregate transcript ceiling", async () => {
-	const { config, claudeRoot } = boundedFixture(32);
+test("controlled dry run scans newline-aligned windows at the aggregate ceiling", async () => {
+	const { config, claudeRoot } = boundedFixture(96);
 	const project = join(claudeRoot, "fixture-project");
 	const main = join(project, "session.jsonl");
 	const sidechains = join(project, "session", "subagents");
 	mkdirSync(sidechains, { recursive: true });
-	writeFileSync(main, "{}\n");
-	writeFileSync(join(sidechains, "agent-current.jsonl"), "x".repeat(30));
+	writeFileSync(main, "{}\n".repeat(30));
+	writeFileSync(join(sidechains, "agent-current.jsonl"), "{}\n".repeat(30));
 
 	const report = await tick(config, Date.now());
 
-	assert.equal(report.scannedSessions, 0);
-	assert.equal(report.skippedOversize, 1);
-	assert.equal(report.alertsPosted, 1);
+	assert.equal(report.scannedSessions, 1);
+	assert.equal(report.windowedSessions, 1);
+	assert.equal(report.skippedOversize, 0);
+	assert.equal(report.alertsPosted, 0);
 	assert.equal(report.postFailures, 0);
 	assert.deepEqual(report.acceptedEventIds, []);
 });
@@ -59,6 +60,15 @@ test("bounded reads accept only same-inode append growth", () => {
 			before,
 			{ dev: 1, ino: 2, size: 120, mtimeMs: 11 },
 			100,
+		),
+		true,
+	);
+	assert.equal(
+		boundedReadSnapshotIsValid(
+			before,
+			{ dev: 1, ino: 2, size: 120, mtimeMs: 11 },
+			50,
+			50,
 		),
 		true,
 	);
