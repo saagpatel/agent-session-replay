@@ -103,14 +103,15 @@ test("launchd invocation records exact service and measured scheduler signals", 
 	});
 });
 
-test("parent-only launchd detection never fabricates an XPC match", () => {
+test("parent-only evidence stays diagnostic and cannot attest scheduling", () => {
 	const invocation = invocationProvenance(
 		"com.saagar.agent-watchdog",
 		{},
 		1,
 	);
-	assert.equal(invocation.scheduled, true);
-	assert.equal(invocation.service_name, "com.saagar.agent-watchdog");
+	assert.equal(invocation.scheduled, false);
+	assert.equal(invocation.source, "manual");
+	assert.equal(invocation.service_name, null);
 	assert.equal(invocation.signals.xpc_service_name_matches, false);
 	assert.equal(invocation.signals.parent_is_launchd, true);
 });

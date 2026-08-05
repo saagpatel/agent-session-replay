@@ -39,16 +39,12 @@ export function invocationProvenance(
 	const rawServiceName = environment["XPC_SERVICE_NAME"] ?? "";
 	const byLabel = rawServiceName === label;
 	const byParent = parentPid === 1;
-	const scheduled = byLabel || byParent;
-	const serviceName =
-		byParent && (rawServiceName === "" || rawServiceName === "0")
-			? label
-			: rawServiceName || null;
+	const scheduled = byLabel;
 
 	return {
 		scheduled,
 		source: scheduled ? "launchd" : "manual",
-		service_name: serviceName,
+		service_name: rawServiceName || null,
 		parent_pid: parentPid,
 		signals: {
 			xpc_service_name_matches: byLabel,
