@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { terminalStateForFailure, terminalStateForReport } from "./terminal.ts";
+import {
+	invocationProvenance,
+	terminalStateForFailure,
+	terminalStateForReport,
+} from "./terminal.ts";
 import type { TickReport } from "./types.ts";
 
 const clean: TickReport = {
@@ -33,6 +37,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 		"destination_readback",
 		"duration_ms",
 		"exit_code",
+		"invocation",
 		"message",
 		"mutation_count",
 		"observed_at",
@@ -78,6 +83,53 @@ test("post or coverage failures emit operator-actionable partial state", () => {
 	assert.equal(event.can_auto_archive, false);
 	assert.equal(event.destination_readback.required, true);
 	assert.equal(event.destination_readback.verified, false);
+});
+
+test("launchd invocation records exact service and measured scheduler signals", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{ XPC_SERVICE_NAME: "com.saagar.agent-watchdog" },
+		1,
+	);
+	assert.deepEqual(invocation, {
+		scheduled: true,
+		source: "launchd",
+		service_name: "com.saagar.agent-watchdog",
+		parent_pid: 1,
+		signals: {
+			xpc_service_name_matches: true,
+			parent_is_launchd: true,
+		},
+	});
+});
+
+test("parent-only launchd detection never fabricates an XPC match", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{},
+		1,
+	);
+	assert.equal(invocation.scheduled, true);
+	assert.equal(invocation.service_name, "com.saagar.agent-watchdog");
+	assert.equal(invocation.signals.xpc_service_name_matches, false);
+	assert.equal(invocation.signals.parent_is_launchd, true);
+});
+
+test("terminal receipts retain caller-supplied invocation provenance", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{ XPC_SERVICE_NAME: "com.saagar.agent-watchdog" },
+		1,
+	);
+	const event = terminalStateForReport(
+		clean,
+		"http://127.0.0.1:9199",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+		invocation,
+	);
+	assert.equal(event.invocation, invocation);
 });
 
 test("accepted destination receipts preserve every notification-hub event id", () => {
