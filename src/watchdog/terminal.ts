@@ -18,9 +18,44 @@ interface DestinationReadback {
 	>;
 }
 
+export interface AutomationInvocation {
+	scheduled: boolean;
+	source: "launchd" | "manual";
+	service_name: string | null;
+	parent_pid: number;
+	signals: {
+		xpc_service_name_matches: boolean;
+		parent_is_launchd: boolean;
+	};
+}
+
+const WATCHDOG_AUTOMATION_ID = "com.saagar.agent-watchdog" as const;
+
+export function invocationProvenance(
+	label: string = WATCHDOG_AUTOMATION_ID,
+	environment: Record<string, string | undefined> = process.env,
+	parentPid: number = process.ppid,
+): AutomationInvocation {
+	const rawServiceName = environment["XPC_SERVICE_NAME"] ?? "";
+	const byLabel = rawServiceName === label;
+	const byParent = parentPid === 1;
+	const scheduled = byLabel;
+
+	return {
+		scheduled,
+		source: scheduled ? "launchd" : "manual",
+		service_name: rawServiceName || null,
+		parent_pid: parentPid,
+		signals: {
+			xpc_service_name_matches: byLabel,
+			parent_is_launchd: byParent,
+		},
+	};
+}
+
 export interface AutomationTerminalState {
 	schema: "AutomationTerminalStateV1";
-	automation_id: "com.saagar.agent-watchdog";
+	automation_id: typeof WATCHDOG_AUTOMATION_ID;
 	state: "succeeded" | "failed" | "partial" | "skipped";
 	completed: boolean;
 	partial: boolean;
@@ -30,6 +65,7 @@ export interface AutomationTerminalState {
 	operator_action_required: boolean;
 	can_auto_archive: boolean;
 	observed_at: string;
+	invocation: AutomationInvocation;
 	message: string;
 	exit_code: number;
 	duration_ms: number;
@@ -41,6 +77,7 @@ export function terminalStateForReport(
 	dryRun: boolean,
 	observedAt: string,
 	durationMs: number,
+	invocation: AutomationInvocation = invocationProvenance(),
 ): AutomationTerminalState {
 	const coverageFailure =
 		report.parseFailures > 0 || report.skippedOversize > 0;
@@ -98,6 +135,7 @@ export function terminalStateForReport(
 		operator_action_required: partial,
 		can_auto_archive: false,
 		observed_at: observedAt,
+		invocation,
 		message: partial
 			? "watchdog tick completed with delivery or coverage failures"
 			: dryRun
@@ -113,6 +151,7 @@ export function terminalStateForFailure(
 	hubUrl: string,
 	observedAt: string,
 	durationMs: number,
+	invocation: AutomationInvocation = invocationProvenance(),
 ): AutomationTerminalState {
 	return {
 		schema: "AutomationTerminalStateV1",
@@ -141,6 +180,7 @@ export function terminalStateForFailure(
 		operator_action_required: true,
 		can_auto_archive: false,
 		observed_at: observedAt,
+		invocation,
 		message: `watchdog tick crashed: ${String(error)}`,
 		exit_code: 1,
 		duration_ms: durationMs,
