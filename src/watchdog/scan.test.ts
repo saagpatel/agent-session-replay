@@ -62,6 +62,30 @@ test("a fresh subagent write keeps a quiet main transcript in the window", () =>
 	assert.equal(found.length, 1);
 });
 
+test("stale sidechains do not inflate an active session's bounded scan", () => {
+	const { claude } = roots();
+	const proj = join(claude, "-p");
+	const subDir = join(proj, "s1", "subagents");
+	mkdirSync(subDir, { recursive: true });
+	writeAged(join(proj, "s1.jsonl"), 0, "main\n");
+	writeAged(
+		join(subDir, "agent-stale.jsonl"),
+		60 * 60 * 1000,
+		"x".repeat(1_000_000),
+	);
+	writeAged(join(subDir, "agent-current.jsonl"), 0, "current\n");
+
+	const found = scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000);
+	assert.equal(found.length, 1);
+	const session = found[0];
+	if (!session) throw new Error("expected a session");
+	assert.deepEqual(
+		session.subagentPaths.map((path) => path.split("/").at(-1)),
+		["agent-current.jsonl"],
+	);
+	assert.ok(session.sizeBytes < 1_000_000);
+});
+
 test("finds codex rollouts nested in date directories", () => {
 	const { codex } = roots();
 	const day = join(codex, "2026", "07", "10");

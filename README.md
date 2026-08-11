@@ -169,6 +169,12 @@ running session is incomplete); `silent_stall` waits for real quiescence
 (`--stall-quiet`, default 10 min) because the Codex parser stamps `ended_at`
 on every event. Dedupe state lives at `~/.local/state/agent-watchdog/` keyed
 by (session, finding, severity), so a severity escalation re-alerts once.
+Dry-run ticks make no hub request and do not write dedupe state. Live delivery
+is accepted only when the hub returns a JSON receipt containing
+`accepted: true` and a non-empty `event_id`; other 2xx responses remain pending
+and retry. Every tick also emits one standalone
+`automation_completion: {"schema":"AutomationTerminalStateV1",...}` line so
+delivery readback, partial coverage, and tick crashes remain machine-readable.
 launchd install scripts are staged at `~/.launchd-staging/`
 (`com.saagar.agent-watchdog`).
 

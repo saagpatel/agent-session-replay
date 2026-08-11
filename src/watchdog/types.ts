@@ -30,6 +30,10 @@ export interface WatchdogConfig {
 	codexSessionsDir: string;
 	/** notification-hub base URL, e.g. http://127.0.0.1:9199 */
 	hubUrl: string;
+	/** Exact notification-hub producer identity. */
+	hubProducerId: string;
+	/** Owner-private, non-symlinked bearer-token file. */
+	hubTokenFile: string;
 	/** Only sessions written within this many minutes are scanned. */
 	windowMinutes: number;
 	/**
@@ -69,4 +73,6 @@ export interface TickReport {
 	alertsDeduped: number;
 	alertsHeld: number;
 	postFailures: number;
+	/** Notification Hub event ids from accepted machine-readable receipts. */
+	acceptedEventIds: string[];
 }

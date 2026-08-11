@@ -65,6 +65,7 @@ export function scanClaudeProjects(
 				const subPath = join(sidechainDir, sub);
 				const subStat = mtimeAndSize(subPath);
 				if (!subStat) continue;
+				if (subStat.mtimeMs < cutoffMs) continue;
 				subagentPaths.push(subPath);
 				mtimeMs = Math.max(mtimeMs, subStat.mtimeMs);
 				sizeBytes += subStat.size;
