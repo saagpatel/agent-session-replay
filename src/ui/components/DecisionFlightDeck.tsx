@@ -856,6 +856,7 @@ export function DecisionFlightDeck({
 									key={preset.id}
 									type="button"
 									className={sourcePreset === preset.id ? "is-active" : ""}
+									aria-pressed={sourcePreset === preset.id}
 									onClick={() => setSourcePreset(preset.id)}
 								>
 									{preset.label}

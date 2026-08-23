@@ -157,10 +157,12 @@ export function DropZone({
 	}
 
 	return (
-		<div className="drop">
+		<main className="drop">
 			<div
 				className={`drop__box${over ? " drop__box--over" : ""}`}
 				role="button"
+				aria-label="Choose a session transcript or AFR archive"
+				aria-describedby="drop-description drop-privacy"
 				tabIndex={0}
 				onClick={() => inputRef.current?.click()}
 				onKeyDown={(e) => {
@@ -196,8 +198,8 @@ export function DropZone({
 				>
 					<path d="M1 15 H10 L15 4 L22 26 L29 9 L35 21 L40 15 H63" />
 				</svg>
-				<h1 className="drop__title">Replay an agent session</h1>
-				<p className="drop__desc">
+				<h2 className="drop__title">Replay an agent session</h2>
+				<p className="drop__desc" id="drop-description">
 					Drop a Claude Code session folder (or its .jsonl files), or a Codex
 					rollout, to see exactly where the run went wrong. Drop an AFR archive
 					to rank local control-plane findings across sources.
@@ -221,10 +223,10 @@ export function DropZone({
 						void take(files);
 					}}
 				/>
-				<p className="drop__priv">
+				<p className="drop__priv" id="drop-privacy">
 					Parsed entirely in your browser. <b>Nothing is uploaded.</b>
 				</p>
 			</div>
-		</div>
+		</main>
 	);
 }

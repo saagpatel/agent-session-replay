@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { parseAfrBundle } from "../core/afr/parse.ts";
 import type { AfrBundle } from "../core/afr/types.ts";
@@ -39,6 +39,7 @@ export function App() {
 	const [error, setError] = useState<string | null>(null);
 	const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
 	const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
+	const inspectorOpenerRef = useRef<HTMLElement | null>(null);
 
 	const load = useCallback((payload: DropPayload) => {
 		try {
@@ -84,9 +85,32 @@ export function App() {
 		return loaded.trace.steps.find((s) => s.step_id === selectedStepId) ?? null;
 	}, [loaded, selectedStepId]);
 
+	const rememberInspectorOpener = useCallback(() => {
+		if (document.activeElement instanceof HTMLElement) {
+			inspectorOpenerRef.current = document.activeElement;
+		}
+	}, []);
+
+	const selectStep = useCallback(
+		(stepId: string) => {
+			rememberInspectorOpener();
+			setSelectedStepId(stepId);
+		},
+		[rememberInspectorOpener],
+	);
+
 	const focusFinding = useCallback((f: Finding) => {
+		rememberInspectorOpener();
 		setFocusedFindingId(f.id);
 		setSelectedStepId(f.step_ids[0] ?? null);
+	}, [rememberInspectorOpener]);
+
+	const closeInspector = useCallback(() => {
+		setSelectedStepId(null);
+		requestAnimationFrame(() => {
+			const opener = inspectorOpenerRef.current;
+			if (opener?.isConnected) opener.focus();
+		});
 	}, []);
 
 	return (
@@ -94,7 +118,7 @@ export function App() {
 			<header className="topbar">
 				<div className="topbar__brand">
 					<span className="rec" aria-hidden="true" />
-					Agent Session Replay
+					<h1 className="topbar__title">Agent Session Replay</h1>
 				</div>
 				{loaded ? (
 					<div className="topbar__meta">
@@ -134,7 +158,7 @@ export function App() {
 			</header>
 
 			{loaded?.mode === "session" ? (
-				<>
+				<main className="session-view">
 					<RunHeader
 						trace={loaded.trace}
 						findings={loaded.findings}
@@ -145,7 +169,7 @@ export function App() {
 							<Waterfall
 								timeline={loaded.timeline}
 								selectedStepId={selectedStepId}
-								onSelect={setSelectedStepId}
+								onSelect={selectStep}
 								focusedFindingId={focusedFindingId}
 							/>
 						</div>
@@ -158,17 +182,21 @@ export function App() {
 					{selectedStep ? (
 						<StepInspector
 							step={selectedStep}
-							onClose={() => setSelectedStepId(null)}
+							onClose={closeInspector}
 						/>
 					) : null}
-				</>
+				</main>
 			) : loaded?.mode === "control" ? (
 				<DecisionFlightDeck bundle={loaded.bundle} report={loaded.report} />
 			) : (
 				<DropZone onLoad={load} onError={setError} />
 			)}
 
-			{error ? <div className="toast">{error}</div> : null}
+			{error ? (
+				<div className="toast" role="alert" aria-atomic="true">
+					{error}
+				</div>
+			) : null}
 		</div>
 	);
 }

@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef } from "react";
 
 import type { Step } from "../../core/types.ts";
 import { fmtClock, fmtDuration, kindColorVar } from "../format.ts";
@@ -27,19 +27,32 @@ export function StepInspector({
 	step: Step;
 	onClose: () => void;
 }) {
+	const inspectorRef = useRef<HTMLElement>(null);
 	const start = Date.parse(step.started_at);
 	const end = step.ended_at ? Date.parse(step.ended_at) : start;
 	const dur = Number.isFinite(start) && Number.isFinite(end) ? end - start : 0;
 	const entries = Object.entries(step.attributes);
 
+	useEffect(() => {
+		inspectorRef.current?.focus();
+	}, [step.step_id]);
+
 	return (
-		<aside className="inspector">
+		<aside
+			className="inspector"
+			ref={inspectorRef}
+			role="region"
+			aria-labelledby="step-inspector-title"
+			tabIndex={-1}
+		>
 			<div className="inspector__head">
 				<span
 					className="kind-dot"
 					style={{ ["--bar" as string]: `var(${kindColorVar(step.kind)})` }}
 				/>
-				<span className="inspector__title">{step.kind}</span>
+				<h2 className="inspector__title" id="step-inspector-title">
+					{step.kind} step details
+				</h2>
 				{step.status ? <span className="chip">{step.status}</span> : null}
 				<button
 					type="button"

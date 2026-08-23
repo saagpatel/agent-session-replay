@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Severity } from "../../core/detect/types.ts";
 import type { StepKind } from "../../core/types.ts";
@@ -57,12 +57,45 @@ function clockMsAt(axis: readonly AxisKnot[], frac: number): number {
 const Lanes = memo(function Lanes({
 	lanes,
 	selectedStepId,
+	rovingStepId,
 	onSelect,
+	onRove,
 }: {
 	lanes: readonly TimelineLane[];
 	selectedStepId: string | null;
+	rovingStepId: string | null;
 	onSelect: (stepId: string) => void;
+	onRove: (stepId: string) => void;
 }) {
+	const barRefs = useRef(new Map<string, HTMLButtonElement>());
+	const orderedBars = useMemo(
+		() => lanes.flatMap((lane) => lane.bars),
+		[lanes],
+	);
+	const activeStepId = orderedBars.some((bar) => bar.step_id === rovingStepId)
+		? rovingStepId
+		: (orderedBars[0]?.step_id ?? null);
+
+	function moveFrom(stepId: string, key: string): void {
+		const index = orderedBars.findIndex((bar) => bar.step_id === stepId);
+		if (index < 0) return;
+		let nextIndex: number | null = null;
+		if (key === "ArrowRight" || key === "ArrowDown") {
+			nextIndex = Math.min(index + 1, orderedBars.length - 1);
+		} else if (key === "ArrowLeft" || key === "ArrowUp") {
+			nextIndex = Math.max(index - 1, 0);
+		} else if (key === "Home") {
+			nextIndex = 0;
+		} else if (key === "End") {
+			nextIndex = orderedBars.length - 1;
+		}
+		if (nextIndex === null) return;
+		const next = orderedBars[nextIndex];
+		if (!next) return;
+		onRove(next.step_id);
+		requestAnimationFrame(() => barRefs.current.get(next.step_id)?.focus());
+	}
+
 	return (
 		<>
 			{lanes.map((lane) => (
@@ -93,12 +126,32 @@ const Lanes = memo(function Lanes({
 									className={cls.join(" ")}
 									title={label}
 									aria-label={label}
+									aria-pressed={bar.step_id === selectedStepId}
+									tabIndex={bar.step_id === activeStepId ? 0 : -1}
+									ref={(node) => {
+										if (node) barRefs.current.set(bar.step_id, node);
+										else barRefs.current.delete(bar.step_id);
+									}}
 									style={{
 										left: `${bar.offset * 100}%`,
 										width: `${bar.width * 100}%`,
 										["--bar" as string]: `var(${kindColorVar(bar.kind)})`,
 									}}
 									onClick={() => onSelect(bar.step_id)}
+									onFocus={() => onRove(bar.step_id)}
+									onKeyDown={(event) => {
+										if (
+											event.key === "ArrowRight" ||
+											event.key === "ArrowLeft" ||
+											event.key === "ArrowDown" ||
+											event.key === "ArrowUp" ||
+											event.key === "Home" ||
+											event.key === "End"
+										) {
+											event.preventDefault();
+											moveFrom(bar.step_id, event.key);
+										}
+									}}
 								/>
 							);
 						})}
@@ -122,6 +175,13 @@ export function Waterfall({
 }) {
 	const bodyRef = useRef<HTMLDivElement>(null);
 	const [scrub, setScrub] = useState<number | null>(null);
+	const [rovingStepId, setRovingStepId] = useState<string | null>(
+		selectedStepId,
+	);
+
+	useEffect(() => {
+		if (selectedStepId) setRovingStepId(selectedStepId);
+	}, [selectedStepId]);
 
 	const clockAt = (frac: number) => fmtClock(clockMsAt(timeline.axis, frac));
 
@@ -136,10 +196,17 @@ export function Waterfall({
 	}
 
 	return (
-		<div className="wf">
+		<div
+			className="wf"
+			role="region"
+			aria-labelledby="waterfall-title"
+			aria-describedby="waterfall-keyboard-hint"
+		>
 			<div className="wf__head">
 				<div className="wf__head-left">
-					<span className="label">Waterfall</span>
+					<span className="label" id="waterfall-title">
+						Waterfall
+					</span>
 					<div className="wf__legend">
 						{KIND_LEGEND.map(({ label, kind }) => (
 							<span className="wf__legend-item" key={kind}>
@@ -155,6 +222,10 @@ export function Waterfall({
 				<span className="label">
 					{timeline.lanes.length} lanes · {clockAt(0)} → {clockAt(1)}
 				</span>
+			</div>
+			<div className="wf__keyboard-hint" id="waterfall-keyboard-hint">
+				Keyboard: use arrows to move between steps, Home or End to jump, and
+				 Enter to open details.
 			</div>
 			<div
 				className="wf__body"
@@ -215,7 +286,9 @@ export function Waterfall({
 						<Lanes
 							lanes={timeline.lanes}
 							selectedStepId={selectedStepId}
+							rovingStepId={rovingStepId}
 							onSelect={onSelect}
+							onRove={setRovingStepId}
 						/>
 					</div>
 				</div>
