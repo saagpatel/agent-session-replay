@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { terminalStateForFailure, terminalStateForReport } from "./terminal.ts";
+import {
+	invocationProvenance,
+	terminalStateForFailure,
+	terminalStateForReport,
+} from "./terminal.ts";
 import type { TickReport } from "./types.ts";
 
 const clean: TickReport = {
 	scannedSessions: 2,
+	windowedSessions: 0,
 	skippedOversize: 0,
 	skippedUnchanged: 3,
 	parseFailures: 0,
@@ -32,6 +37,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 		"destination_readback",
 		"duration_ms",
 		"exit_code",
+		"invocation",
 		"message",
 		"mutation_count",
 		"observed_at",
@@ -45,6 +51,21 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 	assert.equal(event.mutation_count, 0);
 	assert.equal(event.destination_readback.required, false);
 	assert.equal(event.destination_readback.verified, false);
+	assert.equal(event.destination_readback.evidence.windowed_sessions, 0);
+});
+
+test("windowed coverage remains successful and explicit", () => {
+	const event = terminalStateForReport(
+		{ ...clean, windowedSessions: 1 },
+		"http://127.0.0.1:9199",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+	);
+	assert.equal(event.state, "succeeded");
+	assert.equal(event.operator_action_required, false);
+	assert.equal(event.destination_readback.evidence.windowed_sessions, 1);
+	assert.equal(event.destination_readback.evidence.skipped_oversize, 0);
 });
 
 test("post or coverage failures emit operator-actionable partial state", () => {
@@ -62,6 +83,54 @@ test("post or coverage failures emit operator-actionable partial state", () => {
 	assert.equal(event.can_auto_archive, false);
 	assert.equal(event.destination_readback.required, true);
 	assert.equal(event.destination_readback.verified, false);
+});
+
+test("launchd invocation records exact service and measured scheduler signals", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{ XPC_SERVICE_NAME: "com.saagar.agent-watchdog" },
+		1,
+	);
+	assert.deepEqual(invocation, {
+		scheduled: true,
+		source: "launchd",
+		service_name: "com.saagar.agent-watchdog",
+		parent_pid: 1,
+		signals: {
+			xpc_service_name_matches: true,
+			parent_is_launchd: true,
+		},
+	});
+});
+
+test("parent-only evidence stays diagnostic and cannot attest scheduling", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{},
+		1,
+	);
+	assert.equal(invocation.scheduled, false);
+	assert.equal(invocation.source, "manual");
+	assert.equal(invocation.service_name, null);
+	assert.equal(invocation.signals.xpc_service_name_matches, false);
+	assert.equal(invocation.signals.parent_is_launchd, true);
+});
+
+test("terminal receipts retain caller-supplied invocation provenance", () => {
+	const invocation = invocationProvenance(
+		"com.saagar.agent-watchdog",
+		{ XPC_SERVICE_NAME: "com.saagar.agent-watchdog" },
+		1,
+	);
+	const event = terminalStateForReport(
+		clean,
+		"http://127.0.0.1:9199",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+		invocation,
+	);
+	assert.equal(event.invocation, invocation);
 });
 
 test("accepted destination receipts preserve every notification-hub event id", () => {

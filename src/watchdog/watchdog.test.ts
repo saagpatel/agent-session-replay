@@ -268,30 +268,32 @@ test("dry-run logs and dedupes but never touches the network", async () => {
 	assert.equal(posts.length, 0);
 });
 
-test("oversize transcripts fail closed with one deduplicated alert", async () => {
-	const { config, claudeRoot } = fixture({ maxSessionBytes: 10 });
-	writeCcSession(claudeRoot, ccGrindTranscript(320));
+test("oversize transcripts scan a bounded recent JSONL window", async () => {
+	const transcript = ccGrindTranscript(800);
+	const { config, claudeRoot } = fixture({
+		maxSessionBytes: Math.floor(Buffer.byteLength(transcript) / 2),
+	});
+	writeCcSession(claudeRoot, transcript);
 	posts.length = 0;
 	const report = await tick(config, Date.now());
-	assert.equal(report.skippedOversize, 1);
-	assert.equal(report.scannedSessions, 0);
+	assert.equal(report.skippedOversize, 0);
+	assert.equal(report.scannedSessions, 1);
+	assert.equal(report.windowedSessions, 1);
 	assert.equal(report.alertsPosted, 1);
 	assert.deepEqual(report.acceptedEventIds, ["e"]);
-	assert.equal(posts[0]?.context["detector"], "transcript_budget_exceeded");
+	assert.equal(posts[0]?.context["detector"], "grind_loop");
 	const repeat = await tick(config, Date.now());
 	assert.equal(repeat.alertsPosted, 0);
-	assert.equal(repeat.alertsDeduped, 1);
+	assert.equal(repeat.skippedUnchanged, 1);
 });
 
-test("aggregate main plus current sidechain bytes enforce the exact ceiling", async () => {
+test("a giant JSONL event with no bounded line boundary still fails closed", async () => {
 	const { config, claudeRoot } = fixture({ maxSessionBytes: 32 });
-	const main = writeCcSession(claudeRoot, "{}\n");
-	const sideDir = join(main.slice(0, -6), "subagents");
-	mkdirSync(sideDir, { recursive: true });
-	writeFileSync(join(sideDir, "agent-current.jsonl"), "x".repeat(30));
+	writeCcSession(claudeRoot, JSON.stringify({ body: "x".repeat(128) }));
 	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
+	assert.equal(report.windowedSessions, 0);
 	assert.equal(report.alertsPosted, 1);
 	assert.deepEqual(report.acceptedEventIds, ["e"]);
 	assert.equal(posts[0]?.level, "urgent");
