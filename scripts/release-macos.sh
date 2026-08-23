@@ -30,21 +30,43 @@ else
   exit 1
 fi
 
+APP_IDENTIFIER="$(node -e "console.log(require('./src-tauri/tauri.conf.json').identifier)")"
+SAFE_IDENTIFIER="${APP_IDENTIFIER//[^A-Za-z0-9._-]/_}"
+RELEASE_TEMP_ROOT="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+export CARGO_TARGET_DIR="${MACOS_RELEASE_TARGET_DIR:-${CARGO_TARGET_DIR:-${RELEASE_TEMP_ROOT%/}/tauri-release-${SAFE_IDENTIFIER}}}"
+
+TARGET_TRIPLE=""
+NEXT_IS_TARGET=0
+for arg in "$@"; do
+  case "$arg" in
+    --target) NEXT_IS_TARGET=1 ;;
+    --target=*) TARGET_TRIPLE="${arg#--target=}" ;;
+    *)
+      if [[ "$NEXT_IS_TARGET" == 1 ]]; then
+        TARGET_TRIPLE="$arg"
+        NEXT_IS_TARGET=0
+      fi
+      ;;
+  esac
+done
+
 echo "==> Building signed + notarized macOS app"
+echo "==> Non-File-Provider target: $CARGO_TARGET_DIR"
 pnpm exec tauri build --bundles app "$@"
 
+BUNDLE_BASE="$CARGO_TARGET_DIR/release/bundle"
+if [[ -n "$TARGET_TRIPLE" ]]; then
+  BUNDLE_BASE="$CARGO_TARGET_DIR/$TARGET_TRIPLE/release/bundle"
+fi
 APP_PATHS=()
-for bundle_base in target/release/bundle src-tauri/target/release/bundle; do
-  while IFS= read -r -d '' app_candidate; do
-    APP_PATHS+=("$app_candidate")
-  done < <(find "$bundle_base/macos" -maxdepth 1 -name '*.app' -print0 2>/dev/null)
-done
+while IFS= read -r -d '' app_candidate; do
+  APP_PATHS+=("$app_candidate")
+done < <(find "$BUNDLE_BASE/macos" -maxdepth 1 -name '*.app' -print0 2>/dev/null)
 if [[ ${#APP_PATHS[@]} -ne 1 ]]; then
-  echo "error: expected exactly one macOS app across supported bundle roots; found ${#APP_PATHS[@]}" >&2
+  echo "error: expected exactly one macOS app under $BUNDLE_BASE/macos; found ${#APP_PATHS[@]}" >&2
   exit 1
 fi
 APP_PATH="${APP_PATHS[0]}"
-BUNDLE_BASE="$(dirname "$(dirname "$APP_PATH")")"
 
 echo "==> Normalizing app extended attributes"
 xattr -cr "$APP_PATH"
@@ -81,6 +103,10 @@ xcrun stapler validate "$DMG_PATH"
 codesign --verify --deep --strict --verbose=2 "$DMG_PATH"
 hdiutil verify "$DMG_PATH"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  echo "BUNDLE_DIR=$BUNDLE_BASE" >> "$GITHUB_ENV"
+fi
 
 echo "==> Release artifacts verified"
 echo "    app: $APP_PATH"
