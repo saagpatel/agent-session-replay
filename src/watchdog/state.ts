@@ -26,6 +26,39 @@ export interface WatchdogState {
 
 const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNonNegative(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function parseSessionAlerts(value: unknown): SessionAlerts | null {
+	if (!isRecord(value)) return null;
+	if (
+		!Array.isArray(value.findings) ||
+		!value.findings.every(
+			(item): item is string => typeof item === "string" && item.length > 0,
+		) ||
+		!isFiniteNonNegative(value.updatedMs) ||
+		(value.processedMtimeMs !== undefined &&
+			!isFiniteNonNegative(value.processedMtimeMs)) ||
+		(value.pending !== undefined && typeof value.pending !== "boolean")
+	) {
+		return null;
+	}
+
+	return {
+		findings: [...value.findings],
+		updatedMs: value.updatedMs,
+		...(value.processedMtimeMs === undefined
+			? {}
+			: { processedMtimeMs: value.processedMtimeMs }),
+		...(value.pending === undefined ? {} : { pending: value.pending }),
+	};
+}
+
 export function findingKey(finding: Finding): string {
 	return `${finding.id}@${finding.severity}`;
 }
@@ -33,13 +66,16 @@ export function findingKey(finding: Finding): string {
 export function loadState(path: string): WatchdogState {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-		if (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			typeof (parsed as WatchdogState).sessions === "object" &&
-			(parsed as WatchdogState).sessions !== null
-		) {
-			return parsed as WatchdogState;
+		if (isRecord(parsed) && isRecord(parsed.sessions)) {
+			const sessions = Object.fromEntries(
+				Object.entries(parsed.sessions).flatMap(([sessionPath, entry]) => {
+					const validated = parseSessionAlerts(entry);
+					return sessionPath.length > 0 && validated
+						? [[sessionPath, validated] as const]
+						: [];
+				}),
+			);
+			return { sessions };
 		}
 	} catch {
 		// missing or corrupt -> start clean; worst case is one repeat alert
