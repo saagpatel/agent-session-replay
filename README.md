@@ -147,9 +147,26 @@ therefore a scoped handoff, not an all-clear.
 pnpm test         # run the full test suite
 pnpm typecheck    # TypeScript gate
 pnpm build        # browser build
+pnpm check:release # version, identifier, and release-entrypoint gate
+pnpm tauri build --bundles app # local desktop app build
+pnpm release:macos # Developer ID-signed, notarized, stapled app + DMG
 pnpm afr:archives # rank existing local AFR archive folders, read-only
 pnpm watchdog     # live fleet watchdog (see below)
 ```
+
+`pnpm release:macos` is the production macOS distribution path. It requires
+either App Store Connect API credentials (`APPLE_API_KEY`,
+`APPLE_API_ISSUER`, `APPLE_API_KEY_PATH`) or Apple ID notarization credentials
+(`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) plus a usable Developer ID
+signing identity. The script builds the app separately, removes unsafe extended
+attributes, packages a metadata-clean DMG, mounts the image to verify its
+embedded app, and requires Gatekeeper and stapled-ticket validation before it
+passes. The default styled Tauri DMG path is not a production release path.
+
+The app does not currently claim an in-app updater, automatic upgrade,
+downgrade, or rollback channel. Replacement with a separately qualified build
+and removal of the app bundle are manual lifecycle operations; user-selected
+session inputs are not removed automatically.
 
 ## Watchdog
 

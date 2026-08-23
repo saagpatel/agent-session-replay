@@ -1,6 +1,6 @@
 {
 	"name": "agent-session-replay",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"private": true,
 	"type": "module",
 	"description": "Local-first failure-forensics for Claude Code and Codex agent sessions",
@@ -16,6 +16,8 @@
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
 		"render:smoke": "node scripts/ssr-run.mjs",
+		"check:release": "./scripts/check-release-metadata.sh",
+		"release:macos": "./scripts/release-macos.sh",
 		"tauri": "tauri"
 	},
 	"engines": {
