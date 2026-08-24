@@ -1,13 +1,13 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"productName": "Agent Session Replay",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"identifier": "dev.localfirst.agentsessionreplay",
 	"build": {
 		"frontendDist": "../dist",
 		"devUrl": "http://localhost:5173",
 		"beforeDevCommand": "pnpm dev",
-		"beforeBuildCommand": "pnpm build"
+		"beforeBuildCommand": "CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm@10.25.0 build"
 	},
 	"app": {
 		"windows": [
