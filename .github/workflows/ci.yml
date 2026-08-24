@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,3 +45,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Audit high advisories
+        run: pnpm audit --audit-level high
