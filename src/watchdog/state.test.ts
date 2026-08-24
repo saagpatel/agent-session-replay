@@ -47,6 +47,52 @@ test("a corrupt state file loads as a clean slate instead of crashing", () => {
 	assert.deepEqual(loadState(path), { sessions: {} });
 	writeFileSync(path, '"a string"');
 	assert.deepEqual(loadState(path), { sessions: {} });
+	writeFileSync(path, '{"sessions":[]}');
+	assert.deepEqual(loadState(path), { sessions: {} });
+});
+
+test("malformed nested entries are dropped while valid dedupe state survives", () => {
+	const path = join(dir(), "state.json");
+	writeFileSync(
+		path,
+		JSON.stringify({
+			sessions: {
+				"/valid.jsonl": {
+					findings: ["grind_loop@warning"],
+					updatedMs: 1000,
+					processedMtimeMs: 500,
+					pending: false,
+					extra: "ignored for forward compatibility",
+				},
+				"/bad-findings.jsonl": {
+					findings: "grind_loop@warning",
+					updatedMs: 1000,
+				},
+				"/bad-time.jsonl": {
+					findings: [],
+					updatedMs: "yesterday",
+				},
+				"/bad-pending.jsonl": {
+					findings: [],
+					updatedMs: 1000,
+					pending: "no",
+				},
+			},
+		}),
+	);
+
+	const state = loadState(path);
+	assert.deepEqual(Object.keys(state.sessions), ["/valid.jsonl"]);
+	assert.deepEqual(state.sessions["/valid.jsonl"], {
+		findings: ["grind_loop@warning"],
+		updatedMs: 1000,
+		processedMtimeMs: 500,
+		pending: false,
+	});
+	assert.ok(hasAlerted(state, "/valid.jsonl", "grind_loop@warning"));
+	assert.doesNotThrow(() =>
+		markAlerted(state, "/bad-findings.jsonl", "grind_loop@warning", 2000),
+	);
 });
 
 test("saveState writes valid JSON atomically (no partial tmp left behind)", () => {
