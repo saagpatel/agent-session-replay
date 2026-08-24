@@ -7,7 +7,7 @@
 		"frontendDist": "../dist",
 		"devUrl": "http://localhost:5173",
 		"beforeDevCommand": "pnpm dev",
-		"beforeBuildCommand": "pnpm build"
+		"beforeBuildCommand": "CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm@10.25.0 build"
 	},
 	"app": {
 		"windows": [
