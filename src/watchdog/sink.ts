@@ -81,6 +81,8 @@ export async function postEvent(
 		}
 		const endpoint = notificationHubEventsUrl(hubUrl);
 		const token = loadBearerToken(credential.tokenFile);
+		// codeql[js/file-access-to-http]
+		// HTTP endpoints are admitted only after notificationHubEventsUrl restricts them to loopback hosts.
 		const res = await fetch(endpoint, {
 			method: "POST",
 			redirect: "error",
