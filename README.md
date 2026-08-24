@@ -12,19 +12,18 @@ locally.
 ## Install the macOS app
 
 Download the Apple silicon (`arm64`) disk image from the
-[v0.1.1 release](https://github.com/saagpatel/agent-session-replay/releases/tag/v0.1.1),
+[latest release](https://github.com/saagpatel/agent-session-replay/releases/latest),
 open it, and drag **Agent Session Replay** into **Applications**. The app and
 disk image are signed with a notarized Developer ID and pass macOS Gatekeeper.
 
-Release asset: `Agent.Session.Replay_0.1.1_aarch64.dmg`
+Release asset: `Agent-Session-Replay_0.1.2_aarch64.dmg`
 
 ```bash
-shasum -a 256 "Agent.Session.Replay_0.1.1_aarch64.dmg"
-# c65ddcc8a2a256c33e6975f2f965eafc55ec1e1f0a39457adfb72837a1d27a04
+shasum -a 256 "Agent-Session-Replay_0.1.2_aarch64.dmg"
 ```
 
-The release page also includes a public verification receipt. This build is for
-Apple silicon Macs; no Intel build is published.
+Compare the result with the public verification receipt attached to the same
+release. This build is for Apple silicon Macs; no Intel build is published.
 
 ## Why this exists
 
