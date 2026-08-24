@@ -79,6 +79,31 @@ test("missing credential fails closed without exposing a path or token", async (
 	assert.doesNotMatch(JSON.stringify(result), /fixture-secret-token/);
 });
 
+test("cleartext non-loopback hub URLs fail before any request", async () => {
+	const fixture = tokenFixture();
+	const originalFetch = globalThis.fetch;
+	let requests = 0;
+	globalThis.fetch = (async () => {
+		requests += 1;
+		throw new Error("unexpected cleartext request");
+	}) as typeof fetch;
+	try {
+		const result = await postEvent("http://example.com", event, {
+			producerId: "agent-watchdog",
+			tokenFile: fixture.path,
+		});
+		assert.equal(result.ok, false);
+		assert.equal(
+			result.error,
+			"notification-hub request or producer credential failed",
+		);
+		assert.equal(requests, 0);
+		assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.token));
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("broad or symlinked token files fail before a request", async () => {
 	const broad = tokenFixture(0o644);
 	const root = mkdtempSync(join(tmpdir(), "watchdog-token-link-"));

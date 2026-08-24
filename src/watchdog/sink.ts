@@ -6,7 +6,7 @@
  * for free.
  */
 
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 
 import type { HubEvent } from "./types.ts";
 
@@ -28,18 +28,42 @@ export interface ProducerCredential {
 }
 
 function loadBearerToken(tokenFile: string): string {
-	const metadata = lstatSync(tokenFile);
-	if (!metadata.isFile() || metadata.isSymbolicLink()) {
-		throw new Error("producer token file must be a regular non-symlink file");
+	const descriptor = openSync(tokenFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+	try {
+		const metadata = fstatSync(descriptor);
+		if (!metadata.isFile()) {
+			throw new Error("producer token file must be a regular file");
+		}
+		if ((metadata.mode & 0o077) !== 0) {
+			throw new Error("producer token file must be owner-private");
+		}
+		const token = readFileSync(descriptor, "utf8").trim();
+		if (token.length === 0 || token.length > 512 || /\s/.test(token)) {
+			throw new Error("producer token file is invalid");
+		}
+		return token;
+	} finally {
+		closeSync(descriptor);
 	}
-	if ((metadata.mode & 0o077) !== 0) {
-		throw new Error("producer token file must be owner-private");
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+	const normalized = hostname.toLowerCase();
+	return normalized === "localhost" ||
+		normalized === "127.0.0.1" ||
+		normalized === "::1" ||
+		normalized === "[::1]";
+}
+
+function notificationHubEventsUrl(hubUrl: string): URL {
+	const base = new URL(hubUrl);
+	if (
+		base.protocol === "https:" ||
+		(base.protocol === "http:" && isLoopbackHostname(base.hostname))
+	) {
+		return new URL("/events", base);
 	}
-	const token = readFileSync(tokenFile, "utf8").trim();
-	if (token.length === 0 || token.length > 512 || /\s/.test(token)) {
-		throw new Error("producer token file is invalid");
-	}
-	return token;
+	throw new Error("notification-hub URL must use https or loopback http");
 }
 
 export async function postEvent(
@@ -52,8 +76,9 @@ export async function postEvent(
 		if (!/^[A-Za-z0-9._:-]{1,100}$/.test(credential.producerId)) {
 			return { ok: false, error: "producer identity is invalid" };
 		}
+		const endpoint = notificationHubEventsUrl(hubUrl);
 		const token = loadBearerToken(credential.tokenFile);
-		const res = await fetch(new URL("/events", hubUrl), {
+		const res = await fetch(endpoint, {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
