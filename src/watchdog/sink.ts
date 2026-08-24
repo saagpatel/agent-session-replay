@@ -28,7 +28,10 @@ export interface ProducerCredential {
 }
 
 function loadBearerToken(tokenFile: string): string {
-	const descriptor = openSync(tokenFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+	const descriptor = openSync(
+		tokenFile,
+		constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+	);
 	try {
 		const metadata = fstatSync(descriptor);
 		if (!metadata.isFile()) {
@@ -80,6 +83,7 @@ export async function postEvent(
 		const token = loadBearerToken(credential.tokenFile);
 		const res = await fetch(endpoint, {
 			method: "POST",
+			redirect: "error",
 			headers: {
 				"content-type": "application/json",
 				authorization: `Bearer ${token}`,

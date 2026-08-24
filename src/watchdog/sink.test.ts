@@ -104,6 +104,29 @@ test("cleartext non-loopback hub URLs fail before any request", async () => {
 	}
 });
 
+test("authenticated posts do not follow redirects", async () => {
+	const fixture = tokenFixture();
+	let requests = 0;
+	await withServer((_req, res) => {
+		requests += 1;
+		res.statusCode = 307;
+		res.setHeader("location", "http://example.com/events");
+		res.end("redirect");
+	}, async (url) => {
+		const result = await postEvent(url, event, {
+			producerId: "agent-watchdog",
+			tokenFile: fixture.path,
+		});
+		assert.equal(result.ok, false);
+		assert.equal(
+			result.error,
+			"notification-hub request or producer credential failed",
+		);
+		assert.equal(requests, 1);
+		assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.token));
+	});
+});
+
 test("broad or symlinked token files fail before a request", async () => {
 	const broad = tokenFixture(0o644);
 	const root = mkdtempSync(join(tmpdir(), "watchdog-token-link-"));
