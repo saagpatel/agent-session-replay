@@ -5,9 +5,9 @@
 > wrong" findings. Cross-tool (one plumbline Trace schema), everything parses and
 > renders in the browser; the transcript never leaves the machine.
 
-## Status: SHIPPED (v1) + Decision Flight Deck v0 — private on GitHub
+## Status: RELEASED v0.1.0 — public, notarized DMG on GitHub Releases (2026-08-24)
 
-- **Repo:** `github.com/saagpatel/agent-session-replay` (private), branch `main`.
+- **Repo:** `github.com/saagpatel/agent-session-replay` (public), branch `main`.
 - Base replay app built end to end, code-reviewed clean, MIT-licensed, packaged as
   a desktop app, pushed.
 
