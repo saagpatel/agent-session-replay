@@ -36,6 +36,7 @@ const RESULT_KIND: Record<string, string> = {
 	exec_command: "bash",
 	shell: "bash",
 	local_shell: "bash",
+	local_shell_call: "bash",
 	bash: "bash",
 	apply_patch: "edit",
 	write_file: "write",
@@ -150,10 +151,16 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	let prevModel: string | undefined;
 	let modeSeq = 0;
 
-	const mergeOutput = (callId: string, output: string, when: string): void => {
+	const mergeOutput = (
+		callId: string,
+		output: string,
+		when: string,
+		status?: unknown,
+	): void => {
 		const step = toolSteps.get(callId);
 		if (!step) return;
 		step.ended_at = when;
+		if (status === "incomplete" || status === "failed") step.status = "error";
 		const m = EXIT_RE.exec(output);
 		if (m && m[1] !== "0") {
 			step.status = "error";
@@ -262,6 +269,29 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				toolSteps.set(callId, step);
 			} else if (ptype === "function_call_output") {
 				mergeOutput(str(p["call_id"]) ?? "", str(p["output"]) ?? "", ts);
+			} else if (ptype === "local_shell_call") {
+				// Current Codex rollouts use a nested action and persist the output
+				// with the item's `id` (the call_id is optional in older records).
+				const itemId = str(p["id"]);
+				const callId = str(p["call_id"]) ?? itemId ?? `call${idx}`;
+				const step = toolStep(
+					"local_shell_call",
+					callId,
+					asObj(p["action"]),
+					ts,
+					idx,
+				);
+				if (p["status"] === "incomplete") step.status = "error";
+				steps.push(step);
+				toolSteps.set(callId, step);
+				if (itemId) toolSteps.set(itemId, step);
+			} else if (ptype === "local_shell_call_output") {
+				mergeOutput(
+					str(p["call_id"]) ?? str(p["id"]) ?? "",
+					str(p["output"]) ?? "",
+					ts,
+					p["status"],
+				);
 			} else if (ptype === "custom_tool_call") {
 				const callId = str(p["call_id"]) ?? `call${idx}`;
 				const step = toolStep(
