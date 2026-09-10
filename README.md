@@ -42,6 +42,9 @@ panel; the ranked findings are the product.
   rather than forking the schema.
 - **Cross-tool:** one schema for Claude Code (`~/.claude/projects/**/*.jsonl`) and
   Codex (`~/.codex/sessions/**/rollout-*.jsonl`).
+- **Current Codex shell records:** the parser accepts both legacy function/custom
+  tool calls and the current `local_shell_call` / `local_shell_call_output`
+  response items, including their nested `action` and item-id correlation.
 - **Core is dependency-free TypeScript.** The parser and detector engine run under
   `node --test` with native type-stripping, no toolchain install required. The
   browser UI (Vite + React) is a separate, later layer.

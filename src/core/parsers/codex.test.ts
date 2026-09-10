@@ -39,8 +39,8 @@ const msg = (role: string, text: string) =>
 		role,
 		content: [{ type: role === "user" ? "input_text" : "output_text", text }],
 	});
-const responseItem = (payload: Record<string, unknown>) =>
-	ev("response_item", payload);
+const responseItem = (payload: Record<string, unknown>, ts?: string) =>
+	ev("response_item", payload, ts);
 const eventMsg = (payload: Record<string, unknown>) => ev("event_msg", payload);
 
 const byKind = (steps: Step[], kind: string) =>
@@ -89,12 +89,12 @@ test("function_call + function_call_output merge into one ok tool_call by call_i
 			name: "exec_command",
 			arguments: '{"cmd":"ls"}',
 			call_id: "c1",
-		}),
+		}, "2026-02-17T11:00:02.000Z"),
 		responseItem({
 			type: "function_call_output",
 			call_id: "c1",
 			output: "Process exited with code 0\nOutput:\nok",
-		}),
+		}, "2026-02-17T11:00:03.000Z"),
 	]);
 	const tools = byKind(steps, "tool_call");
 	assert.equal(tools.length, 1);
@@ -102,6 +102,60 @@ test("function_call + function_call_output merge into one ok tool_call by call_i
 	assert.equal(tools[0].status, "ok");
 	assert.deepEqual(tools[0].attributes[ATTR.TOOL_ARGS], { cmd: "ls" });
 	assert.equal(tools[0].attributes[ATTR.TOOL_RESULT_KIND], "bash");
+});
+
+test("current local_shell_call records correlate output by item id", () => {
+	const { steps } = parseCodexEvents([
+		sessionMeta(),
+		responseItem({
+			type: "local_shell_call",
+			id: "item-local-1",
+			call_id: "call-local-1",
+			status: "completed",
+			action: {
+				type: "exec",
+				command: ["printf", "fixture-safe"],
+				env: {},
+				working_directory: "/workspace/project",
+			},
+		}, "2026-02-17T11:00:02.000Z"),
+		responseItem({
+			type: "local_shell_call_output",
+			id: "item-local-1",
+			status: "completed",
+			output: "Process exited with code 0\nOutput:\nfixture-safe",
+		}, "2026-02-17T11:00:03.000Z"),
+	]);
+	const tool = byKind(steps, "tool_call")[0];
+	assert.equal(tool.attributes[ATTR.TOOL_NAME], "local_shell_call");
+	assert.equal(tool.attributes[ATTR.TOOL_RESULT_KIND], "bash");
+	assert.deepEqual(tool.attributes[ATTR.TOOL_ARGS], {
+		type: "exec",
+		command: ["printf", "fixture-safe"],
+		env: {},
+		working_directory: "/workspace/project",
+	});
+	assert.equal(tool.ended_at, "2026-02-17T11:00:03.000Z");
+	assert.equal(tool.status, "ok");
+});
+
+test("an incomplete local shell output is retained as an error", () => {
+	const { steps } = parseCodexEvents([
+		sessionMeta(),
+		responseItem({
+			type: "local_shell_call",
+			id: "item-local-2",
+			status: "in_progress",
+			action: { type: "exec", command: ["false"], env: {} },
+		}),
+		responseItem({
+			type: "local_shell_call_output",
+			id: "item-local-2",
+			status: "incomplete",
+			output: "command aborted",
+		}),
+	]);
+	assert.equal(byKind(steps, "tool_call")[0].status, "error");
 });
 
 test("a non-zero exit code in the output marks the tool_call as an error", () => {
