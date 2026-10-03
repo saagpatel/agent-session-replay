@@ -162,13 +162,26 @@ therefore a scoped handoff, not an all-clear.
 
 ## Develop
 
+From the repository root, use Node 24 and pnpm 10.25.0 (the CI versions):
+
 ```bash
-pnpm test         # run the full test suite
-pnpm typecheck    # TypeScript gate
-pnpm build        # browser build
-pnpm afr:archives # rank existing local AFR archive folders, read-only
-pnpm watchdog     # live fleet watchdog (see below)
+pnpm install --frozen-lockfile
+pnpm test:core     # focused parser/detector tests with local fixtures
+pnpm test         # broader Node test suite
+pnpm typecheck
+pnpm build        # browser UI build, not a desktop package
 ```
+
+The core tests use Node's built-in runner and type stripping; they can also run
+without installing UI dependencies via the `test:core` script in `package.json`.
+No separate lint/format script is defined. For UI or report changes, use `pnpm dev`
+and synthetic JSONL/AFR fixtures to check parsing, findings, filtering, and export
+in the browser; `pnpm tauri dev` additionally needs Rust and Tauri platform dependencies.
+
+`pnpm afr:archives` reads workstation archives by default, and `pnpm watchdog`
+starts the live fleet loop. These are operational lanes, not routine fixture gates.
+Even watchdog dry-run still discovers local session state; use the test suite for
+isolated verification without personal session data or notifications.
 
 ## Watchdog
 

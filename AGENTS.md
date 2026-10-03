@@ -28,10 +28,10 @@ a broad rebuild.
 pnpm test
 pnpm typecheck
 pnpm build
-pnpm afr:archives
 ```
 
-Use `pnpm dev` for the browser UI and `pnpm tauri dev` for the desktop shell
+See [README development guidance](README.md#develop) for prerequisites, fixture
+lanes, and operational boundaries. Use `pnpm dev` for the browser UI and `pnpm tauri dev` for the desktop shell
 when UI verification is needed.
 
 ## Known Risks
