@@ -60,9 +60,10 @@ findings without uploading data.
 The AFR path has been smoke-tested against a real metadata-only all-source local
 archive. It supports the local collector's reconciliation source rows and treats
 stale per-source evidence as ranked decision findings rather than passive
-summary data when the archive is otherwise current; stale archives collapse to a
-single refresh decision while preserving source freshness in the summary. Ranked
-findings also feed a compact action rail that groups safe next commands into
+summary data when the archive is otherwise current; stale all-source archives
+collapse source freshness to a single refresh decision while preserving source
+freshness in the summary. Ranked findings also feed a compact action rail that
+groups safe next commands into
 route, inspect, refresh, and repair moves. Source-specific stale findings in a
 fresh archive use inspect commands instead of looping back into another all-source
 collection. Cost-tracker freshness respects healthy live ccusage reconciliation
@@ -180,8 +181,9 @@ in the browser; `pnpm tauri dev` additionally needs Rust and Tauri platform depe
 
 `pnpm afr:archives` reads workstation archives by default, and `pnpm watchdog`
 starts the live fleet loop. These are operational lanes, not routine fixture gates.
-Even watchdog dry-run still discovers local session state; use the test suite for
-isolated verification without personal session data or notifications.
+Even watchdog dry-run still discovers local session state and writes dedupe
+state; use the test suite for isolated verification without personal session
+data or notifications.
 
 ## Watchdog
 
@@ -192,7 +194,7 @@ notification-hub (`POST /events` on 127.0.0.1:9199). Alert-only by contract —
 it never kills, pauses, or mutates a session.
 
 ```bash
-pnpm watchdog -- --once --dry-run   # one tick, log instead of post
+pnpm watchdog --once --dry-run      # one tick, log instead of post; writes dedupe state
 pnpm watchdog                       # 45s loop; --window 30 --stall-quiet 600
 ```
 
