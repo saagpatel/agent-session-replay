@@ -9,7 +9,7 @@ actions without uploading transcripts.
 
 ## Current State
 
-The repo is shipped as a private local app with a Vite/React browser UI, a
+The repo is shipped as a local app with a Vite/React browser UI, a
 Tauri desktop shell, and a zero-dependency TypeScript core for parsing and
 control-plane findings. Current work is maintenance and selective hardening, not
 a broad rebuild.
@@ -37,8 +37,7 @@ when UI verification is needed.
 ## Known Risks
 
 - Large sessions may eventually need timeline virtualization.
-- The local app intentionally avoids collectors, daemons, and write flows unless
-  a separate operator decision approves them.
+- The local app intentionally avoids collectors, daemons, and write flows unless a separate operator decision approves them. The separate watchdog daemon posts notifications and writes local dedupe state when explicitly run.
 
 ## Distribution State (closeout 2026-08-24, Foundation Zero Proof Launch #2)
 
