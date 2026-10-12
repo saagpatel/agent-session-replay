@@ -116,7 +116,7 @@ export function markAlerted(
 
 /** True when the session can be skipped: transcript unchanged since it was
  * last parsed AND nothing from that pass (held finding, failed post) is
- * waiting on time or the hub to advance. */
+ * waiting on time or the local adapter to handle an attempt. */
 export function canSkip(
 	state: WatchdogState,
 	sessionPath: string,

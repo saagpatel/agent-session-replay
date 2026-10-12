@@ -189,17 +189,29 @@ data or notifications.
 
 `src/watchdog/` is the live counterpart to the forensic viewer: a daemon that
 re-scans recently-written CC / Codex transcripts on an interval, runs them
-through the same parsers + detector engine, and posts new findings to
-notification-hub (`POST /events` on 127.0.0.1:9199). Alert-only by contract —
-it never kills, pauses, or mutates a session.
+through the same parsers + detector engine, and sends approved findings to the
+daemonless local notification adapter. The notification-hub HTTP sink is retired;
+its source identifiers remain supported for replaying historical AFR archives.
+Alert-only by contract — it never kills, pauses, or mutates a session.
 
 ```bash
 pnpm watchdog --once --dry-run      # one tick, log instead of post; writes dedupe state
 pnpm watchdog                       # 45s loop; --window 30 --stall-quiet 600
 ```
 
-Live-mode policy on top of the engine: `incomplete_run` never alerts (every
-running session is incomplete); `silent_stall` waits for real quiescence
+The adapter is resolved from `--adapter`, then `LOCAL_NOTIFICATION_ADAPTER`, then
+`~/.local/bin/local-notifier`. `--receipts` defaults to
+`~/.local/share/infrastructure/notifications/receipts.sqlite3`. The watchdog
+invokes `<adapter> --store <receipts>` with one JSON event on stdin; no HTTP
+service or producer token is used. Exit 0 plus a stable event ID and a handled
+receipt (`accepted_by_os`, `delivered`, `deduped`, `held_for_digest`,
+`suppressed_quiet_hours`, or `suppressed_hourly_cap`) acknowledges the attempt.
+Handled receipts do not prove notification display or a human read.
+
+Live-mode policy on top of the engine: only `grind_loop`, `silent_stall`, and
+`transcript_budget_exceeded` may alert. Other findings remain detected and logged
+in tick counts; `incomplete_run` never alerts (every running session is
+incomplete). `silent_stall` waits for real quiescence
 (`--stall-quiet`, default 10 min) because the Codex parser stamps `ended_at`
 on every event. Dedupe state lives at `~/.local/state/agent-watchdog/` keyed
 by (session, finding, severity), so a severity escalation re-alerts once.

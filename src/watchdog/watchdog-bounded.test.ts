@@ -21,9 +21,8 @@ function boundedFixture(maxSessionBytes: number): {
 		config: {
 			claudeProjectsDir: claudeRoot,
 			codexSessionsDir: codexRoot,
-			hubUrl: "http://127.0.0.1:1",
-			hubProducerId: "agent-watchdog",
-			hubTokenFile: join(root, "unused.token"),
+			localAdapterPath: join(root, "unused-adapter"),
+			localReceiptStore: join(root, "receipts.sqlite3"),
 			windowMinutes: 30,
 			stallQuietSeconds: 600,
 			maxSessionBytes,

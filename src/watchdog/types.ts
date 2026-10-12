@@ -2,10 +2,9 @@
  * Fleet watchdog: live counterpart to the forensic replay viewer.
  *
  * Re-scans recently-written CC / Codex transcripts on an interval, runs the
- * same parsers + detector engine the viewer uses, and posts NEW findings to
- * notification-hub. Alert-only by design — the watchdog never kills, pauses,
- * or mutates a session; the hub's own classification/suppression pipeline
- * decides how loud each event gets.
+ * same parsers + detector engine the viewer uses, and sends NEW findings to
+ * the bounded local notification adapter. Alert-only by design — the
+ * watchdog never kills, pauses, or mutates a session.
  */
 
 export type Harness = "claude-code" | "codex";
@@ -28,12 +27,10 @@ export interface WatchdogConfig {
 	claudeProjectsDir: string;
 	/** ~/.codex/sessions */
 	codexSessionsDir: string;
-	/** notification-hub base URL, e.g. http://127.0.0.1:9199 */
-	hubUrl: string;
-	/** Exact notification-hub producer identity. */
-	hubProducerId: string;
-	/** Owner-private, non-symlinked bearer-token file. */
-	hubTokenFile: string;
+	/** Stable executable for the daemonless local notification adapter. */
+	localAdapterPath: string;
+	/** Adapter-owned owner-private receipt store. */
+	localReceiptStore: string;
 	/** Only sessions written within this many minutes are scanned. */
 	windowMinutes: number;
 	/**
@@ -50,8 +47,10 @@ export interface WatchdogConfig {
 	dryRun: boolean;
 }
 
-/** notification-hub POST /events payload (models.py Event). */
-export interface HubEvent {
+/** Local infrastructure event payload consumed by the adapter. */
+export interface NotificationEvent {
+	/** Stable retry identity; replays with changed payload are refused by the adapter. */
+	event_id?: string;
 	source: "cc" | "codex";
 	level: "urgent" | "normal" | "info";
 	title: string;
@@ -75,6 +74,6 @@ export interface TickReport {
 	alertsDeduped: number;
 	alertsHeld: number;
 	postFailures: number;
-	/** Notification Hub event ids from accepted machine-readable receipts. */
+	/** Stable event IDs from handled local adapter receipts. */
 	acceptedEventIds: string[];
 }

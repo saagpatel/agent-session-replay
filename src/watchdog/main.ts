@@ -3,17 +3,19 @@
  *
  *   node --experimental-strip-types src/watchdog/main.ts [--once] [--dry-run]
  *     [--interval 45] [--window 30] [--stall-quiet 600]
- *     [--hub <url>] [--state <path>]
+ *     [--adapter <path>] [--receipts <path>] [--state <path>]
  *
- * Hub URL resolution: --hub flag > WATCHDOG_HUB_URL env > localhost default.
+ * Adapter resolution: --adapter flag > LOCAL_NOTIFICATION_ADAPTER env >
+ * the installed local adapter path.
  *
- * Alert-only by contract: the only side effects are POST /events to
- * notification-hub and the dedupe-state file.
+ * Alert-only by contract: the only side effects are local adapter attempts
+ * and the watchdog's dedupe-state file.
  */
 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { localNotificationDefaults } from "./config.ts";
 import {
 	terminalLine,
 	terminalStateForFailure,
@@ -22,6 +24,7 @@ import {
 import type { WatchdogConfig } from "./types.ts";
 import { tick } from "./watchdog.ts";
 
+const defaults = localNotificationDefaults();
 const { values: args } = parseArgs({
 	options: {
 		once: { type: "boolean", default: false },
@@ -32,9 +35,13 @@ const { values: args } = parseArgs({
 		window: { type: "string", default: "30" },
 		/** seconds of silence before silent_stall may fire */
 		"stall-quiet": { type: "string", default: "600" },
-		hub: {
+		adapter: {
 			type: "string",
-			default: process.env["WATCHDOG_HUB_URL"] ?? "http://127.0.0.1:9199",
+			default: defaults.adapter,
+		},
+		receipts: {
+			type: "string",
+			default: defaults.receipts,
 		},
 		state: {
 			type: "string",
@@ -60,17 +67,8 @@ function num(name: string, raw: string): number {
 const config: WatchdogConfig = {
 	claudeProjectsDir: join(homedir(), ".claude", "projects"),
 	codexSessionsDir: join(homedir(), ".codex", "sessions"),
-	hubUrl: args.hub,
-	hubProducerId: process.env["WATCHDOG_HUB_PRODUCER_ID"] ?? "agent-watchdog",
-	hubTokenFile:
-		process.env["WATCHDOG_HUB_TOKEN_FILE"] ??
-		join(
-			homedir(),
-			".config",
-			"notification-hub",
-			"producer-tokens",
-			"agent-watchdog.token",
-		),
+	localAdapterPath: args.adapter,
+	localReceiptStore: args.receipts,
 	windowMinutes: num("window", args.window),
 	stallQuietSeconds: num("stall-quiet", args["stall-quiet"]),
 	maxSessionBytes: 96 * 1024 * 1024,
@@ -88,7 +86,7 @@ async function runOnce(): Promise<number> {
 		const observedAt = new Date().toISOString();
 		const terminal = terminalStateForReport(
 			report,
-			config.hubUrl,
+			config.localAdapterPath,
 			config.dryRun,
 			observedAt,
 			Date.now() - started,
@@ -101,7 +99,7 @@ async function runOnce(): Promise<number> {
 			terminalLine(
 				terminalStateForFailure(
 					err,
-					config.hubUrl,
+					config.localAdapterPath,
 					observedAt,
 					Date.now() - started,
 				),
@@ -116,7 +114,7 @@ if (args.once) {
 } else {
 	console.log(
 		`watchdog: watching (interval ${intervalMs / 1000}s, window ${config.windowMinutes}m, ` +
-			`hub ${config.hubUrl}${config.dryRun ? ", DRY-RUN" : ""})`,
+			`adapter ${config.localAdapterPath}${config.dryRun ? ", DRY-RUN" : ""})`,
 	);
 	// Sequential loop, never overlapping ticks; a tick failure logs and continues.
 	for (;;) {

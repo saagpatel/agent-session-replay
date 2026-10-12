@@ -37,7 +37,12 @@ when UI verification is needed.
 ## Known Risks
 
 - Large sessions may eventually need timeline virtualization.
-- The local app intentionally avoids collectors, daemons, and write flows unless a separate operator decision approves them. The separate watchdog daemon posts notifications and writes local dedupe state when explicitly run.
+- The local app intentionally avoids collectors, daemons, and write flows unless
+  a separate operator decision approves them. When explicitly run, the separate
+  watchdog invokes the daemonless local notification adapter and writes local
+  dedupe state; notification-hub is retired. Only `grind_loop`, `silent_stall`
+  (after quiescence), and `transcript_budget_exceeded` may alert. Adapter-handled
+  receipts do not prove display or human read.
 
 ## Distribution State (closeout 2026-08-24, Foundation Zero Proof Launch #2)
 
