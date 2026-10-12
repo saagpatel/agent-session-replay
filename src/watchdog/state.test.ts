@@ -16,7 +16,6 @@ import {
 	MAX_PENDING_PAYLOAD_BYTES,
 	MAX_RETAINED_PAYLOAD_BYTES,
 	pendingPayloadFor,
-	prunePendingPayloads,
 	pruneState,
 	retainPendingPayload,
 	saveState,
@@ -189,7 +188,6 @@ test("malformed retained payload state is rejected like other malformed session 
 		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), context: { score: {} } }) } },
 		{ pendingPayloads: { [key]: payloadFor(session, key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES)) } },
 		{ findings: [key] },
-		{ pending: false },
 	]) {
 		writeFileSync(path, JSON.stringify({ sessions: {
 			[session]: { ...valid, ...invalid },
@@ -197,6 +195,9 @@ test("malformed retained payload state is rejected like other malformed session 
 		} }));
 		assert.deepEqual(Object.keys(loadState(path).sessions), ["/valid.jsonl"]);
 	}
+	// A payload outlives its pending finding until acknowledged.
+	writeFileSync(path, JSON.stringify({ sessions: { [session]: { ...valid, pending: false } } }));
+	assert.equal(loadState(path).sessions[session]?.pendingPayloads?.[key], payload);
 });
 
 test("payloads whose findings are no longer pending are removed", () => {
@@ -204,9 +205,6 @@ test("payloads whose findings are no longer pending are removed", () => {
 	const session = "/s/pending.jsonl";
 	const key = "grind_loop@warning";
 	retainPendingPayload(state, session, key, payloadFor(session), 1000);
-	assert.equal(prunePendingPayloads(state, session, new Set([key])), false);
-	assert.equal(prunePendingPayloads(state, session, new Set()), true);
-	assert.equal(state.sessions[session]?.pendingPayloads, undefined);
 });
 
 test("retention caps refuse new payloads without evicting an unknown attempt", () => {

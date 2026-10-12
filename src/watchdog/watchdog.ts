@@ -25,7 +25,6 @@ import {
 	markAlerted,
 	markProcessed,
 	pendingPayloadFor,
-	prunePendingPayloads,
 	pruneState,
 	retainPendingPayload,
 	saveState,
@@ -278,12 +277,9 @@ export async function tick(
 		const findings = detect(trace);
 		report.findings += findings.length;
 		const quietMs = nowMs - session.mtimeMs;
-		dirty = prunePendingPayloads(state, session.path, new Set(
-			findings.filter(finding =>
-				liveVerdict(finding, quietMs, config.stallQuietSeconds * 1000) !== "never" &&
-				!hasAlerted(state, session.path, findingKey(finding)))
-				.map(findingKey),
-		)) || dirty;
+		// An unacknowledged payload is never dropped when its finding disappears:
+		// the adapter may already hold it, and a recurrence must replay the same
+		// bytes under the same event ID or the adapter rejects it forever.
 		let held = 0;
 		let failed = 0;
 
