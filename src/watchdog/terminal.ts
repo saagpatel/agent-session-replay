@@ -10,6 +10,7 @@ interface DestinationReadback {
 		| string
 		| number
 		| boolean
+		| null
 		| string[]
 		| {
 				kind: string;
@@ -73,7 +74,7 @@ export interface AutomationTerminalState {
 
 export function terminalStateForReport(
 	report: TickReport,
-	hubUrl: string,
+	adapterPath: string,
 	dryRun: boolean,
 	observedAt: string,
 	durationMs: number,
@@ -87,8 +88,11 @@ export function terminalStateForReport(
 		!dryRun && (coverageFailure || report.postFailures > 0 || readbackFailure);
 	const deliveryRequired =
 		!dryRun && (report.alertsPosted > 0 || report.postFailures > 0);
-	const deliveryVerified =
+	const adapterHandled =
 		deliveryRequired && report.postFailures === 0 && !readbackFailure;
+	// A handled receipt may mean accepted, deduped, held, or suppressed.
+	// None of those proves Notification Center display or a human read.
+	const deliveryVerified = false;
 	const writeResult = !deliveryRequired
 		? "not_applicable"
 		: report.postFailures > 0
@@ -98,8 +102,8 @@ export function terminalStateForReport(
 			: "succeeded";
 	const readbackResult = !deliveryRequired
 		? "not_required"
-		: deliveryVerified
-			? "verified"
+		: adapterHandled
+			? "handled_by_adapter_no_display_proof"
 			: "failed";
 	const state = dryRun ? "skipped" : partial ? "partial" : "succeeded";
 
@@ -114,7 +118,7 @@ export function terminalStateForReport(
 		destination_readback: {
 			required: deliveryRequired,
 			verified: deliveryVerified,
-			destination_id: deliveryRequired ? hubUrl : null,
+			destination_id: deliveryRequired ? adapterPath : null,
 			observed_at: deliveryRequired ? observedAt : null,
 			evidence: {
 				dry_run: dryRun,
@@ -122,6 +126,9 @@ export function terminalStateForReport(
 				accepted_event_ids: dryRun ? [] : report.acceptedEventIds,
 				write_result: writeResult,
 				readback_result: readbackResult,
+				adapter_handled: adapterHandled,
+				displayed: null,
+				read: null,
 				observed_result: {
 					kind: "count",
 					value: dryRun ? 0 : report.acceptedEventIds.length,
@@ -139,7 +146,7 @@ export function terminalStateForReport(
 		message: partial
 			? "watchdog tick completed with delivery or coverage failures"
 			: dryRun
-				? "watchdog dry run completed without network or state mutation"
+				? "watchdog dry run completed without adapter invocation; dedupe state may be written"
 				: "watchdog tick completed",
 		exit_code: partial ? 1 : 0,
 		duration_ms: durationMs,
@@ -148,7 +155,7 @@ export function terminalStateForReport(
 
 export function terminalStateForFailure(
 	error: unknown,
-	hubUrl: string,
+	adapterPath: string,
 	observedAt: string,
 	durationMs: number,
 	invocation: AutomationInvocation = invocationProvenance(),
@@ -167,7 +174,7 @@ export function terminalStateForFailure(
 			destination_id: null,
 			observed_at: null,
 			evidence: {
-				hub_url: hubUrl,
+				adapter_path: adapterPath,
 				tick_crashed: true,
 				write_result: "not_performed",
 				readback_result: "not_required",

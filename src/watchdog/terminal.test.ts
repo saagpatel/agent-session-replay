@@ -25,7 +25,7 @@ const clean: TickReport = {
 test("clean tick emits exact succeeded terminal contract without destination mutation", () => {
 	const event = terminalStateForReport(
 		clean,
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		false,
 		"2026-07-14T10:00:00.000Z",
 		25,
@@ -57,7 +57,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 test("windowed coverage remains successful and explicit", () => {
 	const event = terminalStateForReport(
 		{ ...clean, windowedSessions: 1 },
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		false,
 		"2026-07-14T10:00:00.000Z",
 		25,
@@ -71,7 +71,7 @@ test("windowed coverage remains successful and explicit", () => {
 test("post or coverage failures emit operator-actionable partial state", () => {
 	const event = terminalStateForReport(
 		{ ...clean, postFailures: 1, skippedOversize: 1 },
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		false,
 		"2026-07-14T10:00:00.000Z",
 		40,
@@ -124,7 +124,7 @@ test("terminal receipts retain caller-supplied invocation provenance", () => {
 	);
 	const event = terminalStateForReport(
 		clean,
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		false,
 		"2026-07-14T10:00:00.000Z",
 		25,
@@ -133,17 +133,22 @@ test("terminal receipts retain caller-supplied invocation provenance", () => {
 	assert.equal(event.invocation, invocation);
 });
 
-test("accepted destination receipts preserve every notification-hub event id", () => {
+test("accepted destination receipts preserve every local adapter event ID", () => {
 	const event = terminalStateForReport(
 		{ ...clean, alertsPosted: 2, acceptedEventIds: ["event-1", "event-2"] },
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		false,
 		"2026-07-14T10:00:00.000Z",
 		30,
 	);
 	assert.equal(event.state, "succeeded");
 	assert.equal(event.destination_readback.required, true);
-	assert.equal(event.destination_readback.verified, true);
+	assert.equal(event.destination_readback.verified, false);
+	assert.equal(event.destination_readback.destination_id, "/fixture/local-notifier");
+	assert.equal(event.destination_readback.evidence.readback_result, "handled_by_adapter_no_display_proof");
+	assert.equal(event.destination_readback.evidence.adapter_handled, true);
+	assert.equal(event.destination_readback.evidence.displayed, null);
+	assert.equal(event.destination_readback.evidence.read, null);
 	assert.deepEqual(event.destination_readback.evidence.accepted_event_ids, [
 		"event-1",
 		"event-2",
@@ -153,7 +158,7 @@ test("accepted destination receipts preserve every notification-hub event id", (
 test("dry run is machine-readable skipped state with zero mutations", () => {
 	const event = terminalStateForReport(
 		clean,
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		true,
 		"2026-07-14T10:00:00.000Z",
 		10,
@@ -166,7 +171,7 @@ test("dry run is machine-readable skipped state with zero mutations", () => {
 test("crashed tick emits failed completion state", () => {
 	const event = terminalStateForFailure(
 		new Error("ENOSPC"),
-		"http://127.0.0.1:9199",
+		"/fixture/local-notifier",
 		"2026-07-14T10:00:00.000Z",
 		12,
 	);
