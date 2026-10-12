@@ -332,7 +332,7 @@ test("lost adapter receipt replays identical JSON bytes after transcript growth 
 	const rebuilt = buildEvent(finding, {
 		harness: "claude-code", path, subagentPaths: [], mtimeMs: 0, sizeBytes: 0,
 	}, trace.run.workspace?.cwd);
-	assert.equal(rebuilt.event_id, JSON.parse(original).event_id);
+	assert.notEqual(rebuilt.event_id, JSON.parse(original).event_id, "changed content gets its own ID");
 	assert.notEqual(JSON.stringify(rebuilt), original, "fixture must change the live payload");
 
 	const second = await tick(config, Date.now());
@@ -769,6 +769,7 @@ process.stdin.on("data", chunk => text += chunk).on("end", () => {
 	const finding = detect(trace).find(f => f.kind === "grind_loop")!;
 	const oldEvent = buildEvent(finding, { harness: "claude-code", path, subagentPaths: [], mtimeMs: 0, sizeBytes: 0 }, null);
 	delete oldEvent.dedupe_key;
+	oldEvent.event_id = eventIdFor(path, "grind_loop@warning"); // pre-content-ID identity
 	const original = JSON.stringify(oldEvent, null, " ");
 	const state: WatchdogState = { sessions: {} };
 	retainPendingPayload(state, path, "grind_loop@warning", original, Date.now());
@@ -792,4 +793,49 @@ process.stdin.on("data", chunk => text += chunk).on("end", () => {
 	const newEvents = postedEvents(config).slice(2) as (NotificationEvent & { receiptState: string })[];
 	assert.deepEqual(newEvents.map(event => event.context.severity), ["warning", "critical"]);
 	assert.deepEqual(newEvents.map(event => event.receiptState), ["delivered", "delivered"]);
+});
+
+/** Mirror the notifier contract: an event id is bound forever to its first payload bytes. */
+function enforceStableIdPayload(config: WatchdogConfig): void {
+	writeFileSync(config.localAdapterPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+let text = "";
+process.stdin.on("data", chunk => text += chunk).on("end", () => {
+  const event = JSON.parse(text);
+  const store = process.argv[3];
+  const seen = fs.existsSync(store) ? JSON.parse(fs.readFileSync(store, "utf8")) : {};
+  const hash = crypto.createHash("sha256").update(text).digest("hex");
+  if (seen[event.event_id] !== undefined && seen[event.event_id] !== hash) {
+    console.error(JSON.stringify({state: "rejected", error: "stable event id was reused with a changed payload"}));
+    process.exitCode = 2;
+    return;
+  }
+  seen[event.event_id] = hash;
+  fs.writeFileSync(store, JSON.stringify(seen));
+  fs.appendFileSync(store + ".events", text + "\\n");
+  console.log(JSON.stringify({state: "delivered", stable_event_id: event.event_id}));
+});
+`);
+}
+
+test("a changed finding after lost dedupe state gets a new event id instead of a terminal rejection", async () => {
+	const { config, claudeRoot } = fixture();
+	enforceStableIdPayload(config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	const first = await tick(config, Date.now());
+	assert.equal(first.alertsPosted, 1);
+
+	// A release cutover or state reset forgets the alert while the session keeps grinding.
+	rmSync(config.statePath);
+	appendFileSync(path, ccGrindTranscript(40));
+	const second = await tick(config, Date.now());
+	assert.equal(second.terminalFailures, 0);
+	assert.equal(second.postFailures, 0);
+	assert.equal(second.alertsPosted, 1);
+	const [before, after] = postedEvents(config);
+	assert.notEqual(after!.body, before!.body, "fixture must change the payload");
+	assert.notEqual(after!.event_id, before!.event_id);
+	assert.equal(after!.dedupe_key, before!.dedupe_key, "adapter still groups the repeat");
+	assert.ok(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"));
 });

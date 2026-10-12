@@ -14,7 +14,7 @@ import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
-import { buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
+import { buildEvent, liveVerdict, withEventId } from "./policy.ts";
 import { scanSessions } from "./scan.ts";
 import { eventStatus, isTerminalFailure, postEvent, type PostResult } from "./sink.ts";
 import {
@@ -167,8 +167,7 @@ function parseSession(
 }
 
 function oversizeEvent(session: SessionFile, limit: number): NotificationEvent {
-	return {
-		event_id: eventIdFor(session.path, "transcript_budget_exceeded@critical"),
+	return withEventId(session.path, "transcript_budget_exceeded@critical", {
 		source: session.harness === "codex" ? "codex" : "cc",
 		level: "urgent",
 		title: "Watchdog: transcript window could not be verified",
@@ -182,7 +181,7 @@ function oversizeEvent(session: SessionFile, limit: number): NotificationEvent {
 			transcript_path: session.path,
 			max_session_bytes: limit,
 		},
-	};
+	});
 }
 
 export async function tick(
@@ -265,7 +264,10 @@ export async function tick(
 					const keys = keysFor(session);
 					if (keys === undefined || keys.has(key)) continue;
 				}
-				const id = eventIdFor(path, key);
+				// Retained bytes carry the ID they were (or may have been) sent under.
+				const retained = pendingPayloadFor(state, path, key);
+				if (retained === undefined) continue;
+				const id = (JSON.parse(retained) as NotificationEvent).event_id!;
 				let result = statusResults.get(id);
 				if (!result) {
 					result = await eventStatus(config.localAdapterPath, id, config.localReceiptStore);
