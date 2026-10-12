@@ -10,7 +10,8 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Finding } from "../core/detect/types.ts";
-import { eventIdFor } from "./policy.ts";
+import { contentEventId, eventIdFor } from "./policy.ts";
+import type { NotificationEvent } from "./types.ts";
 
 interface SessionAlerts {
 	findings: string[];
@@ -46,7 +47,8 @@ function validPayload(sessionPath: string, key: string, payload: unknown): paylo
 	try {
 		const event: unknown = JSON.parse(payload);
 		return isRecord(event) &&
-			event.event_id === eventIdFor(sessionPath, key) &&
+			(event.event_id === eventIdFor(sessionPath, key) ||
+				event.event_id === contentEventId(sessionPath, key, event as unknown as NotificationEvent)) &&
 			(event.source === "cc" || event.source === "codex") &&
 			(event.level === "urgent" || event.level === "normal" || event.level === "info") &&
 			typeof event.title === "string" && typeof event.body === "string" &&

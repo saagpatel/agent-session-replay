@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Finding } from "../core/detect/types.ts";
-import { ALERTABLE_DETECTORS, buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
+import { ALERTABLE_DETECTORS, buildEvent, contentEventId, eventIdFor, liveVerdict } from "./policy.ts";
 import type { SessionFile } from "./types.ts";
 
 function finding(over: Partial<Finding> = {}): Finding {
@@ -111,14 +111,20 @@ test("only notifier-approved stuck-agent detectors may alert", () => {
 	}
 });
 
-test("adapter event identity is stable and binds session, finding and severity", () => {
+test("adapter event identity is stable and binds session, finding, severity and content", () => {
 	const first = buildEvent(finding(), session(), null);
-	assert.equal(first.event_id, eventIdFor(session().path, "grind_loop@warning"));
+	const { event_id: _id, ...content } = first;
+	assert.equal(first.event_id, contentEventId(session().path, "grind_loop@warning", content));
+	assert.notEqual(first.event_id, eventIdFor(session().path, "grind_loop@warning"));
 	assert.match(first.event_id ?? "", /^agent-watchdog:[a-f0-9]{64}$/);
 	assert.equal(buildEvent(finding(), session(), null).event_id, first.event_id);
 	assert.notEqual(buildEvent(finding({ severity: "critical" }), session(), null).event_id, first.event_id);
 	assert.notEqual(buildEvent(finding({ id: "other" }), session(), null).event_id, first.event_id);
 	assert.notEqual(buildEvent(finding(), session({ path: "/x/other.jsonl" }), null).event_id, first.event_id);
+	// The adapter refuses a reused ID with changed bytes, so changed content must not reuse it.
+	assert.notEqual(buildEvent(finding({ score: 151 }), session(), null).event_id, first.event_id);
+	assert.notEqual(buildEvent(finding({ detail: "grew" }), session(), null).event_id, first.event_id);
+	assert.notEqual(buildEvent(finding(), session(), "/w/project").event_id, first.event_id);
 });
 
 test("adapter dedupe groups separate warning and critical, sessions and finding kinds", () => {

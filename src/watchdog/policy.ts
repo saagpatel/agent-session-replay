@@ -42,12 +42,44 @@ const LEVEL_BY_SEVERITY: Record<Severity, NotificationEvent["level"]> = {
 	info: "info",
 };
 
-/** Bind the existing watchdog dedupe tuple to an adapter-stable event ID. */
+/** Bounded digest of the watchdog dedupe tuple: the adapter's policy group,
+ * and the event ID of payloads retained before IDs were content-bound. */
 export function eventIdFor(sessionPath: string, findingKey: string): string {
 	const digest = createHash("sha256")
 		.update(`${sessionPath}\x00${findingKey}`, "utf8")
 		.digest("hex");
 	return `agent-watchdog:${digest}`;
+}
+
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record).sort()
+			.map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+	}
+	return JSON.stringify(value);
+}
+
+/**
+ * The adapter binds an event ID to its first payload forever and has no update
+ * operation, so the ID covers the content: a changed finding is a new event
+ * (dedupe_key still groups it), while a retry of retained bytes keeps its ID.
+ */
+export function contentEventId(
+	sessionPath: string, findingKey: string, event: Omit<NotificationEvent, "event_id">,
+): string {
+	const { event_id: _ignored, ...content } = event as NotificationEvent;
+	const digest = createHash("sha256")
+		.update(`${sessionPath}\x00${findingKey}\x00${canonicalJson(content)}`, "utf8")
+		.digest("hex");
+	return `agent-watchdog:${digest}`;
+}
+
+export function withEventId(
+	sessionPath: string, findingKey: string, event: Omit<NotificationEvent, "event_id">,
+): NotificationEvent {
+	return { event_id: contentEventId(sessionPath, findingKey, event), ...event };
 }
 
 /** Keep event text single-line and bounded before it reaches the adapter. */
@@ -63,8 +95,7 @@ export function buildEvent(
 ): NotificationEvent {
 	const source: NotificationEvent["source"] =
 		session.harness === "codex" ? "codex" : "cc";
-	return {
-		event_id: eventIdFor(session.path, `${finding.id}@${finding.severity}`),
+	return withEventId(session.path, `${finding.id}@${finding.severity}`, {
 		// Hash the full tuple to stay bounded even for long session paths/kinds.
 		// Adapter policy severity alone does not distinguish warning/critical.
 		dedupe_key: eventIdFor(session.path, `${finding.kind}@${finding.severity}`),
@@ -84,5 +115,5 @@ export function buildEvent(
 			harness: session.harness,
 			transcript_path: session.path,
 		},
-	};
+	});
 }
