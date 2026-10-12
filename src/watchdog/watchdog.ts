@@ -16,18 +16,23 @@ import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
 import { buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
 import { scanSessions } from "./scan.ts";
-import { postEvent, type PostResult } from "./sink.ts";
+import { eventStatus, isTerminalFailure, postEvent, type PostResult } from "./sink.ts";
 import {
 	canSkip,
+	dropPendingPayload,
 	findingKey,
 	hasAlerted,
 	loadState,
 	markAlerted,
 	markProcessed,
+	MAX_RETAINED_PAYLOAD_BYTES,
 	pendingPayloadFor,
+	pendingPayloadError,
 	pruneState,
 	retainPendingPayload,
+	retainedPayloadStats,
 	saveState,
+	STATE_MAX_AGE_MS,
 } from "./state.ts";
 import type {
 	NotificationEvent,
@@ -195,6 +200,10 @@ export async function tick(
 		alertsDeduped: 0,
 		alertsHeld: 0,
 		postFailures: 0,
+		terminalFailures: 0,
+		retainedPayloads: 0,
+		retainedPayloadBytes: 0,
+		retentionCapReached: false,
 		acceptedEventIds: [],
 	};
 	let dirty = false;
@@ -206,14 +215,94 @@ export async function tick(
 		cutoffMs,
 	);
 	const state = loadState(config.statePath);
+	const sessionsByPath = new Map(sessions.map(session => [session.path, session]));
+	// Missing observations (including parse failures) cannot prove resolution.
+	const observedKeys = new Map<string, Set<string> | undefined>();
+	const statusResults = new Map<string, PostResult>();
+	const applyOutcome = (path: string, key: string, result: PostResult): boolean => {
+		if (result.ok && result.eventId) {
+			const payload = pendingPayloadFor(state, path, key);
+			if (payload) {
+				const event = JSON.parse(payload) as NotificationEvent;
+				console.log(`watchdog: handled ${event.level} '${event.title}' (state=${result.state})`);
+			}
+			markAlerted(state, path, key, nowMs);
+			dirty = true;
+			report.alertsPosted += 1;
+			report.acceptedEventIds.push(result.eventId);
+			return true;
+		}
+		if (isTerminalFailure(result)) {
+			console.error(
+				`watchdog: TERMINAL notification failure for ${key} (state=${result.state ?? "changed_payload_rejection"}, exit=${result.status ?? "no-response"}): ${result.error ?? ""}; will not retry`,
+			);
+			markAlerted(state, path, key, nowMs);
+			dirty = true;
+			report.terminalFailures += 1;
+			return true;
+		}
+		return false;
+	};
+	const keysFor = (session: SessionFile): Set<string> | undefined => {
+		if (!observedKeys.has(session.path)) {
+			try {
+				const { trace } = parseSession(session, config.maxSessionBytes);
+				observedKeys.set(session.path, new Set(detect(trace).map(findingKey)));
+			} catch {
+				// A coverage/budget failure cannot prove an older finding disappeared.
+				observedKeys.set(session.path, undefined);
+			}
+		}
+		return observedKeys.get(session.path);
+	};
+	const evictObsoletePayloads = async (weeklyOnly: boolean): Promise<void> => {
+		if (config.dryRun) return; // even status may create the adapter's store
+		for (const [path, entry] of Object.entries(state.sessions)) {
+			if (weeklyOnly && nowMs - entry.updatedMs <= STATE_MAX_AGE_MS) continue;
+			for (const key of Object.keys(entry.pendingPayloads ?? {})) {
+				const session = sessionsByPath.get(path);
+				if (session) {
+					const keys = keysFor(session);
+					if (keys === undefined || keys.has(key)) continue;
+				}
+				const id = eventIdFor(path, key);
+				let result = statusResults.get(id);
+				if (!result) {
+					result = await eventStatus(config.localAdapterPath, id, config.localReceiptStore);
+					statusResults.set(id, result);
+				}
+				if (result.status === 0 && result.eventId === id && result.state === "not_found") {
+					dropPendingPayload(state, path, key);
+					dirty = true;
+				} else if (result.status !== 0 || result.eventId !== id || !applyOutcome(path, key, result)) {
+					console.error(`watchdog: retained ${key}; status unresolved (state=${result.state ?? "no-response"}, exit=${result.status ?? "no-response"}): ${result.error ?? ""}`);
+				}
+			}
+		}
+	};
+	let capEvictionAttempted = false;
+	const reportRetentionCap = (): void => {
+		if (report.retentionCapReached) return;
+		report.retentionCapReached = true;
+		const stats = retainedPayloadStats(state);
+		console.error(`watchdog: retention cap reached (${stats.retainedPayloads} payloads, ${stats.retainedPayloadBytes} bytes); operator action required; new sends blocked`);
+	};
 	const postPending = async (
 		session: SessionFile, key: string, createEvent: () => NotificationEvent,
 	): Promise<PostResult> => {
 		const payload = pendingPayloadFor(state, session.path, key) ??
 			JSON.stringify(createEvent());
-		if (!retainPendingPayload(state, session.path, key, payload, nowMs)) {
-			return { ok: false, error: "pending notification payload exceeds retention limits" };
+		let error = pendingPayloadError(state, session.path, key, payload);
+		if (error === "retention cap reached" && !capEvictionAttempted) {
+			capEvictionAttempted = true;
+			await evictObsoletePayloads(false);
+			error = pendingPayloadError(state, session.path, key, payload);
 		}
+		if (error) {
+			if (error === "retention cap reached") reportRetentionCap();
+			return { ok: false, error };
+		}
+		retainPendingPayload(state, session.path, key, payload, nowMs);
 		// Save BEFORE sending: a lost receipt, crash, or failed acknowledgement
 		// write must leave the exact first payload available to the next tick.
 		// If this write fails, do not invoke the adapter.
@@ -238,26 +327,30 @@ export async function tick(
 			if (parsed.windowed) report.windowedSessions += 1;
 		} catch (err) {
 			if (err instanceof TranscriptBudgetError) {
+				observedKeys.set(session.path, undefined);
 				report.skippedOversize += 1;
 				const key = "transcript_budget_exceeded@critical";
 				if (!hasAlerted(state, session.path, key)) {
 					if (config.dryRun) {
-						const event = oversizeEvent(session, config.maxSessionBytes);
-						console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
-						markAlerted(state, session.path, key, nowMs);
-						dirty = true;
-						report.alertsPosted += 1;
+						if (pendingPayloadFor(state, session.path, key) !== undefined) {
+							console.log(`watchdog[dry-run]: live attempt pending for ${key}; left untouched`);
+							// Coverage checks stay pending below, including this live payload.
+						} else {
+							const event = oversizeEvent(session, config.maxSessionBytes);
+							console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
+							markAlerted(state, session.path, key, nowMs);
+							dirty = true;
+							report.alertsPosted += 1;
+						}
 					} else {
 						const result = await postPending(
 							session, key, () => oversizeEvent(session, config.maxSessionBytes),
 						);
-						if (result.ok && result.eventId) {
-							markAlerted(state, session.path, key, nowMs);
-							dirty = true;
-							report.alertsPosted += 1;
-							report.acceptedEventIds.push(result.eventId);
-						} else {
+						if (!applyOutcome(session.path, key, result)) {
 							report.postFailures += 1;
+							console.error(
+								`watchdog: post failed (${result.status ?? "no-response"}): ${result.error ?? ""}`,
+							);
 						}
 					}
 				} else {
@@ -267,6 +360,7 @@ export async function tick(
 				dirty = markProcessed(state, session.path, session.mtimeMs, true, nowMs) || dirty;
 				continue;
 			}
+			observedKeys.set(session.path, undefined);
 			report.parseFailures += 1;
 			console.error(
 				`watchdog: parse failed for ${session.path}: ${String(err)}`,
@@ -275,11 +369,11 @@ export async function tick(
 		}
 
 		const findings = detect(trace);
+		observedKeys.set(session.path, new Set(findings.map(findingKey)));
 		report.findings += findings.length;
 		const quietMs = nowMs - session.mtimeMs;
-		// An unacknowledged payload is never dropped when its finding disappears:
-		// the adapter may already hold it, and a recurrence must replay the same
-		// bytes under the same event ID or the adapter rejects it forever.
+		// Retain unresolved payloads until status proves safe eviction or a final
+		// disposition. A recurrence must otherwise replay the same exact bytes.
 		let held = 0;
 		let failed = 0;
 
@@ -319,14 +413,7 @@ export async function tick(
 			const result = await postPending(
 				session, key, () => buildEvent(finding, session, trace.run.workspace?.cwd),
 			);
-			if (result.ok && result.eventId) {
-				const event = JSON.parse(pendingPayloadFor(state, session.path, key)!) as NotificationEvent;
-				markAlerted(state, session.path, key, nowMs);
-				dirty = true;
-				report.alertsPosted += 1;
-				report.acceptedEventIds.push(result.eventId);
-				console.log(`watchdog: posted ${event.level} '${event.title}'`);
-			} else {
+			if (!applyOutcome(session.path, key, result)) {
 				// Not marked alerted -> retry the retained payload next tick.
 				failed += 1;
 				report.postFailures += 1;
@@ -346,7 +433,12 @@ export async function tick(
 			) || dirty;
 	}
 
-	const pruned = pruneState(state, nowMs);
-	if (dirty || pruned > 0) saveState(config.statePath, state);
+	await evictObsoletePayloads(true);
+	if (!config.dryRun) {
+		const pruned = pruneState(state, nowMs);
+		if (dirty || pruned > 0) saveState(config.statePath, state);
+	}
+	Object.assign(report, retainedPayloadStats(state));
+	if (report.retainedPayloadBytes >= MAX_RETAINED_PAYLOAD_BYTES) reportRetentionCap();
 	return report;
 }

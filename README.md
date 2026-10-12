@@ -181,7 +181,7 @@ in the browser; `pnpm tauri dev` additionally needs Rust and Tauri platform depe
 
 `pnpm afr:archives` reads workstation archives by default, and `pnpm watchdog`
 starts the live fleet loop. These are operational lanes, not routine fixture gates.
-Even watchdog dry-run still discovers local session state and writes dedupe
+Watchdog dry-run still discovers and reads local session state but never writes
 state; use the test suite for isolated verification without personal session
 data or notifications.
 
@@ -195,7 +195,7 @@ its source identifiers remain supported for replaying historical AFR archives.
 Alert-only by contract — it never kills, pauses, or mutates a session.
 
 ```bash
-pnpm watchdog --once --dry-run      # one tick, log instead of post; writes dedupe state
+pnpm watchdog --once --dry-run      # one tick, log instead of post; state is read-only
 pnpm watchdog                       # 45s loop; --window 30 --stall-quiet 600
 ```
 

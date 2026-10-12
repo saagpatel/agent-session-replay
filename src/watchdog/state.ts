@@ -27,7 +27,7 @@ export interface WatchdogState {
 	sessions: Record<string, SessionAlerts>;
 }
 
-const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_PENDING_PAYLOAD_BYTES = 16 * 1024;
 export const MAX_RETAINED_PAYLOAD_BYTES = 1024 * 1024;
 
@@ -52,6 +52,8 @@ function validPayload(sessionPath: string, key: string, payload: unknown): paylo
 			typeof event.title === "string" && typeof event.body === "string" &&
 			(event.project === undefined || typeof event.project === "string") &&
 			(event.session_label === undefined || typeof event.session_label === "string") &&
+			(event.dedupe_key === undefined || (typeof event.dedupe_key === "string" &&
+				event.dedupe_key.length > 0 && event.dedupe_key.length <= 200)) &&
 			(event.intent === undefined || event.intent === "needs_attention") &&
 			isRecord(event.context) && Object.values(event.context).every(value =>
 				typeof value === "string" || typeof value === "boolean" ||
@@ -129,7 +131,7 @@ export function loadState(path: string): WatchdogState {
 /** Atomic write (tmp + rename) so a crash mid-save never corrupts the state. */
 export function saveState(path: string, state: WatchdogState): void {
 	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.tmp`;
+	const tmp = `${path}.${process.pid}.tmp`;
 	writeFileSync(tmp, JSON.stringify(state, null, "\t"));
 	renameSync(tmp, path);
 }
@@ -153,10 +155,7 @@ export function markAlerted(
 		updatedMs: nowMs,
 	};
 	if (!entry.findings.includes(key)) entry.findings.push(key);
-	if (entry.pendingPayloads) {
-		delete entry.pendingPayloads[key];
-		if (Object.keys(entry.pendingPayloads).length === 0) delete entry.pendingPayloads;
-	}
+	dropPendingPayload(state, sessionPath, key);
 	entry.updatedMs = nowMs;
 	state.sessions[sessionPath] = entry;
 }
@@ -184,15 +183,41 @@ export function pendingPayloadFor(state: WatchdogState, sessionPath: string, key
 	return state.sessions[sessionPath]?.pendingPayloads?.[key];
 }
 
+export function dropPendingPayload(state: WatchdogState, sessionPath: string, key: string): void {
+	const entry = state.sessions[sessionPath];
+	if (entry?.pendingPayloads) {
+		delete entry.pendingPayloads[key];
+		if (Object.keys(entry.pendingPayloads).length === 0) delete entry.pendingPayloads;
+	}
+}
+
+export function retainedPayloadStats(state: WatchdogState): {
+	retainedPayloads: number; retainedPayloadBytes: number;
+} {
+	return Object.values(state.sessions).reduce((stats, entry) => ({
+		retainedPayloads: stats.retainedPayloads + Object.keys(entry.pendingPayloads ?? {}).length,
+		retainedPayloadBytes: stats.retainedPayloadBytes + payloadBytes(entry),
+	}), { retainedPayloads: 0, retainedPayloadBytes: 0 });
+}
+
+export function pendingPayloadError(
+	state: WatchdogState, sessionPath: string, key: string, payload: string,
+): "payload invalid" | "retention cap reached" | undefined {
+	const existing = pendingPayloadFor(state, sessionPath, key);
+	if (existing !== undefined) return existing === payload ? undefined : "payload invalid";
+	if (!validPayload(sessionPath, key, payload) || hasAlerted(state, sessionPath, key))
+		return "payload invalid";
+	if (retainedPayloadStats(state).retainedPayloadBytes + Buffer.byteLength(payload) > MAX_RETAINED_PAYLOAD_BYTES)
+		return "retention cap reached";
+	return undefined;
+}
+
 /** Bound retention by refusing new sends, never evicting an unknown attempt. */
 export function retainPendingPayload(
 	state: WatchdogState, sessionPath: string, key: string, payload: string, nowMs: number,
 ): boolean {
-	const existing = pendingPayloadFor(state, sessionPath, key);
-	if (existing !== undefined) return existing === payload;
-	if (!validPayload(sessionPath, key, payload) || hasAlerted(state, sessionPath, key)) return false;
-	const bytes = Object.values(state.sessions).reduce((total, entry) => total + payloadBytes(entry), 0);
-	if (bytes + Buffer.byteLength(payload) > MAX_RETAINED_PAYLOAD_BYTES) return false;
+	if (pendingPayloadError(state, sessionPath, key, payload)) return false;
+	if (pendingPayloadFor(state, sessionPath, key) !== undefined) return true;
 	const entry = state.sessions[sessionPath] ?? { findings: [], updatedMs: nowMs };
 	entry.pendingPayloads = { ...entry.pendingPayloads, [key]: payload };
 	entry.pending = true;

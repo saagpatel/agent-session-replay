@@ -65,6 +65,9 @@ export function buildEvent(
 		session.harness === "codex" ? "codex" : "cc";
 	return {
 		event_id: eventIdFor(session.path, `${finding.id}@${finding.severity}`),
+		// Hash the full tuple to stay bounded even for long session paths/kinds.
+		// Adapter policy severity alone does not distinguish warning/critical.
+		dedupe_key: eventIdFor(session.path, `${finding.kind}@${finding.severity}`),
 		source,
 		level: LEVEL_BY_SEVERITY[finding.severity],
 		title: sanitize(`Watchdog: ${finding.title}`, 200),

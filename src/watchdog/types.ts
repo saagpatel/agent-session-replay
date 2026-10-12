@@ -51,6 +51,8 @@ export interface WatchdogConfig {
 export interface NotificationEvent {
 	/** Stable retry identity; replays with changed payload are refused by the adapter. */
 	event_id?: string;
+	/** Bounded adapter policy group, separate from stable retry identity. */
+	dedupe_key?: string;
 	source: "cc" | "codex";
 	level: "urgent" | "normal" | "info";
 	title: string;
@@ -74,6 +76,12 @@ export interface TickReport {
 	alertsDeduped: number;
 	alertsHeld: number;
 	postFailures: number;
+	/** Adapter outcomes that can never be retried under this stable event ID. */
+	terminalFailures: number;
+	retainedPayloads: number;
+	retainedPayloadBytes: number;
+	/** Retention is full, or a new payload stayed blocked after safe eviction. */
+	retentionCapReached: boolean;
 	/** Stable event IDs from handled local adapter receipts. */
 	acceptedEventIds: string[];
 }
