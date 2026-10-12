@@ -19,6 +19,8 @@ import { test, type TestContext } from "node:test";
 import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { buildEvent, eventIdFor } from "./policy.ts";
+import { TickFailure } from "./progress.ts";
+import { terminalStateForFailure, terminalStateForReport } from "./terminal.ts";
 import {
 	hasAlerted, loadState, MAX_PENDING_PAYLOAD_BYTES, MAX_RETAINED_PAYLOAD_BYTES,
 	pendingPayloadFor, retainPendingPayload, retainedPayloadStats, saveState,
@@ -26,6 +28,14 @@ import {
 } from "./state.ts";
 import type { NotificationEvent, WatchdogConfig } from "./types.ts";
 import { tick } from "./watchdog.ts";
+
+function failedTerminal(error: unknown, config: WatchdogConfig) {
+	return terminalStateForFailure(error, config.localAdapterPath, "2026-01-01T00:00:00Z", 1);
+}
+
+function reportTerminal(report: Awaited<ReturnType<typeof tick>>, config: WatchdogConfig) {
+	return terminalStateForReport(report, config.localAdapterPath, false, "2026-01-01T00:00:00Z", 1);
+}
 
 /* ---------- fixture transcripts ---------- */
 
@@ -632,6 +642,9 @@ test("weekly eviction checks obsolete IDs and preserves uncertain adapter bindin
 		assert.equal(pendingPayloadFor(back, paths[receipt]!, "grind_loop@warning"), retainedEvent(paths[receipt]!));
 	}
 	assert.equal(report.alertsPosted, 6);
+	assert.deepEqual(report.progress?.accepted_event_ids, report.acceptedEventIds);
+	assert.equal(report.progress?.send_requests, 0);
+	assert.equal(report.progress?.status_requests, states.length);
 	assert.equal(report.terminalFailures, 3);
 	assert.deepEqual(retainedPayloadStats(back), {
 		retainedPayloads: report.retainedPayloads, retainedPayloadBytes: report.retainedPayloadBytes,
@@ -855,4 +868,136 @@ test("a changed finding after lost dedupe state gets a new event id instead of a
 	assert.notEqual(after!.event_id, before!.event_id);
 	assert.equal(after!.dedupe_key, before!.dedupe_key, "adapter still groups the repeat");
 	assert.ok(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"));
+});
+
+test("quiet success neither publishes state nor invokes the adapter", async (t) => {
+	const { config } = fixture(); cleanupFixture(t, config);
+	const original = '{\n  "sessions": {}\n}\n'; writeFileSync(config.statePath, original);
+	const report = await tick(config, Date.now());
+	assert.equal(readFileSync(config.statePath, "utf8"), original);
+	assert.equal(postedEvents(config).length, 0);
+	assert.equal(report.progress?.adapter_requests, 0);
+	assert.equal(report.progress?.state_publication.completed_writes, 0);
+	assert.equal(reportTerminal(report, config).state, "succeeded");
+	assert.equal(reportTerminal(report, config).mutation_count_certainty, "exact");
+});
+
+test("first exclusive-open failure preserves exact zero adapter handling", async (t) => {
+	const { config, claudeRoot } = fixture(); cleanupFixture(t, config);
+	const original = '{\n  "sessions": {}\n}\n'; writeFileSync(config.statePath, original);
+	writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const rawOpen = fs.openSync;
+	const cause = Object.assign(new Error("synthetic initial open failure"), { code: "EIO" });
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		if (String(args[0]) === config.statePath + ".owned-stage.tmp") throw cause;
+		return rawOpen(...args);
+	});
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); }); syncBuiltinESMExports();
+	let failure: unknown;
+	try { await tick(config, Date.now()); } catch (error) { failure = error; }
+	assert.ok(failure instanceof TickFailure);
+	assert.equal(failure.cause, cause);
+	assert.equal(failure.code, "EIO");
+	assert.equal(readFileSync(config.statePath, "utf8"), original);
+	assert.equal(existsSync(config.statePath + ".owned-stage.tmp"), false);
+	assert.equal(postedEvents(config).length, 0);
+	const terminal = failedTerminal(failure, config);
+	assert.equal(terminal.mutation_count, 0);
+	assert.equal(terminal.mutation_count_certainty, "exact");
+	assert.equal(terminal.destination_readback.evidence.write_result, "not_performed");
+	assert.deepEqual(failure.progress.state_publication, { attempted_writes: 1, completed_writes: 0, last_attempt: "failed" });
+});
+
+test("accepted success publishes both pending and acknowledged state", async (t) => {
+	const { config, claudeRoot } = fixture(); cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const report = await tick(config, Date.now());
+	assert.equal(report.progress?.send_requests, 1);
+	assert.equal(report.progress?.status_requests, 0);
+	assert.deepEqual(report.progress?.accepted_event_ids, report.acceptedEventIds);
+	assert.equal(report.progress?.state_publication.completed_writes, 2);
+	assert.equal(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"), true);
+	const terminal = reportTerminal(report, config);
+	assert.equal(terminal.state, "succeeded");
+	assert.equal(terminal.mutation_count, 1);
+	assert.equal(terminal.mutation_count_certainty, "exact");
+});
+
+test("accepted then final-rename failure preserves receipt and pending publication", async (t) => {
+	const { config, claudeRoot } = fixture(); cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const rawRename = fs.renameSync; let renames = 0;
+	const cause = Object.assign(new Error("synthetic final rename failure"), { code: "EIO" });
+	t.mock.method(fs, "renameSync", (...args: Parameters<typeof fs.renameSync>) => {
+		if (String(args[1]) === config.statePath && ++renames === 2) throw cause;
+		return rawRename(...args);
+	});
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); }); syncBuiltinESMExports();
+	let failure: unknown;
+	try { await tick(config, Date.now()); } catch (error) { failure = error; }
+	assert.ok(failure instanceof TickFailure);
+	const id = postedEvents(config)[0]!.event_id;
+	assert.deepEqual(failure.progress.accepted_event_ids, [id]);
+	assert.deepEqual(failure.progress.state_publication, { attempted_writes: 2, completed_writes: 1, last_attempt: "failed" });
+	assert.equal(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"), false);
+	assert.ok(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"));
+	const staged = JSON.parse(readFileSync(config.statePath + ".owned-stage.tmp", "utf8"));
+	assert.deepEqual(staged.sessions[path].findings, ["grind_loop@warning"]);
+	const terminal = failedTerminal(failure, config);
+	assert.equal(terminal.state, "failed"); assert.equal(terminal.completed, false);
+	assert.equal(terminal.operator_action_required, true); assert.equal(terminal.exit_code, 1);
+	assert.equal(terminal.mutation_count, 1); assert.equal(terminal.mutation_count_certainty, "exact");
+	assert.equal(terminal.destination_readback.required, true);
+	assert.equal(terminal.destination_readback.verified, false);
+	assert.equal(terminal.destination_readback.evidence.write_result, "succeeded");
+	assert.equal(terminal.destination_readback.evidence.adapter_handled, true);
+	assert.deepEqual(terminal.destination_readback.evidence.accepted_event_ids, [id]);
+});
+
+test("handled receipt is captured before a logging failure", async (t) => {
+	const { config, claudeRoot } = fixture(); cleanupFixture(t, config);
+	writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const rawLog = console.log;
+	t.mock.method(console, "log", (...args: unknown[]) => {
+		if (String(args[0]).startsWith("watchdog: handled")) throw new Error("synthetic logging failure");
+		rawLog(...args);
+	});
+	let failure: unknown;
+	try { await tick(config, Date.now()); } catch (error) { failure = error; }
+	assert.ok(failure instanceof TickFailure);
+	assert.equal(failure.progress.accepted_event_ids.length, 1);
+	assert.equal(failure.progress.state_publication.completed_writes, 1);
+	assert.equal(failedTerminal(failure, config).mutation_count, 1);
+});
+
+test("unresolved status lookup makes returned report partial without post failure counters", async (t) => {
+	const { config } = fixture(); cleanupFixture(t, config);
+	const now = Date.now(); const missing = join(config.claudeProjectsDir, "absent.jsonl");
+	const state: WatchdogState = { sessions: {} };
+	retainPendingPayload(state, missing, "grind_loop@warning", retainedEvent(missing), now - STATE_MAX_AGE_MS - 1);
+	saveState(config.statePath, state); outcomeAdapter(config, "delivered", {}, "unrecognized");
+	const report = await tick(config, now);
+	assert.equal(report.postFailures, 0); assert.equal(report.terminalFailures, 0);
+	assert.equal(report.progress?.send_requests, 0); assert.equal(report.progress?.status_requests, 1);
+	assert.equal(report.progress?.unresolved_adapter_requests, 1);
+	const terminal = reportTerminal(report, config);
+	assert.equal(terminal.state, "partial"); assert.equal(terminal.mutation_count_certainty, "lower_bound");
+	assert.equal(terminal.destination_readback.evidence.write_result, "unknown");
+	assert.equal(terminal.destination_readback.evidence.adapter_handled, null);
+});
+
+test("status-handled reconciliation survives final publication failure", async (t) => {
+	const { config } = fixture(); cleanupFixture(t, config);
+	const now = Date.now(); const missing = join(config.claudeProjectsDir, "absent.jsonl");
+	const state: WatchdogState = { sessions: {} };
+	retainPendingPayload(state, missing, "grind_loop@warning", retainedEvent(missing), now - STATE_MAX_AGE_MS - 1);
+	saveState(config.statePath, state); outcomeAdapter(config, "delivered", {}, "delivered");
+	t.mock.method(fs, "renameSync", () => { throw new Error("synthetic status acknowledgement publication failure"); });
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); }); syncBuiltinESMExports();
+	let failure: unknown;
+	try { await tick(config, now); } catch (error) { failure = error; }
+	assert.ok(failure instanceof TickFailure);
+	assert.equal(failure.progress.send_requests, 0); assert.equal(failure.progress.status_requests, 1);
+	assert.deepEqual(failure.progress.accepted_event_ids, [eventIdFor(missing, "grind_loop@warning")]);
+	assert.equal(failedTerminal(failure, config).mutation_count, 1);
 });

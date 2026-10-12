@@ -44,6 +44,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 		"invocation",
 		"message",
 		"mutation_count",
+		"mutation_count_certainty",
 		"observed_at",
 		"operator_action_required",
 		"partial",
@@ -52,6 +53,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 		"state",
 	]);
 	assert.equal(event.state, "succeeded");
+	assert.equal(event.schema, "AutomationTerminalStateV2");
 	assert.equal(event.mutation_count, 0);
 	assert.equal(event.destination_readback.required, false);
 	assert.equal(event.destination_readback.verified, false);
@@ -187,7 +189,10 @@ test("crashed tick emits failed completion state", () => {
 
 test("terminal notification failures remain visible after their payloads are released", () => {
 	const event = terminalStateForReport(
-		{ ...clean, terminalFailures: 1 }, "/fixture/local-notifier", false, "2026-07-14T10:00:00.000Z", 10,
+		{ ...clean, terminalFailures: 1, progress: {
+			adapter_requests: 1, send_requests: 1, status_requests: 0, unresolved_adapter_requests: 0, failed_adapter_requests: 1,
+			accepted_event_ids: [], state_publication: { attempted_writes: 0, completed_writes: 0, last_attempt: "not_started" },
+		} }, "/fixture/local-notifier", false, "2026-07-14T10:00:00.000Z", 10,
 	);
 	assert.equal(event.state, "partial");
 	assert.equal(event.operator_action_required, true);

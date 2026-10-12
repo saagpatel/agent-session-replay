@@ -7,6 +7,8 @@
  * watchdog never kills, pauses, or mutates a session.
  */
 
+import type { TickFailureProgress } from "./progress.ts";
+
 export type Harness = "claude-code" | "codex";
 
 /** One discoverable session transcript (plus CC subagent sidechains). */
@@ -64,6 +66,8 @@ export interface NotificationEvent {
 }
 
 export interface TickReport {
+	/** Immutable outcome observations; excludes payloads and transcript paths. */
+	progress?: TickFailureProgress;
 	scannedSessions: number;
 	/** Sessions parsed from a newline-aligned recent window under the byte ceiling. */
 	windowedSessions: number;

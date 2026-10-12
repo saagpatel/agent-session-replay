@@ -226,6 +226,21 @@ review, and restarting. Old UUID/PID staging files are never adopted or removed.
 launchd install scripts are staged at `~/.launchd-staging/`
 (`com.saagar.agent-watchdog`).
 
+Watchdog completion lines use `AutomationTerminalStateV2`. `mutation_count`
+counts observed handled adapter receipts (including status reconciliation),
+not new OS attempts, state writes, display or human reads. Its certainty is
+`exact` when all requests have known outcomes, `lower_bound` when a request is
+unresolved, or `unknown` with a null count for a failure without tick context.
+Generic failures also leave destination requirements null and write/readback
+results unknown. A failed tick carries a distinct error with its original cause
+and a frozen progress snapshot; acknowledged IDs survive later logging or state
+publication failures. Send and status request counts remain separate, and state
+publication counts only successfully completed saves, excluding staging writes.
+An adapter's terminal unknown/no-retry disposition does not establish a zero
+outcome. A late state failure remains failed, incomplete and operator-actionable
+even when its adapter handling succeeded. This version changes the watchdog
+schema; readers that require V1 must explicitly support V2's nullable fields.
+
 ## Decision Flight Deck Input
 
 To pick a local AFR archive without collecting anything new:
