@@ -6,9 +6,8 @@
  * suppressed under its warning-level entry.
  */
 
-import { randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { closeSync, constants, fstatSync, ftruncateSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 import type { Finding } from "../core/detect/types.ts";
 import { contentEventId, eventIdFor } from "./policy.ts";
@@ -131,26 +130,69 @@ export function loadState(path: string): WatchdogState {
 	return { sessions: {} };
 }
 
+interface OwnedStateStage {
+	dev?: bigint;
+	ino?: bigint;
+	uid?: bigint;
+	closed: boolean;
+}
+
+const STATE_STAGE_SUFFIX = ".owned-stage.tmp";
+const ownedStateStages = new Map<string, OwnedStateStage>();
+
+function stageOwnershipError(): Error {
+	return Object.assign(new Error("state staging ownership is unknown or changed; inspect retained staging before retrying"), { code: "ESTALE" });
+}
+
 /**
- * Replace state with a complete file through exclusively created sibling staging.
+ * Replace state through one exclusively created, private sibling staging slot.
+ * Failed saves retain that slot. Only this process may retry its remembered inode;
+ * an occupied slot after restart fails closed for operator inspection/recovery.
  * The parent and staging namespace must remain trusted until rename; this does
  * not defend against same-user path substitution or promise power-loss durability.
  */
 export function saveState(path: string, state: WatchdogState): void {
 	const serialized = JSON.stringify(state, null, "\t");
+	path = resolve(path);
 	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.${randomUUID()}.tmp`;
-	// Exclusive creation refuses existing files, links and directories. Write only
-	// through our descriptor, with private staging permissions from creation.
-	const fd = openSync(tmp, "wx", 0o600);
+	const tmp = path + STATE_STAGE_SUFFIX;
+	let stage = ownedStateStages.get(path);
+	let fd: number;
+	if (stage) {
+		if (!stage.closed || stage.dev === undefined || stage.ino === undefined || stage.uid === undefined) throw stageOwnershipError();
+		// Do not truncate on open. NOFOLLOW rejects links; NONBLOCK prevents a
+		// substituted FIFO from blocking before its descriptor type is checked.
+		fd = openSync(tmp, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		stage.closed = false;
+	} else {
+		fd = openSync(tmp, "wx", 0o600);
+		// Remember creation before any further operation can fail, so an unknown
+		// descriptor identity cannot trigger another staging allocation.
+		stage = { closed: false };
+		ownedStateStages.set(path, stage);
+	}
 	try {
+		const stat = fstatSync(fd, { bigint: true });
+		if (!stat.isFile() || stat.nlink !== 1n || (stat.mode & 0o077n) !== 0n ||
+			(typeof process.getuid === "function" && stat.uid !== BigInt(process.getuid())) ||
+			(stage.dev !== undefined &&
+				(stat.dev !== stage.dev || stat.ino !== stage.ino || stat.uid !== stage.uid))) throw stageOwnershipError();
+		if (stage.dev === undefined) {
+			stage.dev = stat.dev;
+			stage.ino = stat.ino;
+			stage.uid = stat.uid;
+		} else {
+			// Rewrite only the verified owned inode; retain the latest failed save.
+			ftruncateSync(fd, 0);
+		}
 		writeFileSync(fd, serialized);
 	} finally {
 		closeSync(fd);
+		stage.closed = true;
 	}
-	// Failures intentionally retain staging: pathname cleanup could delete a
-	// replacement installed by another actor. A later save uses a fresh name.
+	// No pathname cleanup: a replacement installed by another actor stays intact.
 	renameSync(tmp, path);
+	ownedStateStages.delete(path);
 }
 
 export function hasAlerted(
