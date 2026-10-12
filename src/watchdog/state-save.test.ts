@@ -22,12 +22,27 @@ function fixture() {
 	return { root, path, staging: `${path}.${uuid}.tmp` };
 }
 
+function readRegular(path: string, expected?: fs.BigIntStats) {
+	const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		const stat = fs.fstatSync(fd, { bigint: true });
+		assert.equal(stat.isFile(), true);
+		if (expected) {
+			assert.equal(stat.dev, expected.dev);
+			assert.equal(stat.ino, expected.ino);
+		}
+		return fs.readFileSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
 function snapshot(path: string) {
 	const stat = fs.lstatSync(path, { bigint: true });
 	return {
 		dev: stat.dev, ino: stat.ino, mode: stat.mode, nlink: stat.nlink,
 		size: stat.size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
-		content: stat.isFile() ? fs.readFileSync(path) : undefined,
+		content: stat.isFile() ? readRegular(path, stat) : undefined,
 		link: stat.isSymbolicLink() ? fs.readlinkSync(path) : undefined,
 		entries: stat.isDirectory() ? fs.readdirSync(path).sort() : undefined,
 	};
@@ -56,7 +71,7 @@ for (const kind of ["regular file", "symlink", "directory"] as const) {
 		assert.throws(() => saveState(path, state), { code: "EEXIST" });
 		assert.deepEqual([snapshot(path), snapshot(staging), snapshot(witness)], before);
 		assert.deepEqual(fs.readdirSync(root).sort(), entries);
-		if (kind === "directory") assert.equal(fs.readFileSync(join(staging, "foreign-child"), "utf8"), "protected child");
+		if (kind === "directory") assert.equal(readRegular(join(staging, "foreign-child")).toString("utf8"), "protected child");
 	});
 }
 
@@ -69,8 +84,7 @@ test("a complete successful replacement leaves a regular B and protects legacy P
 	const before = [snapshot(legacy), snapshot(witness)];
 	pinName(t);
 	saveState(path, state);
-	assert.equal(fs.lstatSync(path).isFile(), true);
-	assert.equal(fs.readFileSync(path, "utf8"), serialized);
+	assert.equal(readRegular(path).toString("utf8"), serialized);
 	assert.equal(fs.existsSync(staging), false);
 	assert.deepEqual([snapshot(legacy), snapshot(witness)], before);
 	assert.deepEqual(fs.readdirSync(root).sort(), ["state.json", `state.json.${process.pid}.tmp`, "witness"].sort());
@@ -82,8 +96,7 @@ test("fresh state creates nested parents and leaves no staging", (t) => {
 	const path = join(parent, "state.json");
 	pinName(t);
 	saveState(path, state);
-	assert.equal(fs.readFileSync(path, "utf8"), serialized);
-	assert.equal(fs.lstatSync(path).isFile(), true);
+	assert.equal(readRegular(path).toString("utf8"), serialized);
 	assert.deepEqual(fs.readdirSync(parent), ["state.json"]);
 });
 
@@ -102,8 +115,8 @@ test("a partial write failure closes its descriptor and retains private staging 
 	syncBuiltinESMExports();
 	assert.throws(() => saveState(path, state), error => error === failure);
 	assert.deepEqual(snapshot(path), before);
-	assert.equal(fs.readFileSync(staging, "utf8"), serialized.slice(0, 11));
-	assert.equal(fs.statSync(staging).mode & 0o777, 0o600);
+	assert.equal(readRegular(staging).toString("utf8"), serialized.slice(0, 11));
+	assert.equal(snapshot(staging).mode & 0o777n, 0o600n);
 	assert.equal(typeof descriptor, "number");
 	assert.throws(() => fs.fstatSync(descriptor!), { code: "EBADF" });
 });
@@ -117,15 +130,15 @@ test("a rename failure retains complete staging and a later save uses a fresh na
 	syncBuiltinESMExports();
 	assert.throws(() => saveState(path, state), error => error === failure);
 	assert.deepEqual(snapshot(path), before);
-	assert.equal(fs.readFileSync(staging, "utf8"), serialized);
-	assert.equal(fs.statSync(staging).mode & 0o777, 0o600);
+	assert.equal(readRegular(staging).toString("utf8"), serialized);
+	assert.equal(snapshot(staging).mode & 0o777n, 0o600n);
 	const retained = snapshot(staging);
 	t.mock.restoreAll();
 	syncBuiltinESMExports();
 	t.mock.method(crypto, "randomUUID", () => nextUuid);
 	syncBuiltinESMExports();
 	saveState(path, state);
-	assert.equal(fs.readFileSync(path, "utf8"), serialized);
+	assert.equal(readRegular(path).toString("utf8"), serialized);
 	assert.deepEqual(snapshot(staging), retained);
 	assert.deepEqual(fs.readdirSync(root).sort(), ["state.json", `state.json.${uuid}.tmp`].sort());
 });
@@ -147,7 +160,7 @@ test("a close failure skips rename and retains complete staging with A unchanged
 	t.mock.restoreAll();
 	syncBuiltinESMExports();
 	assert.deepEqual(snapshot(path), before);
-	assert.equal(fs.readFileSync(staging, "utf8"), serialized);
+	assert.equal(readRegular(staging).toString("utf8"), serialized);
 	assert.throws(() => fs.fstatSync(descriptor!), { code: "EBADF" });
 });
 
@@ -167,8 +180,8 @@ test("exception handling never pathname-deletes a replacement staged during a fa
 	syncBuiltinESMExports();
 	assert.throws(() => saveState(path, state), error => error === failure);
 	assert.deepEqual(snapshot(path), before);
-	assert.equal(fs.readFileSync(staging, "utf8"), "foreign replacement");
-	assert.equal(fs.readFileSync(displaced, "utf8"), serialized.slice(0, 11));
+	assert.equal(readRegular(staging).toString("utf8"), "foreign replacement");
+	assert.equal(readRegular(displaced).toString("utf8"), serialized.slice(0, 11));
 });
 
 test("serialization failure creates no parent or staging", () => {
