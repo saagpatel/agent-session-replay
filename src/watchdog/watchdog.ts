@@ -15,6 +15,7 @@ import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
 import { buildEvent, liveVerdict, withEventId } from "./policy.ts";
+import { TickProgress } from "./progress.ts";
 import { scanSessions } from "./scan.ts";
 import { eventStatus, isTerminalFailure, postEvent, type PostResult } from "./sink.ts";
 import {
@@ -188,6 +189,20 @@ export async function tick(
 	config: WatchdogConfig,
 	nowMs: number,
 ): Promise<TickReport> {
+	const progress = new TickProgress();
+	try {
+		const report = await tickWithProgress(config, nowMs, progress);
+		return { ...report, progress: progress.snapshot() };
+	} catch (error) {
+		throw progress.failure(error);
+	}
+}
+
+async function tickWithProgress(
+	config: WatchdogConfig,
+	nowMs: number,
+	progress: TickProgress,
+): Promise<TickReport> {
 	const report: TickReport = {
 		scannedSessions: 0,
 		windowedSessions: 0,
@@ -270,7 +285,7 @@ export async function tick(
 				const id = (JSON.parse(retained) as NotificationEvent).event_id!;
 				let result = statusResults.get(id);
 				if (!result) {
-					result = await eventStatus(config.localAdapterPath, id, config.localReceiptStore);
+					result = await progress.request(() => eventStatus(config.localAdapterPath, id, config.localReceiptStore), "status");
 					statusResults.set(id, result);
 				}
 				if (result.status === 0 && result.eventId === id && result.state === "not_found") {
@@ -308,8 +323,8 @@ export async function tick(
 		// Save BEFORE sending: a lost receipt, crash, or failed acknowledgement
 		// write must leave the exact first payload available to the next tick.
 		// If this write fails, do not invoke the adapter.
-		saveState(config.statePath, state);
-		return postEvent(config.localAdapterPath, payload, config.localReceiptStore);
+		progress.publish(() => saveState(config.statePath, state));
+		return progress.request(() => postEvent(config.localAdapterPath, payload, config.localReceiptStore));
 	};
 
 	for (const session of sessions) {
@@ -438,7 +453,7 @@ export async function tick(
 	await evictObsoletePayloads(true);
 	if (!config.dryRun) {
 		const pruned = pruneState(state, nowMs);
-		if (dirty || pruned > 0) saveState(config.statePath, state);
+		if (dirty || pruned > 0) progress.publish(() => saveState(config.statePath, state));
 	}
 	Object.assign(report, retainedPayloadStats(state));
 	if (report.retainedPayloadBytes >= MAX_RETAINED_PAYLOAD_BYTES) reportRetentionCap();
