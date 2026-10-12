@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Finding } from "../core/detect/types.ts";
-import { buildEvent, liveVerdict } from "./policy.ts";
+import { ALERTABLE_DETECTORS, buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
 import type { SessionFile } from "./types.ts";
 
 function finding(over: Partial<Finding> = {}): Finding {
@@ -43,11 +43,11 @@ test("silent_stall holds until the session has been quiet long enough", () => {
 	assert.equal(liveVerdict(f, STALL_QUIET_MS, STALL_QUIET_MS), "alert");
 });
 
-test("ordinary findings alert immediately, even while the session writes", () => {
+test("grind_loop alerts immediately, even while the session writes", () => {
 	assert.equal(liveVerdict(finding(), 0, STALL_QUIET_MS), "alert");
 });
 
-test("buildEvent maps severity to hub levels and harness to source", () => {
+test("buildEvent maps severity to adapter levels and harness to source", () => {
 	const cc = buildEvent(finding({ severity: "critical" }), session(), null);
 	assert.equal(cc.source, "cc");
 	assert.equal(cc.level, "urgent");
@@ -61,7 +61,7 @@ test("buildEvent maps severity to hub levels and harness to source", () => {
 	assert.equal(buildEvent(finding(), session(), null).level, "normal");
 });
 
-test("buildEvent produces hub-safe text: single-line, length-capped", () => {
+test("buildEvent produces adapter-safe text: single-line, length-capped", () => {
 	const f = finding({
 		title: "line one\nline two\ttabbed",
 		detail: "x".repeat(3000),
@@ -83,9 +83,8 @@ test("buildEvent omits project when the trace has no cwd", () => {
 	assert.ok(!("project" in e));
 });
 
-test("project and session_label are capped to the hub's rejection limits", () => {
-	// The hub REJECTS (422) over-length fields rather than truncating, and a
-	// rejected post retries forever — so these caps are load-bearing.
+test("project and session_label are capped to the adapter's field limits", () => {
+	// Keep bounded fields deterministic across local adapter replays.
 	const longName = "x".repeat(300);
 	const e = buildEvent(
 		finding(),
@@ -94,4 +93,30 @@ test("project and session_label are capped to the hub's rejection limits", () =>
 	);
 	assert.ok((e.project ?? "").length <= 100);
 	assert.ok((e.session_label ?? "").length <= 200);
+});
+
+test("only notifier-approved stuck-agent detectors may alert", () => {
+	assert.deepEqual([...ALERTABLE_DETECTORS].sort(), [
+		"grind_loop", "silent_stall", "transcript_budget_exceeded",
+	]);
+	for (const kind of ["grind_loop", "transcript_budget_exceeded"]) {
+		assert.equal(liveVerdict(finding({ id: kind, kind }), 0, STALL_QUIET_MS), "alert");
+	}
+	for (const kind of [
+		"guard_trip_cluster", "tool_error_spike", "compaction_thrash",
+		"subagent_cost_runaway", "incomplete_run", "future_detector",
+	]) {
+		assert.equal(liveVerdict(finding({ id: kind, kind }), 0, STALL_QUIET_MS), "never");
+		assert.equal(liveVerdict(finding({ id: kind, kind }), 10 * STALL_QUIET_MS, STALL_QUIET_MS), "never");
+	}
+});
+
+test("adapter event identity is stable and binds session, finding and severity", () => {
+	const first = buildEvent(finding(), session(), null);
+	assert.equal(first.event_id, eventIdFor(session().path, "grind_loop@warning"));
+	assert.match(first.event_id ?? "", /^agent-watchdog:[a-f0-9]{64}$/);
+	assert.equal(buildEvent(finding(), session(), null).event_id, first.event_id);
+	assert.notEqual(buildEvent(finding({ severity: "critical" }), session(), null).event_id, first.event_id);
+	assert.notEqual(buildEvent(finding({ id: "other" }), session(), null).event_id, first.event_id);
+	assert.notEqual(buildEvent(finding(), session({ path: "/x/other.jsonl" }), null).event_id, first.event_id);
 });
