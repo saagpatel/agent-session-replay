@@ -19,6 +19,7 @@ import {
 	pruneState,
 	retainPendingPayload,
 	saveState,
+	type WatchdogState,
 } from "./state.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "watchdog-state-"));
@@ -230,4 +231,15 @@ test("retention caps refuse new payloads without evicting an unknown attempt", (
 	assert.equal(pendingPayloadFor(state, "/s/0.jsonl", key), payloadFor("/s/0.jsonl", key, body));
 	saveState(path, state);
 	assert.deepEqual(loadState(path), state);
+});
+
+test("weekly pruning keeps a session that holds an unacknowledged payload", () => {
+	const session = "/s/resumed.jsonl";
+	const key = "grind_loop@warning";
+	const state: WatchdogState = { sessions: {
+		[session]: { findings: [], updatedMs: 0, pendingPayloads: { [key]: payloadFor(session) } },
+		"/s/old.jsonl": { findings: [key], updatedMs: 0 },
+	} };
+	assert.equal(pruneState(state, 30 * 24 * 60 * 60 * 1000), 1);
+	assert.deepEqual(Object.keys(state.sessions), [session]);
 });

@@ -226,10 +226,13 @@ export function markProcessed(
 }
 
 /** Drop sessions untouched for a week; they will never re-enter the window.
+ * A session holding an unacknowledged payload is kept: a resumed session must
+ * replay those bytes, and the retained-payload cap bounds what this keeps.
  * Returns the number of entries removed. */
 export function pruneState(state: WatchdogState, nowMs: number): number {
 	let removed = 0;
 	for (const [path, entry] of Object.entries(state.sessions)) {
+		if (Object.keys(entry.pendingPayloads ?? {}).length) continue;
 		if (nowMs - entry.updatedMs > STATE_MAX_AGE_MS) {
 			delete state.sessions[path];
 			removed += 1;
