@@ -120,3 +120,15 @@ test("adapter event identity is stable and binds session, finding and severity",
 	assert.notEqual(buildEvent(finding({ id: "other" }), session(), null).event_id, first.event_id);
 	assert.notEqual(buildEvent(finding(), session({ path: "/x/other.jsonl" }), null).event_id, first.event_id);
 });
+
+test("adapter dedupe groups separate warning and critical, sessions and finding kinds", () => {
+	const warning = buildEvent(finding(), session(), null);
+	const critical = buildEvent(finding({ severity: "critical" }), session(), null);
+	assert.notEqual(warning.dedupe_key, critical.dedupe_key,
+		"the 15-minute policy group must not swallow an escalation");
+	assert.equal(buildEvent(finding({ score: 400 }), session(), null).dedupe_key, warning.dedupe_key);
+	assert.notEqual(buildEvent(finding(), session({ path: "/other/session.jsonl" }), null).dedupe_key, warning.dedupe_key);
+	assert.notEqual(buildEvent(finding({ kind: "silent_stall" }), session(), null).dedupe_key, warning.dedupe_key);
+	const long = buildEvent(finding({ kind: "x".repeat(1000) }), session({ path: "/" + "s".repeat(1000) }), null);
+	assert.ok(long.dedupe_key && long.dedupe_key.length <= 200);
+});

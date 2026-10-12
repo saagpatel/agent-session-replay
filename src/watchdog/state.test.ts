@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -16,8 +16,10 @@ import {
 	MAX_PENDING_PAYLOAD_BYTES,
 	MAX_RETAINED_PAYLOAD_BYTES,
 	pendingPayloadFor,
+	pendingPayloadError,
 	pruneState,
 	retainPendingPayload,
+	retainedPayloadStats,
 	saveState,
 	type WatchdogState,
 } from "./state.ts";
@@ -105,8 +107,12 @@ test("saveState writes valid JSON atomically (no partial tmp left behind)", () =
 	const path = join(dir(), "state.json");
 	const state = loadState(path);
 	markAlerted(state, "/s/a.jsonl", "k@warning", 5);
+	// A legacy shared temp path must not interfere with this process's save.
+	mkdirSync(path + ".tmp");
 	saveState(path, state);
 	assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
+	assert.equal(existsSync(`${path}.${process.pid}.tmp`), false);
+	assert.equal(existsSync(path + ".tmp"), true);
 });
 
 test("findingKey carries severity so an escalation re-alerts", () => {
@@ -187,6 +193,9 @@ test("malformed retained payload state is rejected like other malformed session 
 		{ pendingPayloads: { [key]: payloadFor(session, "grind_loop@critical") } },
 		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), body: 12 }) } },
 		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), context: { score: {} } }) } },
+		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), dedupe_key: "" }) } },
+		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), dedupe_key: 123 }) } },
+		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), dedupe_key: "x".repeat(201) }) } },
 		{ pendingPayloads: { [key]: payloadFor(session, key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES)) } },
 		{ findings: [key] },
 	]) {
@@ -220,6 +229,7 @@ test("retention caps refuse new payloads without evicting an unknown attempt", (
 		const payload = payloadFor(session, key, body);
 		if (bytes + Buffer.byteLength(payload) > MAX_RETAINED_PAYLOAD_BYTES) {
 			assert.equal(retainPendingPayload(state, session, key, payload, 1000), false);
+			assert.equal(pendingPayloadError(state, session, key, payload), "retention cap reached");
 			assert.equal(state.sessions[session], undefined);
 			break;
 		}
@@ -228,6 +238,11 @@ test("retention caps refuse new payloads without evicting an unknown attempt", (
 	}
 	assert.equal(retainPendingPayload(state, "/too-big.jsonl", key,
 		payloadFor("/too-big.jsonl", key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES)), 1000), false);
+	assert.equal(pendingPayloadError(state, "/too-big.jsonl", key,
+		payloadFor("/too-big.jsonl", key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES))), "payload invalid");
+	assert.deepEqual(retainedPayloadStats(state), {
+		retainedPayloads: i - 1, retainedPayloadBytes: bytes,
+	});
 	assert.equal(pendingPayloadFor(state, "/s/0.jsonl", key), payloadFor("/s/0.jsonl", key, body));
 	saveState(path, state);
 	assert.deepEqual(loadState(path), state);

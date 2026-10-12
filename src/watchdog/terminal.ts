@@ -84,18 +84,19 @@ export function terminalStateForReport(
 		report.parseFailures > 0 || report.skippedOversize > 0;
 	const readbackFailure =
 		report.alertsPosted !== report.acceptedEventIds.length;
+	const notificationFailures = report.postFailures + report.terminalFailures;
 	const partial =
-		!dryRun && (coverageFailure || report.postFailures > 0 || readbackFailure);
+		!dryRun && (coverageFailure || notificationFailures > 0 || readbackFailure || report.retentionCapReached);
 	const deliveryRequired =
-		!dryRun && (report.alertsPosted > 0 || report.postFailures > 0);
+		!dryRun && (report.alertsPosted > 0 || notificationFailures > 0);
 	const adapterHandled =
-		deliveryRequired && report.postFailures === 0 && !readbackFailure;
+		deliveryRequired && notificationFailures === 0 && !readbackFailure;
 	// A handled receipt may mean accepted, deduped, held, or suppressed.
 	// None of those proves Notification Center display or a human read.
 	const deliveryVerified = false;
 	const writeResult = !deliveryRequired
 		? "not_applicable"
-		: report.postFailures > 0
+		: notificationFailures > 0
 			? report.alertsPosted > 0
 				? "partial"
 				: "failed"
@@ -134,20 +135,26 @@ export function terminalStateForReport(
 					value: dryRun ? 0 : report.acceptedEventIds.length,
 				},
 				post_failures: report.postFailures,
+				terminal_failures: report.terminalFailures,
+				retained_payloads: report.retainedPayloads,
+				retained_payload_bytes: report.retainedPayloadBytes,
+				retention_cap_reached: report.retentionCapReached,
 				parse_failures: report.parseFailures,
 				windowed_sessions: report.windowedSessions,
 				skipped_oversize: report.skippedOversize,
 			},
 		},
-		operator_action_required: partial,
+		operator_action_required: partial || report.retentionCapReached,
 		can_auto_archive: false,
 		observed_at: observedAt,
 		invocation,
-		message: partial
-			? "watchdog tick completed with delivery or coverage failures"
-			: dryRun
-				? "watchdog dry run completed without adapter invocation; dedupe state may be written"
-				: "watchdog tick completed",
+		message: report.retentionCapReached
+			? "watchdog retention cap reached; operator action required"
+			: partial
+				? "watchdog tick completed with delivery or coverage failures"
+				: dryRun
+					? "watchdog dry run completed without adapter invocation or state writes"
+					: "watchdog tick completed",
 		exit_code: partial ? 1 : 0,
 		duration_ms: durationMs,
 	};

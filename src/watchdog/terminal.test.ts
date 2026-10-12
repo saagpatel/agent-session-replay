@@ -19,6 +19,10 @@ const clean: TickReport = {
 	alertsDeduped: 1,
 	alertsHeld: 0,
 	postFailures: 0,
+	terminalFailures: 0,
+	retainedPayloads: 0,
+	retainedPayloadBytes: 0,
+	retentionCapReached: false,
 	acceptedEventIds: [],
 };
 
@@ -179,4 +183,28 @@ test("crashed tick emits failed completion state", () => {
 	assert.equal(event.completed, false);
 	assert.equal(event.exit_code, 1);
 	assert.match(event.message, /ENOSPC/);
+});
+
+test("terminal notification failures remain visible after their payloads are released", () => {
+	const event = terminalStateForReport(
+		{ ...clean, terminalFailures: 1 }, "/fixture/local-notifier", false, "2026-07-14T10:00:00.000Z", 10,
+	);
+	assert.equal(event.state, "partial");
+	assert.equal(event.operator_action_required, true);
+	assert.equal(event.destination_readback.evidence.terminal_failures, 1);
+	assert.equal(event.destination_readback.evidence.write_result, "failed");
+	assert.equal(event.destination_readback.evidence.adapter_handled, false);
+});
+
+test("retention cap is operator-actionable with payload count and byte evidence", () => {
+	const event = terminalStateForReport(
+		{ ...clean, retainedPayloads: 64, retainedPayloadBytes: 1_048_576, retentionCapReached: true },
+		"/fixture/local-notifier", false, "2026-07-14T10:00:00.000Z", 10,
+	);
+	assert.equal(event.state, "partial");
+	assert.equal(event.operator_action_required, true);
+	assert.equal(event.destination_readback.evidence.retained_payloads, 64);
+	assert.equal(event.destination_readback.evidence.retained_payload_bytes, 1_048_576);
+	assert.equal(event.destination_readback.evidence.retention_cap_reached, true);
+	assert.match(event.message, /retention cap reached/);
 });
