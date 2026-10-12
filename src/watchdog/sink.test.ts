@@ -1,170 +1,123 @@
 import assert from "node:assert/strict";
-import {
-	chmodSync,
-	mkdtempSync,
-	symlinkSync,
-	writeFileSync,
-} from "node:fs";
-import { createServer } from "node:http";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { postEvent } from "./sink.ts";
-import type { HubEvent } from "./types.ts";
+import type { NotificationEvent } from "./types.ts";
 
-const event: HubEvent = {
+const event: NotificationEvent = {
+	event_id: "agent-watchdog:fixture-event",
 	source: "codex",
 	level: "normal",
 	title: "fixture",
 	body: "fixture",
-	context: {},
+	context: { detector: "grind_loop" },
+	intent: "needs_attention",
 };
 
-async function withServer(
-	handler: Parameters<typeof createServer>[0],
-	run: (url: string) => Promise<void>,
-): Promise<void> {
-	const server = createServer(handler);
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	try {
-		const address = server.address();
-		if (!address || typeof address === "string") throw new Error("no address");
-		await run(`http://127.0.0.1:${address.port}`);
-	} finally {
-		await new Promise<void>((resolve, reject) =>
-			server.close((error) => error ? reject(error) : resolve()),
-		);
-	}
+function fixture(t: TestContext, response: string): { adapter: string; store: string } {
+	const root = mkdtempSync(join(tmpdir(), "watchdog-adapter-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const adapter = join(root, "adapter.cjs");
+	const store = join(root, "receipts.sqlite3");
+	writeFileSync(adapter, `#!/usr/bin/env node
+const assert = require("node:assert/strict");
+assert.deepEqual(process.argv.slice(2), ["--store", ${JSON.stringify(store)}]);
+let text = "";
+process.stdin.on("data", chunk => text += chunk).on("end", () => {
+  const payload = JSON.parse(text);
+  assert.deepEqual(payload, ${JSON.stringify(event)});
+  ${response}
+});
+`, { mode: 0o700 });
+	chmodSync(adapter, 0o700);
+	return { adapter, store };
 }
 
-function tokenFixture(mode = 0o600): { path: string; token: string } {
-	const root = mkdtempSync(join(tmpdir(), "watchdog-token-"));
-	const path = join(root, "agent-watchdog.token");
-	const token = "fixture-secret-token";
-	writeFileSync(path, `${token}\n`, { mode });
-	chmodSync(path, mode);
-	return { path, token };
+// Enumerate the protocol independently from the implementation.
+for (const state of [
+	"accepted_by_os", "delivered", "deduped", "held_for_digest",
+	"suppressed_quiet_hours", "suppressed_hourly_cap",
+]) {
+	test(`local adapter handled state ${state} returns the stable event ID`, async (t) => {
+		const { adapter, store } = fixture(t,
+			`console.log(JSON.stringify({state: ${JSON.stringify(state)}, stable_event_id: payload.event_id}));`);
+		assert.deepEqual(await postEvent(adapter, event, store),
+			{ ok: true, status: 0, eventId: event.event_id });
+	});
 }
 
-test("authenticated post binds the exact producer and accepted receipt", async () => {
-	const fixture = tokenFixture();
-	await withServer((req, res) => {
-		assert.equal(req.headers.authorization, `Bearer ${fixture.token}`);
-		assert.equal(
-			req.headers["x-notification-hub-producer"],
-			"agent-watchdog",
-		);
-		res.statusCode = 201;
-		res.end(JSON.stringify({ accepted: true, event_id: "evt-1" }));
-	}, async (url) => {
-		const result = await postEvent(url, event, {
-			producerId: "agent-watchdog",
-			tokenFile: fixture.path,
-		});
-		assert.deepEqual(result, { ok: true, status: 201, eventId: "evt-1" });
+test("exit 2 rejection surfaces stderr JSON error even with accepted-looking stdout", async (t) => {
+	const { adapter, store } = fixture(t, `
+		console.log(JSON.stringify({state: "accepted_by_os", stable_event_id: payload.event_id}));
+		console.error(JSON.stringify({state: "rejected", error: "detector is not approved"}));
+		process.exitCode = 2;
+	`);
+	assert.deepEqual(await postEvent(adapter, event, store), {
+		ok: false, status: 2, error: "detector is not approved",
 	});
 });
 
-test("missing credential fails closed without exposing a path or token", async () => {
-	const result = await postEvent("http://127.0.0.1:1", event, {
-		producerId: "agent-watchdog",
-		tokenFile: "/definitely/missing/fixture-secret-token",
+test("missing local adapter fails without throwing", async () => {
+	assert.deepEqual(await postEvent("/definitely/missing/local-notifier", event, "/unused/receipts.sqlite3"),
+		{ ok: false, error: "local notification adapter unavailable" });
+});
+
+for (const output of ["not-json", "null", "[]", "{}\n{}"]) {
+	test(`malformed adapter stdout ${JSON.stringify(output)} fails closed`, async (t) => {
+		const { adapter, store } = fixture(t, `console.log(${JSON.stringify(output)});`);
+		assert.deepEqual(await postEvent(adapter, event, store),
+			{ ok: false, status: 0, error: "invalid local adapter receipt" });
 	});
+}
+
+for (const receipt of [
+	{ state: "unknown", stable_event_id: event.event_id },
+	{ state: "rejected", stable_event_id: event.event_id },
+	{ state: "accepted_by_os" },
+	{ state: "delivered", stable_event_id: "" },
+	{ state: "deduped", stable_event_id: 123 },
+	{ state: "held_for_digest", stable_event_id: " " },
+]) {
+	test(`unconfirmed receipt ${JSON.stringify(receipt)} fails closed`, async (t) => {
+		const { adapter, store } = fixture(t,
+			`console.log(JSON.stringify(${JSON.stringify(receipt)}));`);
+		const result = await postEvent(adapter, event, store);
+		assert.equal(result.ok, false);
+		assert.equal(result.status, 0);
+		assert.equal(result.eventId, undefined);
+	});
+}
+
+test("stdout beyond the receipt bound cannot masquerade as a valid receipt", async (t) => {
+	const { adapter, store } = fixture(t, `
+		console.log(JSON.stringify({state: "accepted_by_os", stable_event_id: payload.event_id}));
+		process.stdout.write(" ".repeat(20000));
+	`);
+	assert.equal((await postEvent(adapter, event, store)).error, "invalid local adapter receipt");
+});
+
+test("unstructured or oversized rejection stderr falls back to a bounded failure", async (t) => {
+	const { adapter, store } = fixture(t, `
+		process.stderr.write("x".repeat(10000));
+		process.exitCode = 2;
+	`);
+	assert.deepEqual(await postEvent(adapter, event, store),
+		{ ok: false, status: 2, error: "local notification adapter failed" });
+});
+
+test("adapter timeout preserves an unknown attempt result", async (t) => {
+	const { adapter, store } = fixture(t, "setInterval(() => {}, 1000);");
+	assert.deepEqual(await postEvent(adapter, event, store, 300),
+		{ ok: false, error: "local notification adapter result unknown" });
+});
+
+test("an adapter that exits before reading a large payload cannot crash the sink", async (t) => {
+	const { adapter, store } = fixture(t, "");
+	writeFileSync(adapter, "#!/usr/bin/env node\nprocess.exit(2);\n");
+	const result = await postEvent(adapter, { ...event, body: "x".repeat(1000000) }, store);
 	assert.equal(result.ok, false);
-	assert.equal(
-		result.error,
-		"notification-hub request or producer credential failed",
-	);
-	assert.doesNotMatch(JSON.stringify(result), /fixture-secret-token/);
-});
-
-test("cleartext non-loopback hub URLs fail before any request", async () => {
-	const fixture = tokenFixture();
-	const originalFetch = globalThis.fetch;
-	let requests = 0;
-	globalThis.fetch = (async () => {
-		requests += 1;
-		throw new Error("unexpected cleartext request");
-	}) as typeof fetch;
-	try {
-		const result = await postEvent("http://example.com", event, {
-			producerId: "agent-watchdog",
-			tokenFile: fixture.path,
-		});
-		assert.equal(result.ok, false);
-		assert.equal(
-			result.error,
-			"notification-hub request or producer credential failed",
-		);
-		assert.equal(requests, 0);
-		assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.token));
-	} finally {
-		globalThis.fetch = originalFetch;
-	}
-});
-
-test("authenticated posts do not follow redirects", async () => {
-	const fixture = tokenFixture();
-	let requests = 0;
-	await withServer((_req, res) => {
-		requests += 1;
-		res.statusCode = 307;
-		res.setHeader("location", "http://example.com/events");
-		res.end("redirect");
-	}, async (url) => {
-		const result = await postEvent(url, event, {
-			producerId: "agent-watchdog",
-			tokenFile: fixture.path,
-		});
-		assert.equal(result.ok, false);
-		assert.equal(
-			result.error,
-			"notification-hub request or producer credential failed",
-		);
-		assert.equal(requests, 1);
-		assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.token));
-	});
-});
-
-test("broad or symlinked token files fail before a request", async () => {
-	const broad = tokenFixture(0o644);
-	const root = mkdtempSync(join(tmpdir(), "watchdog-token-link-"));
-	const link = join(root, "token-link");
-	symlinkSync(broad.path, link);
-	let requests = 0;
-	await withServer((_req, res) => {
-		requests += 1;
-		res.statusCode = 201;
-		res.end(JSON.stringify({ accepted: true, event_id: "unexpected" }));
-	}, async (url) => {
-		for (const tokenFile of [broad.path, link]) {
-			const result = await postEvent(url, event, {
-				producerId: "agent-watchdog",
-				tokenFile,
-			});
-			assert.equal(result.ok, false);
-			assert.equal(
-				result.error,
-				"notification-hub request or producer credential failed",
-			);
-		}
-	});
-	assert.equal(requests, 0);
-});
-
-test("an authentication rejection cannot become a successful receipt", async () => {
-	const fixture = tokenFixture();
-	await withServer((_req, res) => {
-		res.statusCode = 401;
-		res.end("producer authentication failed");
-	}, async (url) => {
-		const result = await postEvent(url, event, {
-			producerId: "agent-watchdog",
-			tokenFile: fixture.path,
-		});
-		assert.equal(result.ok, false);
-		assert.equal(result.status, 401);
-		assert.doesNotMatch(JSON.stringify(result), new RegExp(fixture.token));
-	});
+	assert.equal(result.status, 2);
 });
