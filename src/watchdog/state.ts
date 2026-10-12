@@ -10,6 +10,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Finding } from "../core/detect/types.ts";
+import { eventIdFor } from "./policy.ts";
 
 interface SessionAlerts {
 	findings: string[];
@@ -18,6 +19,8 @@ interface SessionAlerts {
 	processedMtimeMs?: number;
 	/** Held findings or failed posts from the last pass: never skip these. */
 	pending?: boolean;
+	/** Exact JSON sent for unacknowledged findings, keyed by finding + severity. */
+	pendingPayloads?: Record<string, string>;
 }
 
 export interface WatchdogState {
@@ -25,6 +28,8 @@ export interface WatchdogState {
 }
 
 const STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_PENDING_PAYLOAD_BYTES = 16 * 1024;
+export const MAX_RETAINED_PAYLOAD_BYTES = 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -34,7 +39,29 @@ function isFiniteNonNegative(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function parseSessionAlerts(value: unknown): SessionAlerts | null {
+function validPayload(sessionPath: string, key: string, payload: unknown): payload is string {
+	if (!key.length || key.length > 200 || typeof payload !== "string" ||
+		Buffer.byteLength(payload) > MAX_PENDING_PAYLOAD_BYTES)
+		return false;
+	try {
+		const event: unknown = JSON.parse(payload);
+		return isRecord(event) &&
+			event.event_id === eventIdFor(sessionPath, key) &&
+			(event.source === "cc" || event.source === "codex") &&
+			(event.level === "urgent" || event.level === "normal" || event.level === "info") &&
+			typeof event.title === "string" && typeof event.body === "string" &&
+			(event.project === undefined || typeof event.project === "string") &&
+			(event.session_label === undefined || typeof event.session_label === "string") &&
+			(event.intent === undefined || event.intent === "needs_attention") &&
+			isRecord(event.context) && Object.values(event.context).every(value =>
+				typeof value === "string" || typeof value === "boolean" ||
+				(typeof value === "number" && Number.isFinite(value)));
+	} catch {
+		return false;
+	}
+}
+
+function parseSessionAlerts(sessionPath: string, value: unknown): SessionAlerts | null {
 	if (!isRecord(value)) return null;
 	if (
 		!Array.isArray(value.findings) ||
@@ -48,6 +75,15 @@ function parseSessionAlerts(value: unknown): SessionAlerts | null {
 	) {
 		return null;
 	}
+	const findings = value.findings;
+	if (value.pendingPayloads !== undefined) {
+		if (!isRecord(value.pendingPayloads)) return null;
+		const payloads = Object.entries(value.pendingPayloads);
+		if (payloads.some(([key, payload]) =>
+			findings.includes(key) ||
+			!validPayload(sessionPath, key, payload)) ||
+			(payloads.length > 0 && value.pending !== true)) return null;
+	}
 
 	return {
 		findings: [...value.findings],
@@ -56,6 +92,9 @@ function parseSessionAlerts(value: unknown): SessionAlerts | null {
 			? {}
 			: { processedMtimeMs: value.processedMtimeMs }),
 		...(value.pending === undefined ? {} : { pending: value.pending }),
+		...(value.pendingPayloads === undefined ? {} : {
+			pendingPayloads: Object.fromEntries(Object.entries(value.pendingPayloads)) as Record<string, string>,
+		}),
 	};
 }
 
@@ -67,12 +106,15 @@ export function loadState(path: string): WatchdogState {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
 		if (isRecord(parsed) && isRecord(parsed.sessions)) {
+			let retainedBytes = 0;
 			const sessions = Object.fromEntries(
 				Object.entries(parsed.sessions).flatMap(([sessionPath, entry]) => {
-					const validated = parseSessionAlerts(entry);
-					return sessionPath.length > 0 && validated
-						? [[sessionPath, validated] as const]
-						: [];
+					const validated = parseSessionAlerts(sessionPath, entry);
+					if (!sessionPath.length || !validated) return [];
+					const bytes = payloadBytes(validated);
+					if (retainedBytes + bytes > MAX_RETAINED_PAYLOAD_BYTES) return [];
+					retainedBytes += bytes;
+					return [[sessionPath, validated] as const];
 				}),
 			);
 			return { sessions };
@@ -110,6 +152,10 @@ export function markAlerted(
 		updatedMs: nowMs,
 	};
 	if (!entry.findings.includes(key)) entry.findings.push(key);
+	if (entry.pendingPayloads) {
+		delete entry.pendingPayloads[key];
+		if (Object.keys(entry.pendingPayloads).length === 0) delete entry.pendingPayloads;
+	}
 	entry.updatedMs = nowMs;
 	state.sessions[sessionPath] = entry;
 }
@@ -123,7 +169,49 @@ export function canSkip(
 	mtimeMs: number,
 ): boolean {
 	const entry = state.sessions[sessionPath];
-	return entry?.processedMtimeMs === mtimeMs && !entry.pending;
+	return entry?.processedMtimeMs === mtimeMs && !entry.pending &&
+		!Object.keys(entry.pendingPayloads ?? {}).length;
+}
+
+function payloadBytes(entry: SessionAlerts): number {
+	return Object.values(entry.pendingPayloads ?? {})
+		.reduce((bytes, payload) => bytes + Buffer.byteLength(payload), 0);
+}
+
+export function pendingPayloadFor(state: WatchdogState, sessionPath: string, key: string): string | undefined {
+	return state.sessions[sessionPath]?.pendingPayloads?.[key];
+}
+
+/** Bound retention by refusing new sends, never evicting an unknown attempt. */
+export function retainPendingPayload(
+	state: WatchdogState, sessionPath: string, key: string, payload: string, nowMs: number,
+): boolean {
+	const existing = pendingPayloadFor(state, sessionPath, key);
+	if (existing !== undefined) return existing === payload;
+	if (!validPayload(sessionPath, key, payload) || hasAlerted(state, sessionPath, key)) return false;
+	const bytes = Object.values(state.sessions).reduce((total, entry) => total + payloadBytes(entry), 0);
+	if (bytes + Buffer.byteLength(payload) > MAX_RETAINED_PAYLOAD_BYTES) return false;
+	const entry = state.sessions[sessionPath] ?? { findings: [], updatedMs: nowMs };
+	entry.pendingPayloads = { ...entry.pendingPayloads, [key]: payload };
+	entry.pending = true;
+	entry.updatedMs = nowMs;
+	state.sessions[sessionPath] = entry;
+	return true;
+}
+
+/** A successful parse can retire payloads whose findings are no longer pending. */
+export function prunePendingPayloads(state: WatchdogState, sessionPath: string, pendingKeys: ReadonlySet<string>): boolean {
+	const entry = state.sessions[sessionPath];
+	if (!entry?.pendingPayloads) return false;
+	let changed = false;
+	for (const key of Object.keys(entry.pendingPayloads)) {
+		if (!pendingKeys.has(key)) {
+			delete entry.pendingPayloads[key];
+			changed = true;
+		}
+	}
+	if (Object.keys(entry.pendingPayloads).length === 0) delete entry.pendingPayloads;
+	return changed;
 }
 
 /** Record the parse pass; returns whether the entry actually changed so the

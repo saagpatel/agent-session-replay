@@ -2,17 +2,21 @@ import assert from "node:assert/strict";
 import {
 	appendFileSync,
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
+import { buildEvent } from "./policy.ts";
+import { loadState, pendingPayloadFor } from "./state.ts";
 import type { NotificationEvent, WatchdogConfig } from "./types.ts";
 import { tick } from "./watchdog.ts";
 
@@ -260,6 +264,133 @@ test("a failed adapter result is retried on the next tick (nothing marked alerte
 	assert.equal(second.alertsPosted, 1);
 	assert.equal(second.acceptedEventIds.length, 1);
 	assert.equal(postedEvents(config).length, 1);
+});
+
+/** Store the attempt before losing the first receipt; enforce notifier hash equality. */
+function loseFirstReceipt(t: TestContext, config: WatchdogConfig, failAcknowledgementWrite = false): void {
+	t.after(() => rmSync(join(config.statePath, ".."), { recursive: true, force: true }));
+	writeFileSync(config.localAdapterPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+const crypto = require("node:crypto");
+let text = "";
+process.stdin.on("data", chunk => text += chunk).on("end", () => {
+  const event = JSON.parse(text);
+  const store = process.argv[3];
+  const statePath = ${JSON.stringify(config.statePath)};
+  const saved = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  const retained = saved.sessions[event.context.transcript_path].pendingPayloads;
+  // Pre-send durability is part of the contract, including a daemon restart.
+  if (!Object.values(retained).includes(text)) throw new Error("payload not saved before send");
+  fs.appendFileSync(store + ".attempts", JSON.stringify(text) + "\\n");
+  const hash = crypto.createHash("sha256").update(text).digest("hex");
+  if (!fs.existsSync(store)) {
+    fs.writeFileSync(store, JSON.stringify({event_id: event.event_id, payload_hash: hash}));
+    // The adapter stored the event, but the watchdog cannot acknowledge it.
+    if (${failAcknowledgementWrite}) {
+      fs.mkdirSync(statePath + ".tmp");
+      console.log(JSON.stringify({state: "accepted_by_os", stable_event_id: event.event_id}));
+    } else {
+      console.log("lost receipt");
+    }
+    return;
+  }
+  const prior = JSON.parse(fs.readFileSync(store, "utf8"));
+  if (prior.event_id !== event.event_id || prior.payload_hash !== hash) {
+    console.error(JSON.stringify({state: "rejected", error: "conflicts with prior attempt"}));
+    process.exitCode = 2;
+    return;
+  }
+  console.log(JSON.stringify({state: "deduped", stable_event_id: event.event_id}));
+});
+`);
+}
+
+function attemptedPayloads(config: WatchdogConfig): string[] {
+	return readFileSync(config.localReceiptStore + ".attempts", "utf8")
+		.trim().split("\n").map(line => JSON.parse(line) as string);
+}
+
+test("lost adapter receipt replays identical JSON bytes after transcript growth and drops acknowledged payload", async (t) => {
+	const { config, claudeRoot } = fixture();
+	loseFirstReceipt(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	const key = "grind_loop@warning";
+	const first = await tick(config, Date.now());
+	assert.equal(first.postFailures, 1);
+	assert.equal(first.alertsPosted, 0);
+	const original = attemptedPayloads(config)[0]!;
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), original);
+
+	appendFileSync(path, ccGrindTranscript(2));
+	const trace = parseClaudeCodeTranscript(readFileSync(path, "utf8"));
+	const finding = detect(trace).find(f => f.kind === "grind_loop")!;
+	const rebuilt = buildEvent(finding, {
+		harness: "claude-code", path, subagentPaths: [], mtimeMs: 0, sizeBytes: 0,
+	}, trace.run.workspace?.cwd);
+	assert.equal(rebuilt.event_id, JSON.parse(original).event_id);
+	assert.notEqual(JSON.stringify(rebuilt), original, "fixture must change the live payload");
+
+	const second = await tick(config, Date.now());
+	assert.equal(second.alertsPosted, 1);
+	assert.equal(second.postFailures, 0);
+	assert.deepEqual(attemptedPayloads(config), [original, original]);
+	assert.deepEqual(second.acceptedEventIds, [JSON.parse(original).event_id]);
+	assert.equal(loadState(config.statePath).sessions[path]?.pendingPayloads, undefined);
+	assert.equal((await tick(config, Date.now())).skippedUnchanged, 1);
+});
+
+test("a resolved finding drops its unacknowledged payload without retrying it", async (t) => {
+	const { config, claudeRoot } = fixture();
+	loseFirstReceipt(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	assert.equal((await tick(config, Date.now())).postFailures, 1);
+	writeFileSync(path, ccGrindTranscript(5));
+	const resolved = await tick(config, Date.now());
+	assert.equal(resolved.alertsPosted, 0);
+	assert.equal(resolved.postFailures, 0);
+	assert.equal(attemptedPayloads(config).length, 1);
+	assert.equal(loadState(config.statePath).sessions[path]?.pendingPayloads, undefined);
+});
+
+test("failed acknowledgement state write leaves the pre-send payload durable for retry", async (t) => {
+	const { config, claudeRoot } = fixture();
+	loseFirstReceipt(t, config, true);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	await assert.rejects(tick(config, Date.now()));
+	const original = attemptedPayloads(config)[0]!;
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"), original);
+	rmSync(config.statePath + ".tmp", { recursive: true });
+	appendFileSync(path, ccGrindTranscript(2));
+	const retry = await tick(config, Date.now());
+	assert.equal(retry.alertsPosted, 1);
+	assert.equal(retry.postFailures, 0);
+	assert.deepEqual(attemptedPayloads(config), [original, original]);
+	assert.equal(loadState(config.statePath).sessions[path]?.pendingPayloads, undefined);
+});
+
+test("a budget alert retries its retained payload when the configured ceiling changes", async (t) => {
+	const { config, claudeRoot } = fixture({ maxSessionBytes: 32 });
+	loseFirstReceipt(t, config);
+	const path = writeCcSession(claudeRoot, JSON.stringify({ body: "x".repeat(128) }));
+	assert.equal((await tick(config, Date.now())).postFailures, 1);
+	const original = attemptedPayloads(config)[0]!;
+	const retry = await tick({ ...config, maxSessionBytes: 48 }, Date.now());
+	assert.equal(retry.alertsPosted, 1);
+	assert.equal(retry.postFailures, 0);
+	assert.deepEqual(attemptedPayloads(config), [original, original]);
+	assert.equal(loadState(config.statePath).sessions[path]?.pendingPayloads, undefined);
+	assert.equal((await tick(config, Date.now())).skippedOversize, 1);
+});
+
+test("a failed pre-send state write never invokes the adapter", async (t) => {
+	const { config, claudeRoot } = fixture();
+	t.after(() => rmSync(join(config.statePath, ".."), { recursive: true, force: true }));
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	// A directory at the state path makes the atomic rename fail deterministically.
+	mkdirSync(config.statePath);
+	await assert.rejects(tick(config, Date.now()));
+	assert.deepEqual(postedEvents(config), []);
+	assert.equal(existsSync(config.localReceiptStore + ".count"), false);
 });
 
 test("dry-run logs and dedupes but never invokes the adapter", async () => {

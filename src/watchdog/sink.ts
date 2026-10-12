@@ -38,13 +38,14 @@ function jsonObject(text: string): Record<string, unknown> | null {
 
 export async function postEvent(
 	adapterPath: string,
-	event: NotificationEvent,
+	event: NotificationEvent | string,
 	receiptStore: string,
 	timeoutMs = 15000,
 ): Promise<PostResult> {
 	try {
 		// Serialize before spawning so an invalid payload cannot strand a child.
-		const payload = JSON.stringify(event);
+		// Watchdog retries supply the durable, already-serialized first payload.
+		const payload = typeof event === "string" ? event : JSON.stringify(event);
 		return await new Promise<PostResult>((resolve) => {
 			let settled = false;
 			let stdout = "";
