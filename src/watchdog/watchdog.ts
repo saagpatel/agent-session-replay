@@ -302,6 +302,13 @@ export async function tick(
 			}
 
 			if (config.dryRun) {
+				// A live attempt awaiting acknowledgement owns this key: a dry run must
+				// not mark it alerted, which would drop the payload a retry replays.
+				if (pendingPayloadFor(state, session.path, key) !== undefined) {
+					console.log(`watchdog[dry-run]: live attempt pending for ${key}; left untouched`);
+					held += 1; // keep the session pending so the next live tick retries it
+					continue;
+				}
 				const event = buildEvent(finding, session, trace.run.workspace?.cwd);
 				console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
 				markAlerted(state, session.path, key, nowMs);

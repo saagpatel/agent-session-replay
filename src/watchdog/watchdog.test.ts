@@ -414,6 +414,21 @@ test("dry-run logs and dedupes but never invokes the adapter", async () => {
 	assert.equal(postedEvents(config).length, 0);
 });
 
+test("dry-run leaves a live unacknowledged payload untouched", async (t) => {
+	const { config, claudeRoot } = fixture();
+	loseFirstReceipt(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	assert.equal((await tick(config, Date.now())).postFailures, 1);
+	const original = attemptedPayloads(config)[0]!;
+	appendFileSync(path, ccGrindTranscript(2));
+	const dry = await tick({ ...config, dryRun: true }, Date.now());
+	assert.equal(dry.alertsPosted, 0);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"), original);
+	const live = await tick(config, Date.now());
+	assert.equal(live.alertsPosted, 1);
+	assert.deepEqual(attemptedPayloads(config), [original, original]);
+});
+
 test("oversize transcripts scan a bounded recent JSONL window", async () => {
 	const transcript = ccGrindTranscript(800);
 	const { config, claudeRoot } = fixture({
