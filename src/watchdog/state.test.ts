@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import type { Finding } from "../core/detect/types.ts";
+import { eventIdFor } from "./policy.ts";
 import {
 	canSkip,
 	findingKey,
@@ -12,7 +13,12 @@ import {
 	loadState,
 	markAlerted,
 	markProcessed,
+	MAX_PENDING_PAYLOAD_BYTES,
+	MAX_RETAINED_PAYLOAD_BYTES,
+	pendingPayloadFor,
+	prunePendingPayloads,
 	pruneState,
+	retainPendingPayload,
 	saveState,
 } from "./state.ts";
 
@@ -137,4 +143,93 @@ test("markProcessed reports whether the entry actually changed", () => {
 	assert.equal(markProcessed(state, "/s.jsonl", 100, false, 2000), false);
 	assert.equal(markProcessed(state, "/s.jsonl", 100, true, 3000), true);
 	assert.equal(markProcessed(state, "/s.jsonl", 300, true, 4000), true);
+});
+
+function payloadFor(path: string, key = "grind_loop@warning", body = "first payload"): string {
+	// Whitespace is intentional: persistence must preserve the serialized bytes.
+	return JSON.stringify({
+		event_id: eventIdFor(path, key), source: "cc", level: "normal",
+		title: "fixture", body, context: { detector: "grind_loop", score: 320 },
+	}, null, " ");
+}
+
+test("retained payload bytes round-trip and acknowledgement removes them", () => {
+	const path = join(dir(), "state.json");
+	const session = "/s/pending.jsonl";
+	const key = "grind_loop@warning";
+	const payload = payloadFor(session);
+	const state = loadState(path);
+	assert.equal(retainPendingPayload(state, session, key, payload, 1000), true);
+	saveState(path, state);
+	const back = loadState(path);
+	assert.deepEqual(back, state);
+	assert.equal(pendingPayloadFor(back, session, key), payload);
+	assert.equal(retainPendingPayload(back, session, key, payloadFor(session, key, "changed"), 2000), false);
+	assert.equal(pendingPayloadFor(back, session, key), payload);
+	markAlerted(back, session, key, 2000);
+	assert.equal(back.sessions[session]?.pendingPayloads, undefined);
+	saveState(path, back);
+	assert.equal(pendingPayloadFor(loadState(path), session, key), undefined);
+});
+
+test("malformed retained payload state is rejected like other malformed session entries", () => {
+	const path = join(dir(), "state.json");
+	const session = "/s/pending.jsonl";
+	const key = "grind_loop@warning";
+	const payload = payloadFor(session);
+	const valid = { findings: [], updatedMs: 1000, pending: true, pendingPayloads: { [key]: payload } };
+	for (const invalid of [
+		{ pendingPayloads: [] },
+		{ pendingPayloads: { [key]: {} } },
+		{ pendingPayloads: { [key]: "not-json" } },
+		{ pendingPayloads: { [key]: "null" } },
+		{ pendingPayloads: { [key]: payloadFor("/wrong-session.jsonl") } },
+		{ pendingPayloads: { [key]: payloadFor(session, "grind_loop@critical") } },
+		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), body: 12 }) } },
+		{ pendingPayloads: { [key]: JSON.stringify({ ...JSON.parse(payload), context: { score: {} } }) } },
+		{ pendingPayloads: { [key]: payloadFor(session, key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES)) } },
+		{ findings: [key] },
+		{ pending: false },
+	]) {
+		writeFileSync(path, JSON.stringify({ sessions: {
+			[session]: { ...valid, ...invalid },
+			"/valid.jsonl": { findings: [key], updatedMs: 1000 },
+		} }));
+		assert.deepEqual(Object.keys(loadState(path).sessions), ["/valid.jsonl"]);
+	}
+});
+
+test("payloads whose findings are no longer pending are removed", () => {
+	const state = loadState(join(dir(), "none.json"));
+	const session = "/s/pending.jsonl";
+	const key = "grind_loop@warning";
+	retainPendingPayload(state, session, key, payloadFor(session), 1000);
+	assert.equal(prunePendingPayloads(state, session, new Set([key])), false);
+	assert.equal(prunePendingPayloads(state, session, new Set()), true);
+	assert.equal(state.sessions[session]?.pendingPayloads, undefined);
+});
+
+test("retention caps refuse new payloads without evicting an unknown attempt", () => {
+	const path = join(dir(), "state.json");
+	const state = loadState(path);
+	const key = "grind_loop@warning";
+	const body = "x".repeat(MAX_PENDING_PAYLOAD_BYTES - 512);
+	let bytes = 0;
+	let i = 0;
+	while (true) {
+		const session = `/s/${i++}.jsonl`;
+		const payload = payloadFor(session, key, body);
+		if (bytes + Buffer.byteLength(payload) > MAX_RETAINED_PAYLOAD_BYTES) {
+			assert.equal(retainPendingPayload(state, session, key, payload, 1000), false);
+			assert.equal(state.sessions[session], undefined);
+			break;
+		}
+		assert.equal(retainPendingPayload(state, session, key, payload, 1000), true);
+		bytes += Buffer.byteLength(payload);
+	}
+	assert.equal(retainPendingPayload(state, "/too-big.jsonl", key,
+		payloadFor("/too-big.jsonl", key, "x".repeat(MAX_PENDING_PAYLOAD_BYTES)), 1000), false);
+	assert.equal(pendingPayloadFor(state, "/s/0.jsonl", key), payloadFor("/s/0.jsonl", key, body));
+	saveState(path, state);
+	assert.deepEqual(loadState(path), state);
 });

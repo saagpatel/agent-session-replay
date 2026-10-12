@@ -16,7 +16,7 @@ import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
 import { buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
 import { scanSessions } from "./scan.ts";
-import { postEvent } from "./sink.ts";
+import { postEvent, type PostResult } from "./sink.ts";
 import {
 	canSkip,
 	findingKey,
@@ -24,7 +24,10 @@ import {
 	loadState,
 	markAlerted,
 	markProcessed,
+	pendingPayloadFor,
+	prunePendingPayloads,
 	pruneState,
+	retainPendingPayload,
 	saveState,
 } from "./state.ts";
 import type {
@@ -204,6 +207,20 @@ export async function tick(
 		cutoffMs,
 	);
 	const state = loadState(config.statePath);
+	const postPending = async (
+		session: SessionFile, key: string, createEvent: () => NotificationEvent,
+	): Promise<PostResult> => {
+		const payload = pendingPayloadFor(state, session.path, key) ??
+			JSON.stringify(createEvent());
+		if (!retainPendingPayload(state, session.path, key, payload, nowMs)) {
+			return { ok: false, error: "pending notification payload exceeds retention limits" };
+		}
+		// Save BEFORE sending: a lost receipt, crash, or failed acknowledgement
+		// write must leave the exact first payload available to the next tick.
+		// If this write fails, do not invoke the adapter.
+		saveState(config.statePath, state);
+		return postEvent(config.localAdapterPath, payload, config.localReceiptStore);
+	};
 
 	for (const session of sessions) {
 		// Idle sessions linger in the mtime window for many ticks; skip the
@@ -225,17 +242,15 @@ export async function tick(
 				report.skippedOversize += 1;
 				const key = "transcript_budget_exceeded@critical";
 				if (!hasAlerted(state, session.path, key)) {
-					const event = oversizeEvent(session, config.maxSessionBytes);
 					if (config.dryRun) {
+						const event = oversizeEvent(session, config.maxSessionBytes);
 						console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
 						markAlerted(state, session.path, key, nowMs);
 						dirty = true;
 						report.alertsPosted += 1;
 					} else {
-						const result = await postEvent(
-							config.localAdapterPath,
-							event,
-							config.localReceiptStore,
+						const result = await postPending(
+							session, key, () => oversizeEvent(session, config.maxSessionBytes),
 						);
 						if (result.ok && result.eventId) {
 							markAlerted(state, session.path, key, nowMs);
@@ -249,6 +264,8 @@ export async function tick(
 				} else {
 					report.alertsDeduped += 1;
 				}
+				// Keep retrying coverage checks even once the budget alert is handled.
+				dirty = markProcessed(state, session.path, session.mtimeMs, true, nowMs) || dirty;
 				continue;
 			}
 			report.parseFailures += 1;
@@ -261,6 +278,12 @@ export async function tick(
 		const findings = detect(trace);
 		report.findings += findings.length;
 		const quietMs = nowMs - session.mtimeMs;
+		dirty = prunePendingPayloads(state, session.path, new Set(
+			findings.filter(finding =>
+				liveVerdict(finding, quietMs, config.stallQuietSeconds * 1000) !== "never" &&
+				!hasAlerted(state, session.path, findingKey(finding)))
+				.map(findingKey),
+		)) || dirty;
 		let held = 0;
 		let failed = 0;
 
@@ -282,28 +305,26 @@ export async function tick(
 				continue;
 			}
 
-			const event = buildEvent(finding, session, trace.run.workspace?.cwd);
 			if (config.dryRun) {
+				const event = buildEvent(finding, session, trace.run.workspace?.cwd);
 				console.log(`watchdog[dry-run]: ${event.level} ${event.title}`);
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;
 				report.alertsPosted += 1;
 				continue;
 			}
-			const result = await postEvent(
-				config.localAdapterPath,
-				event,
-				config.localReceiptStore,
+			const result = await postPending(
+				session, key, () => buildEvent(finding, session, trace.run.workspace?.cwd),
 			);
 			if (result.ok && result.eventId) {
+				const event = JSON.parse(pendingPayloadFor(state, session.path, key)!) as NotificationEvent;
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;
 				report.alertsPosted += 1;
 				report.acceptedEventIds.push(result.eventId);
 				console.log(`watchdog: posted ${event.level} '${event.title}'`);
 			} else {
-				// Not marked alerted -> retries next tick; the adapter owns durable
-				// attempt identity and refuses replays after an unknown result.
+				// Not marked alerted -> retry the retained payload next tick.
 				failed += 1;
 				report.postFailures += 1;
 				console.error(
