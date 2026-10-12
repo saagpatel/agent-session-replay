@@ -339,16 +339,24 @@ test("lost adapter receipt replays identical JSON bytes after transcript growth 
 	assert.equal((await tick(config, Date.now())).skippedUnchanged, 1);
 });
 
-test("a resolved finding drops its unacknowledged payload without retrying it", async (t) => {
+test("a finding that disappears and returns replays its original payload", async (t) => {
 	const { config, claudeRoot } = fixture();
 	loseFirstReceipt(t, config);
 	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
 	assert.equal((await tick(config, Date.now())).postFailures, 1);
+	const original = attemptedPayloads(config)[0]!;
 	writeFileSync(path, ccGrindTranscript(5));
 	const resolved = await tick(config, Date.now());
 	assert.equal(resolved.alertsPosted, 0);
 	assert.equal(resolved.postFailures, 0);
 	assert.equal(attemptedPayloads(config).length, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"), original,
+		"an unacknowledged payload survives its finding disappearing");
+	writeFileSync(path, ccGrindTranscript(322));
+	const returned = await tick(config, Date.now());
+	assert.equal(returned.alertsPosted, 1);
+	assert.equal(returned.postFailures, 0);
+	assert.deepEqual(attemptedPayloads(config), [original, original]);
 	assert.equal(loadState(config.statePath).sessions[path]?.pendingPayloads, undefined);
 });
 

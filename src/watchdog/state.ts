@@ -81,8 +81,9 @@ function parseSessionAlerts(sessionPath: string, value: unknown): SessionAlerts 
 		const payloads = Object.entries(value.pendingPayloads);
 		if (payloads.some(([key, payload]) =>
 			findings.includes(key) ||
-			!validPayload(sessionPath, key, payload)) ||
-			(payloads.length > 0 && value.pending !== true)) return null;
+			!validPayload(sessionPath, key, payload))) return null;
+		// A payload may outlive its pending finding: it stays until acknowledged,
+		// so a recurrence replays the same bytes under the same event ID.
 	}
 
 	return {
@@ -169,8 +170,9 @@ export function canSkip(
 	mtimeMs: number,
 ): boolean {
 	const entry = state.sessions[sessionPath];
-	return entry?.processedMtimeMs === mtimeMs && !entry.pending &&
-		!Object.keys(entry.pendingPayloads ?? {}).length;
+	// A retained payload alone does not force a re-parse: its finding can only
+	// recur through new transcript content, which changes mtime.
+	return entry?.processedMtimeMs === mtimeMs && !entry.pending;
 }
 
 function payloadBytes(entry: SessionAlerts): number {
@@ -197,21 +199,6 @@ export function retainPendingPayload(
 	entry.updatedMs = nowMs;
 	state.sessions[sessionPath] = entry;
 	return true;
-}
-
-/** A successful parse can retire payloads whose findings are no longer pending. */
-export function prunePendingPayloads(state: WatchdogState, sessionPath: string, pendingKeys: ReadonlySet<string>): boolean {
-	const entry = state.sessions[sessionPath];
-	if (!entry?.pendingPayloads) return false;
-	let changed = false;
-	for (const key of Object.keys(entry.pendingPayloads)) {
-		if (!pendingKeys.has(key)) {
-			delete entry.pendingPayloads[key];
-			changed = true;
-		}
-	}
-	if (Object.keys(entry.pendingPayloads).length === 0) delete entry.pendingPayloads;
-	return changed;
 }
 
 /** Record the parse pass; returns whether the entry actually changed so the
