@@ -215,6 +215,14 @@ incomplete). `silent_stall` waits for real quiescence
 (`--stall-quiet`, default 10 min) because the Codex parser stamps `ended_at`
 on every event. Dedupe state lives at `~/.local/state/agent-watchdog/` keyed
 by (session, finding, severity), so a severity escalation re-alerts once.
+State saves use one private sibling slot, `state.json.owned-stage.tmp`. Repeated
+failures reuse only the inode this process created and retain the latest failed
+bytes; retries verify its descriptor identity, owner, private mode and single
+link before writing. No staging files are deleted by error handling. An occupied
+slot after restart, failed descriptor close, unknown identity, or changed slot
+fails closed. Operator recovery requires stopping the writer, inspecting and
+preserving the retained file as appropriate, clearing the slot only after that
+review, and restarting. Old UUID/PID staging files are never adopted or removed.
 launchd install scripts are staged at `~/.launchd-staging/`
 (`com.saagar.agent-watchdog`).
 
