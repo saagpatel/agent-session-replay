@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -111,7 +111,7 @@ test("saveState writes valid JSON atomically (no partial tmp left behind)", () =
 	mkdirSync(path + ".tmp");
 	saveState(path, state);
 	assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
-	assert.equal(existsSync(`${path}.${process.pid}.tmp`), false);
+	assert.deepEqual(readdirSync(join(path, "..")).sort(), ["state.json", "state.json.tmp"]);
 	assert.equal(existsSync(path + ".tmp"), true);
 });
 

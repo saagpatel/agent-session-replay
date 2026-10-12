@@ -6,7 +6,8 @@
  * suppressed under its warning-level entry.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import type { Finding } from "../core/detect/types.ts";
@@ -130,11 +131,25 @@ export function loadState(path: string): WatchdogState {
 	return { sessions: {} };
 }
 
-/** Atomic write (tmp + rename) so a crash mid-save never corrupts the state. */
+/**
+ * Replace state with a complete file through exclusively created sibling staging.
+ * The parent and staging namespace must remain trusted until rename; this does
+ * not defend against same-user path substitution or promise power-loss durability.
+ */
 export function saveState(path: string, state: WatchdogState): void {
+	const serialized = JSON.stringify(state, null, "\t");
 	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, JSON.stringify(state, null, "\t"));
+	const tmp = `${path}.${randomUUID()}.tmp`;
+	// Exclusive creation refuses existing files, links and directories. Write only
+	// through our descriptor, with private staging permissions from creation.
+	const fd = openSync(tmp, "wx", 0o600);
+	try {
+		writeFileSync(fd, serialized);
+	} finally {
+		closeSync(fd);
+	}
+	// Failures intentionally retain staging: pathname cleanup could delete a
+	// replacement installed by another actor. A later save uses a fresh name.
 	renameSync(tmp, path);
 }
 

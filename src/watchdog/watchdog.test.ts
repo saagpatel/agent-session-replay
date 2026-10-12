@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
 	appendFileSync,
 	chmodSync,
@@ -10,6 +11,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -292,7 +294,6 @@ process.stdin.on("data", chunk => text += chunk).on("end", () => {
     fs.writeFileSync(store, JSON.stringify({event_id: event.event_id, payload_hash: hash}));
     // The adapter stored the event, but the watchdog cannot acknowledge it.
     if (${failAcknowledgementWrite}) {
-      fs.mkdirSync(statePath + "." + process.ppid + ".tmp");
       console.log(JSON.stringify({state: "accepted_by_os", stable_event_id: event.event_id}));
     } else {
       console.log("lost receipt");
@@ -369,10 +370,26 @@ test("failed acknowledgement state write leaves the pre-send payload durable for
 	const { config, claudeRoot } = fixture();
 	loseFirstReceipt(t, config, true);
 	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	const nativeOpen = fs.openSync;
+	let failedAcknowledgement = false;
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		// Fail staging only after the adapter has recorded the first attempt.
+		if (!failedAcknowledgement && typeof args[0] === "string" &&
+			args[0].startsWith(config.statePath + ".") && args[1] === "wx" &&
+			existsSync(config.localReceiptStore + ".attempts")) {
+			failedAcknowledgement = true;
+			throw Object.assign(new Error("synthetic acknowledgement staging failure"), { code: "EACCES" });
+		}
+		return nativeOpen(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
 	await assert.rejects(tick(config, Date.now()));
+	assert.equal(failedAcknowledgement, true);
 	const original = attemptedPayloads(config)[0]!;
 	assert.equal(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"), original);
-	rmSync(`${config.statePath}.${process.pid}.tmp`, { recursive: true });
+	t.mock.restoreAll();
+	syncBuiltinESMExports();
 	appendFileSync(path, ccGrindTranscript(2));
 	const retry = await tick(config, Date.now());
 	assert.equal(retry.alertsPosted, 1);
