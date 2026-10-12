@@ -14,7 +14,7 @@ import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
-import { buildEvent, liveVerdict } from "./policy.ts";
+import { buildEvent, eventIdFor, liveVerdict } from "./policy.ts";
 import { scanSessions } from "./scan.ts";
 import { postEvent } from "./sink.ts";
 import {
@@ -28,7 +28,7 @@ import {
 	saveState,
 } from "./state.ts";
 import type {
-	HubEvent,
+	NotificationEvent,
 	SessionFile,
 	TickReport,
 	WatchdogConfig,
@@ -159,8 +159,9 @@ function parseSession(
 	};
 }
 
-function oversizeEvent(session: SessionFile, limit: number): HubEvent {
+function oversizeEvent(session: SessionFile, limit: number): NotificationEvent {
 	return {
+		event_id: eventIdFor(session.path, "transcript_budget_exceeded@critical"),
 		source: session.harness === "codex" ? "codex" : "cc",
 		level: "urgent",
 		title: "Watchdog: transcript window could not be verified",
@@ -231,10 +232,11 @@ export async function tick(
 						dirty = true;
 						report.alertsPosted += 1;
 					} else {
-						const result = await postEvent(config.hubUrl, event, {
-							producerId: config.hubProducerId,
-							tokenFile: config.hubTokenFile,
-						});
+						const result = await postEvent(
+							config.localAdapterPath,
+							event,
+							config.localReceiptStore,
+						);
 						if (result.ok && result.eventId) {
 							markAlerted(state, session.path, key, nowMs);
 							dirty = true;
@@ -288,10 +290,11 @@ export async function tick(
 				report.alertsPosted += 1;
 				continue;
 			}
-			const result = await postEvent(config.hubUrl, event, {
-				producerId: config.hubProducerId,
-				tokenFile: config.hubTokenFile,
-			});
+			const result = await postEvent(
+				config.localAdapterPath,
+				event,
+				config.localReceiptStore,
+			);
 			if (result.ok && result.eventId) {
 				markAlerted(state, session.path, key, nowMs);
 				dirty = true;
@@ -299,7 +302,8 @@ export async function tick(
 				report.acceptedEventIds.push(result.eventId);
 				console.log(`watchdog: posted ${event.level} '${event.title}'`);
 			} else {
-				// Not marked alerted -> retries next tick once the hub is back.
+				// Not marked alerted -> retries next tick; the adapter owns durable
+				// attempt identity and refuses replays after an unknown result.
 				failed += 1;
 				report.postFailures += 1;
 				console.error(

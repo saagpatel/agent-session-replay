@@ -1,14 +1,13 @@
 /**
- * Alert sink: POST one event to notification-hub.
+ * Alert sink: invoke the daemonless local notification adapter.
  *
- * Never throws — a hub outage must not take the watchdog down, and an
- * unposted finding is not marked alerted, so it retries on the next tick
- * for free.
+ * Never throws. Failed attempts stay pending in watchdog state; the adapter
+ * owns durable attempt identity and decides whether a replay is safe.
  */
 
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 
-import type { HubEvent } from "./types.ts";
+import type { NotificationEvent } from "./types.ts";
 
 export interface PostResult {
 	ok: boolean;
@@ -17,111 +16,104 @@ export interface PostResult {
 	error?: string;
 }
 
-interface HubReceipt {
-	event_id?: unknown;
-	accepted?: unknown;
-}
+const HANDLED_STATES: ReadonlySet<string> = new Set([
+	"accepted_by_os",
+	"delivered",
+	"deduped",
+	"held_for_digest",
+	"suppressed_quiet_hours",
+	"suppressed_hourly_cap",
+]);
 
-export interface ProducerCredential {
-	producerId: string;
-	tokenFile: string;
-}
-
-function loadBearerToken(tokenFile: string): string {
-	const descriptor = openSync(
-		tokenFile,
-		constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-	);
+function jsonObject(text: string): Record<string, unknown> | null {
 	try {
-		const metadata = fstatSync(descriptor);
-		if (!metadata.isFile()) {
-			throw new Error("producer token file must be a regular file");
-		}
-		if ((metadata.mode & 0o077) !== 0) {
-			throw new Error("producer token file must be owner-private");
-		}
-		const token = readFileSync(descriptor, "utf8").trim();
-		if (token.length === 0 || token.length > 512 || /\s/.test(token)) {
-			throw new Error("producer token file is invalid");
-		}
-		return token;
-	} finally {
-		closeSync(descriptor);
+		const value: unknown = JSON.parse(text);
+		return value !== null && typeof value === "object" && !Array.isArray(value)
+			? value as Record<string, unknown>
+			: null;
+	} catch {
+		return null;
 	}
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-	const normalized = hostname.toLowerCase();
-	return normalized === "localhost" ||
-		normalized === "127.0.0.1" ||
-		normalized === "::1" ||
-		normalized === "[::1]";
-}
-
-function notificationHubEventsUrl(hubUrl: string): URL {
-	const base = new URL(hubUrl);
-	if (
-		base.protocol === "https:" ||
-		(base.protocol === "http:" && isLoopbackHostname(base.hostname))
-	) {
-		return new URL("/events", base);
-	}
-	throw new Error("notification-hub URL must use https or loopback http");
 }
 
 export async function postEvent(
-	hubUrl: string,
-	event: HubEvent,
-	credential: ProducerCredential,
-	timeoutMs = 5000,
+	adapterPath: string,
+	event: NotificationEvent,
+	receiptStore: string,
+	timeoutMs = 15000,
 ): Promise<PostResult> {
 	try {
-		if (!/^[A-Za-z0-9._:-]{1,100}$/.test(credential.producerId)) {
-			return { ok: false, error: "producer identity is invalid" };
-		}
-		const endpoint = notificationHubEventsUrl(hubUrl);
-		const token = loadBearerToken(credential.tokenFile);
-		// codeql[js/file-access-to-http]
-		const res = await fetch(endpoint, {
-			method: "POST",
-			redirect: "error",
-			headers: {
-				"content-type": "application/json",
-				authorization: `Bearer ${token}`,
-				"x-notification-hub-producer": credential.producerId,
-			},
-			body: JSON.stringify(event),
-			signal: AbortSignal.timeout(timeoutMs),
+		// Serialize before spawning so an invalid payload cannot strand a child.
+		const payload = JSON.stringify(event);
+		return await new Promise<PostResult>((resolve) => {
+			let settled = false;
+			let stdout = "";
+			let stderr = "";
+			let stdoutOverflow = false;
+			const child = spawn(adapterPath, ["--store", receiptStore], {
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			const finish = (result: PostResult): void => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				resolve(result);
+			};
+			const timer = setTimeout(() => {
+				child.kill("SIGTERM");
+				finish({ ok: false, error: "local notification adapter result unknown" });
+			}, timeoutMs);
+			child.stdout.setEncoding("utf8");
+			child.stderr.setEncoding("utf8");
+			child.stdout.on("data", (chunk: string) => {
+				stdoutOverflow ||= stdout.length + chunk.length > 10000;
+				stdout = (stdout + chunk).slice(0, 10000);
+			});
+			child.stderr.on("data", (chunk: string) => {
+				stderr = (stderr + chunk).slice(0, 2000);
+			});
+			child.once("error", () =>
+				finish({ ok: false, error: "local notification adapter unavailable" }),
+			);
+			// An adapter can exit before reading stdin. Consume EPIPE rather than
+			// crashing the daemon; close still supplies its exit/error receipt.
+			child.stdin.on("error", () => {});
+			child.once("close", (code) => {
+				if (settled) return;
+				if (code !== 0) {
+					const rejection = jsonObject(stderr);
+					finish({
+						ok: false,
+						status: code ?? undefined,
+						error: typeof rejection?.["error"] === "string"
+							? rejection["error"]
+							: "local notification adapter failed",
+					});
+					return;
+				}
+				const receipt = stdoutOverflow ? null : jsonObject(stdout);
+				if (!receipt) {
+					finish({ ok: false, status: code, error: "invalid local adapter receipt" });
+					return;
+				}
+				if (
+					typeof receipt["state"] === "string" &&
+					HANDLED_STATES.has(receipt["state"]) &&
+					typeof receipt["stable_event_id"] === "string" &&
+					receipt["stable_event_id"].trim().length > 0
+				) {
+					finish({ ok: true, status: code, eventId: receipt["stable_event_id"] });
+					return;
+				}
+				finish({
+					ok: false,
+					status: code,
+					error: "local adapter receipt did not confirm a handled stable_event_id",
+				});
+			});
+			child.stdin.end(payload);
 		});
-		const detail = (await res.text()).slice(0, 300);
-		if (!res.ok) return { ok: false, status: res.status, error: detail };
-
-		let receipt: HubReceipt;
-		try {
-			receipt = JSON.parse(detail) as HubReceipt;
-		} catch {
-			return {
-				ok: false,
-				status: res.status,
-				error: "invalid notification-hub JSON receipt",
-			};
-		}
-		if (
-			receipt.accepted !== true ||
-			typeof receipt.event_id !== "string" ||
-			receipt.event_id.length === 0
-		) {
-			return {
-				ok: false,
-				status: res.status,
-				error: "notification-hub receipt did not confirm accepted event_id",
-			};
-		}
-		return { ok: true, status: res.status, eventId: receipt.event_id };
 	} catch {
-		return {
-			ok: false,
-			error: "notification-hub request or producer credential failed",
-		};
+		return { ok: false, error: "local notification adapter unavailable" };
 	}
 }

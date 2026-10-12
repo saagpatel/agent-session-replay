@@ -13,6 +13,14 @@
 
 ## Completed
 
+- **Watchdog sink** — `src/watchdog/` invokes the daemonless local notifier via
+  `--adapter` / `LOCAL_NOTIFICATION_ADAPTER` (default `~/.local/bin/local-notifier`)
+  and `--receipts` (default
+  `~/.local/share/infrastructure/notifications/receipts.sqlite3`). Only grind
+  loops, quiescent silent stalls, and unverifiable transcript windows may alert;
+  other findings remain in tick counts. Handled stable-ID receipts acknowledge
+  attempts, including held/suppressed/deduped outcomes, without claiming display
+  or human read. The notification-hub HTTP sink and producer credentials are retired.
 - **Parsers + schema** — `src/core/`: zero-dep TS core (`node --test
   --experimental-strip-types`). `parse.ts` sniffs harness → CC (`claude-code.ts`,
   merges `subagents/*.jsonl` sidechains) or Codex (`codex.ts`). One plumbline
@@ -54,7 +62,7 @@
   shape for future source-specific contracts. Stale source-specific archives now
   surface a runnable read-only source timeline inspection alongside the
   approval-gated refresh command, so sparse archives do not dead-end on
-  collection approval. Bridge-db, notification-hub,
+  collection approval. Bridge-db, the retired notification-hub archive source,
   hook-boundary, and MCP-boundary action wording now lives in source contracts
   instead of the control engine. Boundary/control findings are split per source,
   so mixed hook/MCP/notification evidence routes into separate source-filtered

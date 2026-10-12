@@ -4,55 +4,17 @@ import {
 	chmodSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, test } from "node:test";
+import { test } from "node:test";
 
-import type { HubEvent, WatchdogConfig } from "./types.ts";
+import { detect } from "../core/detect/engine.ts";
+import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
+import type { NotificationEvent, WatchdogConfig } from "./types.ts";
 import { tick } from "./watchdog.ts";
-
-/* ---------- stub notification-hub ---------- */
-
-const posts: HubEvent[] = [];
-let failNext = false;
-const server: Server = createServer((req, res) => {
-	if (
-		req.headers.authorization !== "Bearer fixture-watchdog-token" ||
-		req.headers["x-notification-hub-producer"] !== "agent-watchdog"
-	) {
-		res.statusCode = 401;
-		res.end("producer authentication failed");
-		return;
-	}
-	let body = "";
-	req.on("data", (c: unknown) => {
-		body += String(c);
-	});
-	req.on("end", () => {
-		if (failNext) {
-			failNext = false;
-			res.statusCode = 500;
-			res.end("boom");
-			return;
-		}
-		posts.push(JSON.parse(body) as HubEvent);
-		res.statusCode = 201;
-		res.setHeader("content-type", "application/json");
-		res.end(JSON.stringify({ event_id: "e", level: "normal", accepted: true }));
-	});
-});
-await new Promise<void>((resolve) => {
-	server.listen(0, "127.0.0.1", resolve);
-});
-const addr = server.address();
-const hubUrl =
-	typeof addr === "object" && addr !== null
-		? `http://127.0.0.1:${addr.port}`
-		: "unreachable";
-after(() => server.close());
 
 /* ---------- fixture transcripts ---------- */
 
@@ -126,24 +88,40 @@ interface Fixture {
 	codexRoot: string;
 }
 
-function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
+function fixture(over: Partial<WatchdogConfig> = {}, failFirst = false): Fixture {
 	const base = mkdtempSync(join(tmpdir(), "watchdog-tick-"));
 	const claudeRoot = join(base, "projects");
 	const codexRoot = join(base, "sessions");
 	mkdirSync(claudeRoot, { recursive: true });
 	mkdirSync(codexRoot, { recursive: true });
-	const tokenFile = join(base, "agent-watchdog.token");
-	writeFileSync(tokenFile, "fixture-watchdog-token\n", { mode: 0o600 });
-	chmodSync(tokenFile, 0o600);
+	const adapterPath = join(base, "local_notification_adapter.cjs");
+	writeFileSync(adapterPath, `#!/usr/bin/env node
+let text = "";
+process.stdin.on("data", (chunk) => text += chunk).on("end", () => {
+  const payload = JSON.parse(text);
+  const store = process.argv[3];
+  const counter = store + ".count";
+  const fs = require("node:fs");
+  const count = Number(fs.existsSync(counter) ? fs.readFileSync(counter, "utf8") : "0") + 1;
+  fs.writeFileSync(counter, String(count));
+  if (store.includes("fail-first") && count === 1) {
+    console.error(JSON.stringify({state: "rejected", error: "fixture failure"}));
+    process.exitCode = 2;
+    return;
+  }
+  fs.appendFileSync(store + ".events", JSON.stringify(payload) + "\\n");
+  console.log(JSON.stringify({state: "accepted_by_os", stable_event_id: payload.event_id}));
+});
+`, { mode: 0o700 });
+	chmodSync(adapterPath, 0o700);
 	return {
 		claudeRoot,
 		codexRoot,
 		config: {
 			claudeProjectsDir: claudeRoot,
 			codexSessionsDir: codexRoot,
-			hubUrl,
-			hubProducerId: "agent-watchdog",
-			hubTokenFile: tokenFile,
+			localAdapterPath: adapterPath,
+			localReceiptStore: join(base, failFirst ? "fail-first-receipts.sqlite3" : "receipts.sqlite3"),
 			windowMinutes: 30,
 			stallQuietSeconds: 600,
 			maxSessionBytes: 64 * 1024 * 1024,
@@ -152,6 +130,15 @@ function fixture(over: Partial<WatchdogConfig> = {}): Fixture {
 			...over,
 		},
 	};
+}
+
+function postedEvents(config: WatchdogConfig): NotificationEvent[] {
+	try {
+		return readFileSync(config.localReceiptStore + ".events", "utf8")
+			.trim().split("\n").filter(Boolean).map((line: string) => JSON.parse(line) as NotificationEvent);
+	} catch {
+		return [];
+	}
 }
 
 function writeCcSession(claudeRoot: string, text: string): string {
@@ -175,17 +162,16 @@ function writeCodexSession(codexRoot: string, text: string): string {
 test("a grinding CC session posts one grind_loop alert; the next tick skips the unchanged file", async () => {
 	const { config, claudeRoot } = fixture();
 	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));
-	posts.length = 0;
 
 	const first = await tick(config, Date.now());
 	assert.equal(first.alertsPosted, 1);
-	assert.deepEqual(first.acceptedEventIds, ["e"]);
-	assert.equal(posts.length, 1);
-	const event = posts[0];
+	assert.equal(first.acceptedEventIds.length, 1);
+	const event = postedEvents(config)[0];
 	if (!event) throw new Error("expected a posted event");
 	assert.equal(event.source, "cc");
 	assert.equal(event.level, "normal");
 	assert.equal(event.context["detector"], "grind_loop");
+	assert.equal(event.event_id, first.acceptedEventIds[0]);
 	assert.equal(event.project, "bridge-db");
 	assert.ok(event.title.length <= 200);
 
@@ -195,7 +181,7 @@ test("a grinding CC session posts one grind_loop alert; the next tick skips the 
 	assert.deepEqual(second.acceptedEventIds, []);
 	assert.equal(second.skippedUnchanged, 1);
 	assert.equal(second.scannedSessions, 0);
-	assert.equal(posts.length, 1);
+	assert.equal(postedEvents(config).length, 1);
 
 	// A new write re-opens the session, and dedupe (not skip) suppresses the
 	// already-alerted finding.
@@ -204,23 +190,48 @@ test("a grinding CC session posts one grind_loop alert; the next tick skips the 
 	assert.equal(third.scannedSessions, 1);
 	assert.equal(third.alertsPosted, 0);
 	assert.ok(third.alertsDeduped >= 1);
-	assert.equal(posts.length, 1);
+	assert.equal(postedEvents(config).length, 1);
 });
 
 test("incomplete_run on a live session is suppressed entirely", async () => {
 	const { config, claudeRoot } = fixture();
 	// Small clean session: parses fine, live (just written), no clean end_turn.
 	writeCcSession(claudeRoot, ccGrindTranscript(5));
-	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.alertsPosted, 0);
-	assert.equal(posts.length, 0);
+	assert.equal(postedEvents(config).length, 0);
+});
+
+test("non-approved findings remain detected and counted without adapter attempts", async () => {
+	const { config, claudeRoot } = fixture();
+	const lines = ccGrindTranscript(5).trim().split("\n");
+	const results = Array.from({ length: 5 }, (_, i) => JSON.stringify({
+		type: "user",
+		uuid: `result-${i}`,
+		timestamp: ts(),
+		message: { content: [{
+			type: "tool_result",
+			tool_use_id: `tu${i}`,
+			is_error: true,
+			content: "Blocked (bash-egress): fixture destination denied",
+		}] },
+	}));
+	const transcript = [...lines, ...results].join("\n") + "\n";
+	const findings = detect(parseClaudeCodeTranscript(transcript));
+	assert.ok(findings.some((finding) => finding.kind === "guard_trip_cluster"));
+	writeCcSession(claudeRoot, transcript);
+	const report = await tick(config, Date.now());
+	assert.equal(report.findings, findings.length);
+	assert.equal(report.alertsPosted, 0);
+	assert.equal(report.postFailures, 0);
+	assert.equal(postedEvents(config).length, 0);
+	const repeat = await tick(config, Date.now());
+	assert.equal(repeat.skippedUnchanged, 1);
 });
 
 test("a settled codex no-op run posts a silent_stall; a fresh one is held", async () => {
 	const fresh = fixture();
 	writeCodexSession(fresh.codexRoot, codexStallTranscript());
-	posts.length = 0;
 
 	// Fresh: written moments ago -> held, not posted.
 	const held = await tick(fresh.config, Date.now());
@@ -230,42 +241,38 @@ test("a settled codex no-op run posts a silent_stall; a fresh one is held", asyn
 	// Settled: pretend 11 minutes elapsed with no further writes.
 	const settled = await tick(fresh.config, Date.now() + 11 * 60 * 1000);
 	assert.equal(settled.alertsPosted, 1);
-	assert.deepEqual(settled.acceptedEventIds, ["e"]);
-	const event = posts[0];
+	assert.equal(settled.acceptedEventIds.length, 1);
+	const event = postedEvents(fresh.config)[0];
 	if (!event) throw new Error("expected a posted event");
 	assert.equal(event.source, "codex");
 	assert.equal(event.context["detector"], "silent_stall");
 });
 
-test("a failed post is retried on the next tick (nothing marked alerted)", async () => {
-	const { config, claudeRoot } = fixture();
+test("a failed adapter result is retried on the next tick (nothing marked alerted)", async () => {
+	const { config, claudeRoot } = fixture({}, true);
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
-	posts.length = 0;
 
-	failNext = true;
 	const first = await tick(config, Date.now());
 	assert.equal(first.postFailures, 1);
 	assert.equal(first.alertsPosted, 0);
 
 	const second = await tick(config, Date.now());
 	assert.equal(second.alertsPosted, 1);
-	assert.deepEqual(second.acceptedEventIds, ["e"]);
-	assert.equal(posts.length, 1);
+	assert.equal(second.acceptedEventIds.length, 1);
+	assert.equal(postedEvents(config).length, 1);
 });
 
-test("dry-run logs and dedupes but never touches the network", async () => {
+test("dry-run logs and dedupes but never invokes the adapter", async () => {
 	const { config, claudeRoot } = fixture({
 		dryRun: true,
-		hubUrl: "http://127.0.0.1:1",
 	});
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
-	posts.length = 0;
 
 	const report = await tick(config, Date.now());
 	assert.equal(report.alertsPosted, 1);
 	assert.deepEqual(report.acceptedEventIds, []);
 	assert.equal(report.postFailures, 0);
-	assert.equal(posts.length, 0);
+	assert.equal(postedEvents(config).length, 0);
 });
 
 test("oversize transcripts scan a bounded recent JSONL window", async () => {
@@ -274,14 +281,13 @@ test("oversize transcripts scan a bounded recent JSONL window", async () => {
 		maxSessionBytes: Math.floor(Buffer.byteLength(transcript) / 2),
 	});
 	writeCcSession(claudeRoot, transcript);
-	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 0);
 	assert.equal(report.scannedSessions, 1);
 	assert.equal(report.windowedSessions, 1);
 	assert.equal(report.alertsPosted, 1);
-	assert.deepEqual(report.acceptedEventIds, ["e"]);
-	assert.equal(posts[0]?.context["detector"], "grind_loop");
+	assert.equal(report.acceptedEventIds.length, 1);
+	assert.equal(postedEvents(config)[0]?.context["detector"], "grind_loop");
 	const repeat = await tick(config, Date.now());
 	assert.equal(repeat.alertsPosted, 0);
 	assert.equal(repeat.skippedUnchanged, 1);
@@ -290,11 +296,12 @@ test("oversize transcripts scan a bounded recent JSONL window", async () => {
 test("a giant JSONL event with no bounded line boundary still fails closed", async () => {
 	const { config, claudeRoot } = fixture({ maxSessionBytes: 32 });
 	writeCcSession(claudeRoot, JSON.stringify({ body: "x".repeat(128) }));
-	posts.length = 0;
 	const report = await tick(config, Date.now());
 	assert.equal(report.skippedOversize, 1);
 	assert.equal(report.windowedSessions, 0);
 	assert.equal(report.alertsPosted, 1);
-	assert.deepEqual(report.acceptedEventIds, ["e"]);
-	assert.equal(posts[0]?.level, "urgent");
+	assert.equal(report.acceptedEventIds.length, 1);
+	assert.equal(postedEvents(config)[0]?.level, "urgent");
+	assert.equal(postedEvents(config)[0]?.context["detector"], "transcript_budget_exceeded");
+	assert.equal(postedEvents(config)[0]?.event_id, report.acceptedEventIds[0]);
 });
