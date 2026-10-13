@@ -9,6 +9,7 @@ import {
 import type { TickReport } from "./types.ts";
 
 const clean: TickReport = {
+	discoveryDiagnostics: [],
 	scannedSessions: 2,
 	windowedSessions: 0,
 	skippedOversize: 0,
@@ -39,6 +40,7 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 		"can_auto_archive",
 		"completed",
 		"destination_readback",
+		"discovery_diagnostics",
 		"duration_ms",
 		"exit_code",
 		"invocation",
@@ -58,6 +60,18 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 	assert.equal(event.destination_readback.required, false);
 	assert.equal(event.destination_readback.verified, false);
 	assert.equal(event.destination_readback.evidence.windowed_sessions, 0);
+});
+
+test("unexpected discovery gaps make the terminal result partial and actionable", () => {
+	const diagnostic = { operation: "readdir" as const, code: "EACCES", path: "/fixture/projects", message: "denied" };
+	const event = terminalStateForReport(
+		{ ...clean, discoveryDiagnostics: [diagnostic] },
+		"/fixture/local-notifier", false, "2026-07-14T10:00:00.000Z", 10,
+	);
+	assert.equal(event.state, "partial");
+	assert.equal(event.operator_action_required, true);
+	assert.deepEqual(event.discovery_diagnostics, [diagnostic]);
+	assert.equal(event.exit_code, 1);
 });
 
 test("windowed coverage remains successful and explicit", () => {

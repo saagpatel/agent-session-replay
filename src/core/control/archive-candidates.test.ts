@@ -19,6 +19,8 @@ function bundle(overrides: Partial<AfrBundle> = {}): AfrBundle {
 		validationReport: { ok: true },
 		reconciliationReport: { ok: true, sources: {} },
 		manifest: null,
+		reportStatuses: { privacyReport: "valid", validationReport: "valid", reconciliationReport: "valid", manifest: "absent" },
+		diagnostics: [],
 		...overrides,
 	};
 }

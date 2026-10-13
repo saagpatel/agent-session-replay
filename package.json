@@ -3,6 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
+	"packageManager": "pnpm@12.11.2",
 	"description": "Local-first failure-forensics for Claude Code and Codex agent sessions",
 	"license": "MIT",
 	"scripts": {
@@ -10,7 +11,9 @@
 		"build": "vite build",
 		"preview": "vite preview",
 		"test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
-		"typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.watchdog.json",
+		"test:ui": "node scripts/ssr-ui-run.mjs",
+		"typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.watchdog.json && tsc -p tsconfig.node.json",
+		"check": "node scripts/check.mjs",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
@@ -19,7 +22,7 @@
 		"tauri": "tauri"
 	},
 	"engines": {
-		"node": ">=22.6"
+		"node": ">=22.12"
 	},
 	"devDependencies": {
 		"@tauri-apps/cli": "^2.11.3",

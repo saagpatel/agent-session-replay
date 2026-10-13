@@ -27,6 +27,8 @@ function bundle(overrides: Partial<AfrBundle> = {}): AfrBundle {
 		validationReport: { ok: true },
 		reconciliationReport: { ok: true, sources: {} },
 		manifest: null,
+		reportStatuses: { privacyReport: "valid", validationReport: "valid", reconciliationReport: "valid", manifest: "absent" },
+		diagnostics: [],
 		...overrides,
 	};
 }
@@ -60,7 +62,7 @@ test("analyzeControlBundle flags stale non-all archives as first-class findings"
 	const inspect = report.actions.find(
 		(action) =>
 			action.command ===
-			"uv run afr-local latest timeline --source codex --limit 20",
+			"uv run afr-local latest timeline --source 'codex' --limit 20",
 	);
 	assert.equal(inspect?.commandSafety, "read_only");
 	assert.equal(inspect?.commandReadiness.state, "runnable_now");
@@ -131,10 +133,35 @@ test("reconciliation warnings support local collector source rows", () => {
 	);
 	assert.equal(finding?.severity, "warning");
 	assert.equal(finding?.sourceSystems[0], "evals");
-	assert.equal(
-		finding?.nextCommand,
-		"afr-local latest timeline --source evals --limit 20",
-	);
+	assert.equal(finding?.nextCommand, "afr-local latest timeline --source evals --limit 20");
+	const action = report.actions.find((item) => item.command === finding?.nextCommand);
+	assert.equal(action?.commandSafety, "unknown");
+	assert.equal(action?.commandReadiness.state, "needs_approval");
+	assert.equal(exportRunnableReadOnlyCommands(report.actions).commands.includes(action?.command ?? ""), false);
+});
+
+test("untrusted imported commands are unknown and excluded from command export", () => {
+	for (const payload of ["; echo x", "\necho x", "$(echo x)", "`echo x`"]) {
+		const command = `uv run afr-local latest timeline --limit 1${payload}`;
+		const report = analyzeControlBundle(bundle({
+			reconciliationReport: { ok: false, sources: [{ source: "evals", status: "warning", warnings: ["warning"], next_command: command }] },
+		}));
+		const action = report.actions.find((item) => item.command === command);
+		assert.equal(action?.commandSafety, "unknown", command);
+		assert.notEqual(action?.commandReadiness.state, "runnable_now", command);
+		assert.equal(exportRunnableReadOnlyCommands(report.actions).commands.includes(command), false);
+	}
+});
+
+test("unrecognized source names use quoted commands and remain non-exportable", () => {
+	const source = "evals; echo x";
+	const report = analyzeControlBundle(bundle({
+		reconciliationReport: { ok: false, sources: [{ source, status: "warning", warnings: ["warning"] }] },
+	}));
+	const action = report.actions.find((item) => item.command.includes("reconciliation --source"));
+	assert.equal(action?.command, "uv run afr-local latest reconciliation --source 'evals; echo x'");
+	assert.equal(action?.commandSafety, "unknown");
+	assert.equal(exportRunnableReadOnlyCommands(report.actions).commands.includes(action?.command ?? ""), false);
 });
 
 test("reconciliation warnings get a safe inspect command when source rows omit one", () => {
@@ -158,12 +185,12 @@ test("reconciliation warnings get a safe inspect command when source rows omit o
 	);
 	assert.equal(
 		finding?.nextCommand,
-		"uv run afr-local latest reconciliation --source cost-tracker",
+		"uv run afr-local latest reconciliation --source 'cost-tracker'",
 	);
 	assert.equal(report.actions[0]?.category, "inspect");
 	assert.equal(
 		report.actions[0]?.command,
-		"uv run afr-local latest reconciliation --source cost-tracker",
+		"uv run afr-local latest reconciliation --source 'cost-tracker'",
 	);
 });
 
@@ -189,7 +216,7 @@ test("reconciliation error rows surface even without warning codes", () => {
 	assert.equal(finding?.sourceSystems[0], "bridge-db");
 	assert.equal(
 		finding?.nextCommand,
-		"uv run afr-local latest reconciliation --source bridge-db",
+		"uv run afr-local latest reconciliation --source 'bridge-db'",
 	);
 	assert.equal(report.actions[0]?.severity, "critical");
 });
@@ -381,7 +408,7 @@ test("failed eval observations become outcome findings", () => {
 	assert.match(finding?.outcomeSignal ?? "", /1 command result/);
 	assert.equal(
 		finding?.nextCommand,
-		"uv run afr-local latest timeline --source evals --limit 20",
+		"uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 });
 
@@ -505,7 +532,7 @@ test("boundary event actions use source contract wording", () => {
 	assert.deepEqual(action?.boundaryEvents, ["notification delivery boundary"]);
 	assert.equal(
 		action?.command,
-		"uv run afr-local latest timeline --source notification-hub --limit 20",
+		"uv run afr-local latest timeline --source 'notification-hub' --limit 20",
 	);
 	assert.match(action?.safetyNote ?? "", /latest local AFR metadata archive/);
 	assert.equal(action?.sourceExplanations[0]?.source, "notification-hub");
@@ -685,7 +712,7 @@ test("summary includes per-source freshness", () => {
 	assert.equal(
 		report.findings.find((finding) => finding.id === "stale_source:bridge-db")
 			?.nextCommand,
-		"uv run afr-local latest timeline --source bridge-db --limit 20",
+		"uv run afr-local latest timeline --source 'bridge-db' --limit 20",
 	);
 });
 
@@ -954,7 +981,7 @@ test("control actions group repeated safe commands by priority and source", () =
 		(action) =>
 			action.category === "inspect" &&
 			action.command ===
-				"uv run afr-local latest timeline --source artifact-store --limit 20",
+				"uv run afr-local latest timeline --source 'artifact-store' --limit 20",
 	);
 	assert.deepEqual(inspect?.sourceSystems, ["artifact-store"]);
 	assert.deepEqual(inspect?.findingIds, ["stale_source:artifact-store"]);
@@ -964,7 +991,7 @@ test("control actions group repeated safe commands by priority and source", () =
 			(action) =>
 				action.category === "inspect" &&
 				action.command ===
-					"uv run afr-local latest timeline --source evals --limit 20",
+					"uv run afr-local latest timeline --source 'evals' --limit 20",
 		),
 	);
 });
@@ -1051,7 +1078,7 @@ test("actions merge route and inspect pressure for the same command", () => {
 
 	const actions = report.actions.filter(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	assert.equal(actions.length, 1);
 	assert.deepEqual(actions[0]?.findingIds.sort(), [
@@ -1167,8 +1194,8 @@ test("command export includes only runnable read-only actions", () => {
 	const commandExport = exportRunnableReadOnlyCommands(report.actions);
 
 	assert.deepEqual(commandExport.commands, [
-		"uv run afr-local latest timeline --source evals --limit 20",
-		"uv run afr-local latest timeline --source cost-tracker --limit 20",
+		"uv run afr-local latest timeline --source 'evals' --limit 20",
+		"uv run afr-local latest timeline --source 'cost-tracker' --limit 20",
 		"uv run afr-local latest costs --limit 5",
 	]);
 	assert.match(
@@ -1212,7 +1239,7 @@ test("command safety ledger groups all surfaced commands by safety", () => {
 	assert.equal(ledger.exportEligibleCount, readOnly?.actions.length);
 	assert.ok(
 		readOnly?.actions.some((action) =>
-			action.command.includes("latest timeline --source evals"),
+			action.command.includes("latest timeline --source 'evals'"),
 		),
 	);
 	assert.ok(readOnly?.actions.every((action) => action.exportEligible));
@@ -1272,7 +1299,7 @@ test("command delta preview shows appeared hidden and changed commands", () => {
 	assert.ok(hiddenDelta.disappeared.length > 0);
 	assert.ok(
 		hiddenDelta.disappeared.some((action) =>
-			action.command.includes("--source bridge-db"),
+			action.command.includes("--source 'bridge-db'"),
 		),
 	);
 	assert.ok(appearedDelta.appeared.length > 0);
@@ -1336,7 +1363,7 @@ test("action bundle preview summarizes command eligibility and evidence refs", (
 
 	const route = report.actions.find(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	const refresh = report.actions.find(
 		(action) => action.command === "uv run afr-local collect all --limit 50",
@@ -1373,7 +1400,7 @@ test("action bundle export includes only runnable read-only command preflight", 
 	);
 	const route = report.actions.find(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	const actionBundle = exportActionBundle(route!);
 
@@ -1432,7 +1459,7 @@ test("imported action bundle preview matches current runnable evidence", () => {
 	);
 	const route = report.actions.find(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	const exported = exportActionBundle(route!);
 	const replay = previewImportedActionBundle(exported.text, report);
@@ -1471,7 +1498,7 @@ test("imported action bundle preview distinguishes hidden preset commands", () =
 		Date.parse("2026-06-28T12:05:00Z"),
 	);
 	const bridgeAction = report.actions.find((action) =>
-		action.command.includes("--source bridge-db"),
+		action.command.includes("--source 'bridge-db'"),
 	);
 	const evals = filterControlReportBySourcePreset(report, "evals");
 	const replay = previewImportedActionBundle(
@@ -1505,7 +1532,7 @@ test("imported action bundle preview reports title safety and readiness drift", 
 		Date.parse("2026-06-28T12:05:00Z"),
 	);
 	const route = report.actions.find((action) =>
-		action.command.includes("--source evals"),
+		action.command.includes("--source 'evals'"),
 	);
 	const staleBundle = exportActionBundle(route!)
 		.text.replace(
@@ -1564,7 +1591,7 @@ test("imported action bundle preview reports missing metadata refs", () => {
 	);
 	const route = report.actions.find(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	const replay = previewImportedActionBundle(
 		[
@@ -1635,7 +1662,7 @@ test("decision note export summarizes findings actions replay and metadata refs"
 	);
 	const route = report.actions.find(
 		(action) =>
-			action.command === "uv run afr-local latest timeline --source evals --limit 20",
+			action.command === "uv run afr-local latest timeline --source 'evals' --limit 20",
 	);
 	const replay = previewImportedActionBundle(exportActionBundle(route!).text, report);
 	const note = exportDecisionNote({
@@ -1742,7 +1769,7 @@ test("decision note export includes replay scope and command drift", () => {
 		Date.parse("2026-06-28T12:05:00Z"),
 	);
 	const bridgeAction = report.actions.find((action) =>
-		action.command.includes("--source bridge-db"),
+		action.command.includes("--source 'bridge-db'"),
 	);
 	const evals = filterControlReportBySourcePreset(report, "evals");
 	const exported = exportActionBundle(bridgeAction!).text;
@@ -1793,7 +1820,7 @@ test("decision note export preserves imported ref source prefixes across presets
 		Date.parse("2026-06-28T12:05:00Z"),
 	);
 	const evalAction = report.actions.find((action) =>
-		action.command.includes("--source evals"),
+		action.command.includes("--source 'evals'"),
 	);
 	const bridge = filterControlReportBySourcePreset(report, "bridge-db");
 	const replay = previewImportedActionBundle(
@@ -1924,7 +1951,7 @@ test("empty preset guidance gives read-only inspect command only for empty prese
 	assert.match(guidance?.detail ?? "", /no hooks\/MCP metadata/);
 	assert.equal(
 		guidance?.command,
-		"uv run afr-local latest timeline --source mcp --limit 20",
+		"uv run afr-local latest timeline --source 'mcp' --limit 20",
 	);
 	assert.doesNotMatch(guidance?.command ?? "", /collect|write|sync/i);
 	const note = exportDecisionNote({
@@ -1941,7 +1968,7 @@ test("empty preset guidance gives read-only inspect command only for empty prese
 	assert.match(note.text, /hooks\/MCP has no active control findings/);
 	assert.match(
 		note.text,
-		/safe inspect command: uv run afr-local latest timeline --source mcp --limit 20/,
+		/safe inspect command: uv run afr-local latest timeline --source 'mcp' --limit 20/,
 	);
 });
 

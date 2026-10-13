@@ -37,6 +37,40 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const STALE_ARCHIVE_MS = DAY_MS;
+const TRUSTED_SOURCES = new Set([
+	"artifact-store", "bridge-db", "codex", "codex-hooks", "cost-tracker",
+	"evals", "hooks", "mcp", "mcp-config", "notification-hub", "personal-ops",
+]);
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function timelineCommand(source: string): string {
+	return `uv run afr-local latest timeline --source ${shellQuote(source)} --limit 20`;
+}
+
+function reconciliationCommand(source: string): string {
+	return `uv run afr-local latest reconciliation --source ${shellQuote(source)}`;
+}
+
+/** Accept only a complete command emitted by one of our typed templates. */
+function trustedImportedCommand(command: string | undefined, source: string): string | null {
+	if (!command || !TRUSTED_SOURCES.has(source)) return null;
+	const accepted = [
+		timelineCommand(source),
+		reconciliationCommand(source),
+	];
+	if (accepted.includes(command)) return command;
+	// Older archives serialized safe token-only source names without shell
+	// quoting. Recognize only the exact legacy templates and rebuild canonically.
+	if (!/^[A-Za-z0-9_-]+$/.test(source)) return null;
+	if (command === `uv run afr-local latest timeline --source ${source} --limit 20`)
+		return timelineCommand(source);
+	if (command === `uv run afr-local latest reconciliation --source ${source}`)
+		return reconciliationCommand(source);
+	return null;
+}
 
 function privacyTier(value: string | undefined): PrivacyTier {
 	return value === "P0" || value === "P1" || value === "P2"
@@ -418,6 +452,7 @@ function actionReason(finding: ControlFinding): string {
 }
 
 function safetyNoteForCommand(command: string): string {
+	if (!isTrustedCommand(command)) return "Imported command does not match a trusted command template.";
 	if (command.startsWith("uv run afr-local collect ")) {
 		return "Creates a fresh local AFR metadata archive; no upload, daemon, or external mutation implied by the command text.";
 	}
@@ -437,6 +472,7 @@ function safetyNoteForCommand(command: string): string {
 }
 
 function commandSafety(command: string): ControlActionSafety {
+	if (!isTrustedCommand(command)) return "unknown";
 	if (command.startsWith("uv run afr-local collect ")) return "local_write";
 	if (
 		command.startsWith("uv run afr-local latest ") ||
@@ -448,6 +484,19 @@ function commandSafety(command: string): ControlActionSafety {
 	if (command.startsWith("bridge-db:get_")) return "read_only";
 	if (command.startsWith("bridge-db:")) return "external_write";
 	return "unknown";
+}
+
+function isTrustedCommand(command: string): boolean {
+	if ([
+		"uv run afr-local collect all --limit 50",
+		"uv run afr-local latest summary",
+		"uv run afr-local latest costs --limit 5",
+		"uv run afr-local latest failures --limit 5",
+		"uv run afr validate <archive>",
+		"bridge-db:get_pending_handoffs",
+	].includes(command)) return true;
+	return [...TRUSTED_SOURCES].some((source) =>
+		command === timelineCommand(source) || command === reconciliationCommand(source));
 }
 
 function commandBoundary(
@@ -712,7 +761,7 @@ export function analyzeControlBundle(
 				),
 				freshness: "stale",
 				evidenceRefs: [sourceState.newestTimestamp ?? source],
-				nextCommand: `uv run afr-local latest timeline --source ${source} --limit 20`,
+				nextCommand: timelineCommand(source),
 				score: 120,
 			});
 		}
@@ -834,8 +883,9 @@ export function analyzeControlBundle(
 				freshness,
 			),
 			evidenceRefs: ["reconciliation-report.afr.json"],
-			nextCommand:
-				row.next_command ?? `uv run afr-local latest reconciliation --source ${source}`,
+			nextCommand: row.next_command === undefined
+				? reconciliationCommand(source)
+				: trustedImportedCommand(row.next_command, source) ?? row.next_command,
 			score: rowSeverity === "critical" ? 250 + warnings : 140 + warnings,
 		});
 	}
@@ -916,7 +966,7 @@ export function analyzeControlBundle(
 			),
 			outcomeSignal: `${failedEvalRecords.length} failed eval observation(s); ${failedTestSignal}${passedSignal}${commandSignal}${rangeSignal}`,
 			evidenceRefs: failedEvalRecords.slice(0, 5).map(evidence),
-			nextCommand: "uv run afr-local latest timeline --source evals --limit 20",
+			nextCommand: timelineCommand("evals"),
 			score: 180 + failedEvalRecords.length + failedTests,
 		});
 	}
@@ -1023,7 +1073,7 @@ export function analyzeControlBundle(
 			boundaryEvent:
 				actionReasonForSource(source) ?? "hook/permission/MCP/handoff signal",
 			evidenceRefs: sourceBoundaryRecords.slice(0, 5).map(evidence),
-			nextCommand: `uv run afr-local latest timeline --source ${source} --limit 20`,
+			nextCommand: timelineCommand(source),
 			score: 40 + sourceBoundaryRecords.length,
 		});
 	}
@@ -1822,6 +1872,6 @@ export function emptyPresetGuidance(
 		detail: sourceKnown
 			? `The loaded AFR archive has ${label} metadata, but no findings or actions matched this preset.`
 			: `The loaded AFR archive has no ${label} metadata matching this preset.`,
-		command: `uv run afr-local latest timeline --source ${source} --limit 20`,
+		command: timelineCommand(source),
 	};
 }

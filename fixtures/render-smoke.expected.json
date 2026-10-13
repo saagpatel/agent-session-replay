@@ -1,0 +1,8 @@
+{
+	"harness": "claude-code",
+	"stats": 7,
+	"lanes": 1,
+	"bars": 1,
+	"tracers": 0,
+	"findings": 0
+}

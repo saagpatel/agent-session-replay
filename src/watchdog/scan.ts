@@ -1,131 +1,91 @@
-/**
- * Session discovery: which transcripts were written recently enough to watch.
- *
- * The corpus is huge (thousands of historical sessions); the mtime cutoff is
- * what keeps a tick cheap — everything older than the window is never opened.
- * CC subagent sidechains count toward a session's liveness because a main
- * transcript can sit silent for minutes while a subagent grinds.
- */
+/** Session discovery with explicit reporting for incomplete filesystem coverage. */
 
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import type { SessionFile } from "./types.ts";
+import type { DiscoveryDiagnostic, SessionFile, SessionScanResult } from "./types.ts";
 
-/** ENOENT/ENOTDIR are expected (file vanished mid-scan, no sidechain dir);
- * anything else (EACCES, EIO) is a real problem worth a trace in the log. */
-function logUnexpected(context: string, err: unknown): void {
-	const code = (err as { code?: string }).code;
-	if (code === "ENOENT" || code === "ENOTDIR") return;
-	console.error(`watchdog: ${context}: ${String(err)}`);
+type FileSystem = Pick<typeof import("node:fs"), "readdirSync" | "statSync">;
+const expectedAbsence = new Set(["ENOENT", "ENOTDIR"]);
+
+function errorCode(error: unknown): string {
+	return typeof error === "object" && error !== null && "code" in error &&
+		typeof error.code === "string" ? error.code : "UNKNOWN";
 }
 
-function mtimeAndSize(path: string): { mtimeMs: number; size: number } | null {
+function diagnostic(operation: "readdir" | "stat", path: string, error: unknown): DiscoveryDiagnostic | null {
+	const code = errorCode(error);
+	if (expectedAbsence.has(code)) return null;
+	return { operation, code, path, message: String(error) };
+}
+
+function listDir(path: string, fs: FileSystem, diagnostics: DiscoveryDiagnostic[], recursive = false): string[] {
 	try {
-		const st = statSync(path);
+		return (fs.readdirSync as typeof readdirSync)(path, recursive ? { recursive: true } : undefined) as string[];
+	} catch (error) {
+		const row = diagnostic("readdir", path, error);
+		if (row) diagnostics.push(row);
+		return [];
+	}
+}
+
+function mtimeAndSize(path: string, fs: FileSystem, diagnostics: DiscoveryDiagnostic[]): { mtimeMs: number; size: number } | null {
+	try {
+		const st = fs.statSync(path);
 		return st.isFile() ? { mtimeMs: st.mtimeMs, size: st.size } : null;
-	} catch (err) {
-		logUnexpected(`stat failed for ${path}`, err);
+	} catch (error) {
+		const row = diagnostic("stat", path, error);
+		if (row) diagnostics.push(row);
 		return null;
 	}
 }
 
-function listDir(path: string): string[] {
-	try {
-		return readdirSync(path);
-	} catch (err) {
-		logUnexpected(`readdir failed for ${path}`, err);
-		return [];
-	}
-}
-
-/**
- * CC layout: <root>/<encoded-project>/<session-uuid>.jsonl with sidechains at
- * <root>/<encoded-project>/<session-uuid>/subagents/agent-*.jsonl.
- */
-export function scanClaudeProjects(
-	root: string,
-	cutoffMs: number,
-): SessionFile[] {
-	const out: SessionFile[] = [];
-	for (const project of listDir(root)) {
+export function scanClaudeProjects(root: string, cutoffMs: number, fs: FileSystem = { readdirSync, statSync }): SessionScanResult {
+	const sessions: SessionFile[] = [];
+	const diagnostics: DiscoveryDiagnostic[] = [];
+	for (const project of listDir(root, fs, diagnostics)) {
 		const projectDir = join(root, project);
-		for (const entry of listDir(projectDir)) {
+		for (const entry of listDir(projectDir, fs, diagnostics)) {
 			if (!entry.endsWith(".jsonl")) continue;
 			const main = join(projectDir, entry);
-			const mainStat = mtimeAndSize(main);
+			const mainStat = mtimeAndSize(main, fs, diagnostics);
 			if (!mainStat) continue;
-
 			const sidechainDir = join(projectDir, entry.slice(0, -6), "subagents");
 			const subagentPaths: string[] = [];
 			let mtimeMs = mainStat.mtimeMs;
 			let sizeBytes = mainStat.size;
-			for (const sub of listDir(sidechainDir)) {
+			for (const sub of listDir(sidechainDir, fs, diagnostics)) {
 				if (!sub.endsWith(".jsonl")) continue;
 				const subPath = join(sidechainDir, sub);
-				const subStat = mtimeAndSize(subPath);
-				if (!subStat) continue;
-				if (subStat.mtimeMs < cutoffMs) continue;
+				const subStat = mtimeAndSize(subPath, fs, diagnostics);
+				if (!subStat || subStat.mtimeMs < cutoffMs) continue;
 				subagentPaths.push(subPath);
 				mtimeMs = Math.max(mtimeMs, subStat.mtimeMs);
 				sizeBytes += subStat.size;
 			}
-
-			if (mtimeMs >= cutoffMs) {
-				out.push({
-					harness: "claude-code",
-					path: main,
-					subagentPaths,
-					mtimeMs,
-					sizeBytes,
-				});
-			}
+			if (mtimeMs >= cutoffMs) sessions.push({ harness: "claude-code", path: main, subagentPaths, mtimeMs, sizeBytes });
 		}
 	}
-	return out;
+	return { sessions, diagnostics };
 }
 
-/** Codex layout: <root>/YYYY/MM/DD/rollout-*.jsonl.
- *
- * Deliberately walks the whole tree every tick rather than pruning to recent
- * day directories: `codex exec resume` appends to the ORIGINAL rollout file
- * under its start date, so an active session can live in an arbitrarily old
- * day dir. The full walk is a few ms; missing a resumed session is not. */
-export function scanCodexSessions(
-	root: string,
-	cutoffMs: number,
-): SessionFile[] {
-	let entries: string[];
-	try {
-		entries = readdirSync(root, { recursive: true }) as string[];
-	} catch (err) {
-		logUnexpected(`recursive readdir failed for ${root}`, err);
-		return [];
-	}
-	const out: SessionFile[] = [];
+export function scanCodexSessions(root: string, cutoffMs: number, fs: FileSystem = { readdirSync, statSync }): SessionScanResult {
+	const diagnostics: DiscoveryDiagnostic[] = [];
+	// Codex resumes can revisit older date directories, so inspect the full session tree.
+	const entries = listDir(root, fs, diagnostics, true);
+	const sessions: SessionFile[] = [];
 	for (const rel of entries) {
 		if (!rel.endsWith(".jsonl")) continue;
 		const path = join(root, rel);
-		const st = mtimeAndSize(path);
+		const st = mtimeAndSize(path, fs, diagnostics);
 		if (!st || st.mtimeMs < cutoffMs) continue;
-		out.push({
-			harness: "codex",
-			path,
-			subagentPaths: [],
-			mtimeMs: st.mtimeMs,
-			sizeBytes: st.size,
-		});
+		sessions.push({ harness: "codex", path, subagentPaths: [], mtimeMs: st.mtimeMs, sizeBytes: st.size });
 	}
-	return out;
+	return { sessions, diagnostics };
 }
 
-export function scanSessions(
-	claudeRoot: string,
-	codexRoot: string,
-	cutoffMs: number,
-): SessionFile[] {
-	return [
-		...scanClaudeProjects(claudeRoot, cutoffMs),
-		...scanCodexSessions(codexRoot, cutoffMs),
-	];
+export function scanSessions(claudeRoot: string, codexRoot: string, cutoffMs: number, fs: FileSystem = { readdirSync, statSync }): SessionScanResult {
+	const claude = scanClaudeProjects(claudeRoot, cutoffMs, fs);
+	const codex = scanCodexSessions(codexRoot, cutoffMs, fs);
+	return { sessions: [...claude.sessions, ...codex.sessions], diagnostics: [...claude.diagnostics, ...codex.diagnostics] };
 }

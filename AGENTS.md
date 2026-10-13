@@ -1,76 +1,42 @@
 # AGENTS.md
 
-## What This Project Is
+## Purpose
 
-Agent Session Replay is a local-first diagnostic viewer for coding-agent sessions.
-It parses Claude Code, Codex, and Agent Flight Recorder evidence into a shared
-trace model, then surfaces timelines, findings, and decision-oriented next
-actions without uploading transcripts.
+Agent Session Replay is a local-first diagnostic viewer for coding-agent sessions. It parses Claude Code, Codex, and Agent Flight Recorder metadata into a shared trace model, then presents timelines, findings, and decision-oriented next steps. Transcript data is not uploaded.
 
-## Current State
+## Layout
 
-The repo is shipped as a local app with a Vite/React browser UI, a
-Tauri desktop shell, and a zero-dependency TypeScript core for parsing and
-control-plane findings. Current work is maintenance and selective hardening, not
-a broad rebuild.
+- `src/core/`: transcript and AFR parsers, trace model, detectors, and control-plane findings.
+- `src/ui/`: Vite and React browser interface.
+- `src/watchdog/`: explicit local session scan, alert policy, adapter, and terminal result.
+- `src-tauri/`: Tauri desktop shell and Rust package.
+- `scripts/`: local developer helpers, deterministic SSR checks, and release generation tools.
+- `fixtures/`: synthetic inputs and expected smoke-test results.
 
-## Stack
+## Setup
 
-- TypeScript core
-- Vite and React UI
-- Tauri 2 desktop shell
-- Node test runner
-- Rust shell package under `src-tauri/`
+Use the versions pinned by `.node-version`, `package.json`, and `rust-toolchain.toml`. Install JavaScript dependencies with `pnpm install --frozen-lockfile`. Core tests use Node's built-in test runner and do not require a separate test framework.
 
-## How To Run
+## Checks
 
-```bash
-pnpm test
-pnpm typecheck
-pnpm build
-```
+- `pnpm check`: type-check, tests, browser build, and deterministic render smoke.
+- `pnpm test:ui`: SSR checks for UI replay behavior and archive import grouping.
+- `pnpm audit --audit-level high`: dependency advisory gate.
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml`: Rust shell compile check.
+- `python3 -m unittest scripts.test_build_watchdog_release`: atomic release-builder tests.
 
-See [README development guidance](README.md#develop) for prerequisites, fixture
-lanes, and operational boundaries. Use `pnpm dev` for the browser UI and `pnpm tauri dev` for the desktop shell
-when UI verification is needed.
+There is no separate lint or format command configured. Keep changes focused and run the smallest relevant checks during development, followed by the requested delivery gates.
 
-## Known Risks
+## Boundaries
 
-- Large sessions may eventually need timeline virtualization.
-- The local app intentionally avoids collectors, daemons, and write flows unless
-  a separate operator decision approves them. When explicitly run, the separate
-  watchdog invokes the daemonless local notification adapter and writes local
-  dedupe state; notification-hub is retired. Only `grind_loop`, `silent_stall`
-  (after quiescence), and `transcript_budget_exceeded` may alert. Adapter-handled
-  receipts do not prove display or human read.
+- Parsing, findings, and rendering remain local. Do not commit real session or archive data.
+- Keep fixtures synthetic and free of personal identifiers and machine-specific paths.
+- The optional watchdog runs only when explicitly invoked. It reads recent session files and can call a local notification adapter; it does not stop, pause, or modify sessions.
+- Missing discovery roots and sidechain directories are expected. Permission and I/O discovery failures must remain visible as partial, operator-actionable results.
+- Adapter-handled receipts do not prove display or human attention.
+- Do not add collection, upload, daemon, or write flows without a separate maintainer decision.
+- Use the maintained desktop release process for signing, notarization, packaging, and publication.
 
-## Distribution State (closeout 2026-08-24, Foundation Zero Proof Launch #2)
+## Delivery
 
-**The repo is PUBLIC and v0.1.0 is publicly distributed**: signed (Developer ID),
-Apple-notarized, stapled, Gatekeeper-accepted, published at
-https://github.com/saagpatel/agent-session-replay/releases/tag/v0.1.0 with
-byte-verified provider readback (asset `Agent.Session.Replay_0.1.0_aarch64.dmg`,
-sha256 `dc1cf5…511d`) and the distribution receipt attached as
-`receipt-0.1.0.json`. Released from commit `bda18ba` on `main`.
-
-- **Pre-publication review passed 2026-08-24**: no secrets, no real paths or
-  identities in tree or history (fixtures use synthetic `/Users/x`), no
-  transcript data ever tracked, MIT + react/react-dom only. The "final scrub"
-  risk above is resolved: HANDOFF.md kept (clean), README plumbline link points
-  at the public plumbline repo.
-- **Release path**: `~/Projects/distribution-kit` macOS lane +
-  `distkit.macos.config.sh` in this repo. Next release: bump `version` in
-  `src-tauri/tauri.conf.json` + `DK_VERSION`/`DK_TAG`/`DK_DMG_PATH`, write new
-  notes, run the lane.
-- **Known non-blockers at release**: open Dependabot alerts are dev-scope
-  (nanoid/postcss) plus runtime `glib` (Linux GTK stack, not in the macOS
-  bundle); remediation in flight on `codex/security-dependency-convergence-*`.
-- **No blocking distribution defect known.** Independent clean-Mac consumer
-  proof: UNKNOWN (not claimed).
-
-## Next Recommended Move
-
-For routine maintenance, run the test/typecheck/build gates before changing
-parser, detector, or action-rail behavior. The public/private question is
-settled (public, released); future distribution work goes through the
-distribution-kit lane rather than ad-hoc scripts.
+Run `pnpm check` and relevant platform checks before delivery. Keep public release, signing, publishing, and deployment work out of routine source changes. Preserve the existing privacy boundary and report local checks separately from hosted, desktop-installation, or human-acceptance evidence.
