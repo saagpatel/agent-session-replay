@@ -72,4 +72,20 @@ export interface AfrBundle {
 	validationReport: AfrValidationReport | null;
 	reconciliationReport: AfrReconciliationReport | null;
 	manifest: AfrManifest | null;
+	reportStatuses: Record<AfrReportName, AfrReportStatus>;
+	diagnostics: AfrDiagnostic[];
+}
+
+export type AfrReportName =
+	| "privacyReport"
+	| "validationReport"
+	| "reconciliationReport"
+	| "manifest";
+
+export type AfrReportStatus = "absent" | "invalid" | "valid";
+
+export interface AfrDiagnostic {
+	report: AfrReportName;
+	status: "invalid";
+	message: string;
 }

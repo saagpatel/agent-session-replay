@@ -21,8 +21,16 @@ test("parseAfrBundle parses trace records and sibling reports", () => {
 	assert.equal(bundle.createdAt, "2026-06-28T12:00:00Z");
 	assert.equal(bundle.privacyReport?.ok, true);
 	assert.equal(bundle.validationReport?.ok, true);
-	assert.equal(bundle.reconciliationReport?.sources?.codex?.status, "ok");
+	const sources = bundle.reconciliationReport?.sources;
+	assert.equal(Array.isArray(sources) ? undefined : sources?.codex?.status, "ok");
 	assert.equal(bundle.manifest?.schema_version, "1");
+	assert.deepEqual(bundle.reportStatuses, {
+		privacyReport: "valid",
+		validationReport: "valid",
+		reconciliationReport: "valid",
+		manifest: "valid",
+	});
+	assert.deepEqual(bundle.diagnostics, []);
 });
 
 test("parseAfrBundle tolerates malformed trace lines and bad optional reports", () => {
@@ -40,6 +48,53 @@ test("parseAfrBundle tolerates malformed trace lines and bad optional reports", 
 	assert.equal(bundle.archiveSuffix, null);
 	assert.equal(bundle.createdAt, null);
 	assert.equal(bundle.privacyReport, null);
+	assert.equal(bundle.reportStatuses.privacyReport, "invalid");
+	assert.equal(bundle.reportStatuses.validationReport, "absent");
+	assert.equal(bundle.diagnostics[0]?.message, "privacyReport: invalid JSON");
+});
+
+test("parseAfrBundle reports malformed report fields and keeps usable source rows", () => {
+	const bundle = parseAfrBundle({
+		name: "trace.afr.jsonl",
+		traceText: "",
+		privacyReportText: '{"ok":"yes","checks":["metadata-only"]}',
+		reconciliationReportText:
+			'{"ok":true,"sources":[null,{"source":"codex","status":"ok"},{"source":4}]}',
+	});
+
+	assert.equal(bundle.reportStatuses.privacyReport, "invalid");
+	assert.equal(bundle.privacyReport?.ok, undefined);
+	assert.deepEqual(bundle.privacyReport?.checks, ["metadata-only"]);
+	assert.equal(bundle.reportStatuses.reconciliationReport, "invalid");
+	assert.deepEqual(bundle.reconciliationReport?.sources, [
+		{ source: "codex", status: "ok" },
+	]);
+	assert.deepEqual(bundle.diagnostics.map((diagnostic) => diagnostic.message), [
+		"privacyReport.ok: expected a valid value",
+		"reconciliationReport.sources[0]: expected an object; row skipped",
+		"reconciliationReport.sources[2].source: expected a valid value",
+	]);
+});
+
+test("parseAfrBundle distinguishes absent, invalid roots, and valid reports", () => {
+	const bundle = parseAfrBundle({
+		name: "trace.afr.jsonl",
+		traceText: "",
+		privacyReportText: "null",
+		validationReportText: '{"ok":true,"warnings":[]}',
+	});
+
+	assert.equal(bundle.reportStatuses.privacyReport, "invalid");
+	assert.equal(bundle.reportStatuses.validationReport, "valid");
+	assert.equal(bundle.reportStatuses.reconciliationReport, "absent");
+	assert.equal(bundle.reportStatuses.manifest, "absent");
+	assert.deepEqual(bundle.diagnostics, [
+		{
+			report: "privacyReport",
+			status: "invalid",
+			message: "privacyReport: expected an object",
+		},
+	]);
 });
 
 test("parseAfrBundle parses archive names even when given a dropped file path", () => {
