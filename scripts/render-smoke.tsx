@@ -1,5 +1,6 @@
 /** Headless render proof (dev-only): SSR the UI components against a real
  * transcript via Vite's ssrLoadModule. Not part of the build. */
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -10,10 +11,9 @@ import { FindingsPanel } from "../src/ui/components/FindingsPanel.tsx";
 import { RunHeader } from "../src/ui/components/RunHeader.tsx";
 import { Waterfall } from "../src/ui/components/Waterfall.tsx";
 
-const text = process.argv
-	.slice(2)
-	.map((p) => readFileSync(p, "utf8"))
-	.join("\n");
+const fixture = new URL("../fixtures/render-smoke.jsonl", import.meta.url);
+const expectedFixture = new URL("../fixtures/render-smoke.expected.json", import.meta.url);
+const text = readFileSync(fixture, "utf8");
 const { harness, trace } = parseTranscript(text);
 const findings = detect(trace);
 const timeline = buildTimeline(trace, findings);
@@ -33,29 +33,14 @@ const html = renderToStaticMarkup(
 
 const count = (re: RegExp) => (html.match(re) || []).length;
 const totalBars = timeline.lanes.reduce((n, l) => n + l.bars.length, 0);
-console.log("harness         :", harness);
-console.log("html length     :", html.length, "chars (rendered, no throw)");
-console.log("stat readouts   :", count(/stat__value/g));
-console.log(
-	"lanes rendered  :",
-	count(/lane__label/g),
-	"(expected",
-	timeline.lanes.length,
-	")",
-);
-console.log(
-	"bars rendered   :",
-	count(/class="bar/g),
-	"(expected",
-	totalBars,
-	")",
-);
-console.log("tracers overlay :", count(/class="tracer/g));
-console.log(
-	"findings cards  :",
-	count(/finding__title/g),
-	"(expected",
-	findings.length,
-	")",
-);
-console.log("top finding     :", findings[0]?.title ?? "(clean run)");
+const actual = {
+	harness,
+	stats: count(/stat__value/g),
+	lanes: count(/lane__label/g),
+	bars: count(/class="bar/g),
+	tracers: count(/class="tracer/g),
+	findings: count(/finding__title/g),
+};
+const expected = JSON.parse(readFileSync(expectedFixture, "utf8")) as typeof actual;
+assert.deepEqual(actual, expected, "rendered UI counts must match the committed smoke fixture");
+console.log("render smoke counts:", JSON.stringify(actual));
