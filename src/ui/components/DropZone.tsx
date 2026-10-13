@@ -13,7 +13,7 @@ export type DropPayload =
 	| { kind: "transcript"; name: string; text: string }
 	| { kind: "afr"; input: AfrInput };
 
-interface DroppedFile {
+export interface DroppedFile {
 	file: File;
 	name: string;
 	path: string;
@@ -33,15 +33,15 @@ function droppedFile(file: File, path: string): DroppedFile {
 
 /** Recursively collect files from a dropped entry (so a session folder picks up
  * its subagents/ sidechains). Entries must be read synchronously from the drop. */
-function readEntry(entry: FileSystemEntry, out: DroppedFile[]): Promise<void> {
-	return new Promise((resolve) => {
+export function readEntry(entry: FileSystemEntry, out: DroppedFile[]): Promise<void> {
+	return new Promise((resolve, reject) => {
 		if (entry.isFile) {
 			(entry as FileSystemFileEntry).file(
 				(f) => {
 					out.push(droppedFile(f, entry.fullPath || f.name));
 					resolve();
 				},
-				() => resolve(),
+				(error) => reject(new Error(`Could not read dropped file '${entry.fullPath}': ${error?.message ?? "unknown error"}`)),
 			);
 		} else if (entry.isDirectory) {
 			const reader = (entry as FileSystemDirectoryEntry).createReader();
@@ -50,15 +50,13 @@ function readEntry(entry: FileSystemEntry, out: DroppedFile[]): Promise<void> {
 				reader.readEntries(
 					(batch) => {
 						if (batch.length === 0) {
-							Promise.all(collected.map((e) => readEntry(e, out))).then(() =>
-								resolve(),
-							);
+							Promise.all(collected.map((e) => readEntry(e, out))).then(() => resolve(), reject);
 						} else {
 							collected.push(...batch);
 							pump();
 						}
 					},
-					() => resolve(),
+					(error) => reject(new Error(`Could not read dropped directory '${entry.fullPath}': ${error?.message ?? "unknown error"}`)),
 				);
 			pump();
 		} else {
@@ -101,6 +99,11 @@ async function combine(
 	return { name, text: texts.join("\n") };
 }
 
+function parentPath(path: string): string {
+	const parts = path.split("/").filter(Boolean);
+	return parts.length > 1 ? parts.slice(0, -1).join("/") : "";
+}
+
 function archiveNameFor(trace: DroppedFile): string {
 	const key = trace.path;
 	const parts = key.split("/").filter(Boolean);
@@ -108,10 +111,17 @@ function archiveNameFor(trace: DroppedFile): string {
 	return trace.name;
 }
 
-async function afrInput(files: DroppedFile[]): Promise<AfrInput | null> {
-	const byName = new Map(files.map((file) => [file.name, file]));
-	const trace = byName.get(AFR_TRACE);
-	if (!trace) return null;
+export async function afrInput(files: DroppedFile[]): Promise<AfrInput | null> {
+	const traces = files.filter((file) => file.name === AFR_TRACE);
+	if (traces.length === 0) return null;
+	const parents = new Set(traces.map((trace) => parentPath(trace.path)));
+	if (traces.length > 1 || parents.size > 1) {
+		throw new Error("Multiple AFR archives were dropped. Drop one archive at a time.");
+	}
+	const archiveParent = parentPath(traces[0]!.path);
+	const archiveFiles = files.filter((file) => parentPath(file.path) === archiveParent);
+	const byName = new Map(archiveFiles.map((file) => [file.name, file]));
+	const trace = traces[0]!;
 	const read = async (name: string): Promise<string | undefined> => {
 		const file = byName.get(name);
 		return file ? file.text() : undefined;
