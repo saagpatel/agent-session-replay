@@ -21,7 +21,7 @@ function finding(over: Partial<Finding> = {}): Finding {
 function session(over: Partial<SessionFile> = {}): SessionFile {
 	return {
 		harness: "claude-code",
-		path: "/home/x/.claude/projects/-p/abc.jsonl",
+		path: "/fixture/claude-projects/-p/abc.jsonl",
 		subagentPaths: [],
 		mtimeMs: 0,
 		sizeBytes: 100,
@@ -66,7 +66,7 @@ test("buildEvent produces adapter-safe text: single-line, length-capped", () => 
 		title: "line one\nline two\ttabbed",
 		detail: "x".repeat(3000),
 	});
-	const e = buildEvent(f, session(), "/Users/x/Projects/bridge-db");
+	const e = buildEvent(f, session(), "/fixture/projects/bridge-db");
 	assert.ok(!/[\n\r\t]/.test(e.title), "title must be single-line");
 	assert.ok(!/[\n\r\t]/.test(e.body), "body must be single-line");
 	assert.ok(e.title.length <= 200);
@@ -89,7 +89,7 @@ test("project and session_label are capped to the adapter's field limits", () =>
 	const e = buildEvent(
 		finding(),
 		session({ path: `/sessions/${longName}.jsonl` }),
-		`/Users/x/Projects/${longName}`,
+		`/fixture/projects/${longName}`,
 	);
 	assert.ok((e.project ?? "").length <= 100);
 	assert.ok((e.session_label ?? "").length <= 200);
@@ -100,14 +100,14 @@ test("only notifier-approved stuck-agent detectors may alert", () => {
 		"grind_loop", "silent_stall", "transcript_budget_exceeded",
 	]);
 	for (const kind of ["grind_loop", "transcript_budget_exceeded"]) {
-		assert.equal(liveVerdict(finding({ id: kind, kind }), 0, STALL_QUIET_MS), "alert");
+		assert.equal(liveVerdict(finding({ id: kind, kind: kind as Finding["kind"] }), 0, STALL_QUIET_MS), "alert");
 	}
 	for (const kind of [
 		"guard_trip_cluster", "tool_error_spike", "compaction_thrash",
 		"subagent_cost_runaway", "incomplete_run", "future_detector",
 	]) {
-		assert.equal(liveVerdict(finding({ id: kind, kind }), 0, STALL_QUIET_MS), "never");
-		assert.equal(liveVerdict(finding({ id: kind, kind }), 10 * STALL_QUIET_MS, STALL_QUIET_MS), "never");
+		assert.equal(liveVerdict(finding({ id: kind, kind: kind as Finding["kind"] }), 0, STALL_QUIET_MS), "never");
+		assert.equal(liveVerdict(finding({ id: kind, kind: kind as Finding["kind"] }), 10 * STALL_QUIET_MS, STALL_QUIET_MS), "never");
 	}
 });
 
@@ -135,6 +135,6 @@ test("adapter dedupe groups separate warning and critical, sessions and finding 
 	assert.equal(buildEvent(finding({ score: 400 }), session(), null).dedupe_key, warning.dedupe_key);
 	assert.notEqual(buildEvent(finding(), session({ path: "/other/session.jsonl" }), null).dedupe_key, warning.dedupe_key);
 	assert.notEqual(buildEvent(finding({ kind: "silent_stall" }), session(), null).dedupe_key, warning.dedupe_key);
-	const long = buildEvent(finding({ kind: "x".repeat(1000) }), session({ path: "/" + "s".repeat(1000) }), null);
+	const long = buildEvent(finding({ kind: "x".repeat(1000) as Finding["kind"] }), session({ path: "/" + "s".repeat(1000) }), null);
 	assert.ok(long.dedupe_key && long.dedupe_key.length <= 200);
 });

@@ -1,6 +1,9 @@
 {
 	"//": "Typecheck gate for browser-shippable app code (src/ui + src/core): NO node ambient globals here, so UI code referencing process/Buffer fails the gate instead of crashing in the webview. The watchdog daemon has its own gate (tsconfig.watchdog.json, with node types); `pnpm typecheck` runs both. Tests are excluded and verified by actually running them (node --test).",
 	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"types": []
+	},
 	"include": ["src"],
 	"exclude": ["**/*.test.ts", "src/watchdog"]
 }
