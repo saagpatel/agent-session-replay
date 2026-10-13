@@ -22,6 +22,12 @@ test("every freshness override contract has a registry fixture", () => {
 	assert.deepEqual(fixtureSources.sort(), sourcesWithOverrides.sort());
 });
 
+test("source contract names are restricted to shell-quoted template identifiers", () => {
+	for (const contract of SOURCE_CONTRACTS) {
+		assert.match(contract.source, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+	}
+});
+
 test("registry fixtures document expected source freshness decisions", () => {
 	for (const fixture of SOURCE_CONTRACT_FIXTURES) {
 		assert.equal(
