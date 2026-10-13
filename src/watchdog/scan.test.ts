@@ -30,7 +30,7 @@ test("finds a recently-written CC session with its subagent sidechains", () => {
 	writeAged(join(subDir, "agent-1.jsonl"), 0);
 	writeAged(join(subDir, "notes.txt"), 0); // non-jsonl ignored
 
-	const found = scanSessions(claude, codex, Date.now() - 60_000);
+	const found = scanSessions(claude, codex, Date.now() - 60_000).sessions;
 	assert.equal(found.length, 1);
 	const s = found[0];
 	if (!s) throw new Error("expected a session");
@@ -45,7 +45,7 @@ test("sessions older than the window are never surfaced", () => {
 	mkdirSync(proj, { recursive: true });
 	writeAged(join(proj, "old.jsonl"), 60 * 60 * 1000); // 1h old
 	assert.equal(
-		scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000).length,
+		scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000).sessions.length,
 		0,
 	);
 });
@@ -58,7 +58,7 @@ test("a fresh subagent write keeps a quiet main transcript in the window", () =>
 	writeAged(join(proj, "s1.jsonl"), 60 * 60 * 1000); // main quiet for 1h
 	writeAged(join(subDir, "agent-busy.jsonl"), 0); // sidechain writing now
 
-	const found = scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000);
+	const found = scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000).sessions;
 	assert.equal(found.length, 1);
 });
 
@@ -75,7 +75,7 @@ test("stale sidechains do not inflate an active session's bounded scan", () => {
 	);
 	writeAged(join(subDir, "agent-current.jsonl"), 0, "current\n");
 
-	const found = scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000);
+	const found = scanClaudeProjects(claude, Date.now() - 30 * 60 * 1000).sessions;
 	assert.equal(found.length, 1);
 	const session = found[0];
 	if (!session) throw new Error("expected a session");
@@ -92,7 +92,7 @@ test("finds codex rollouts nested in date directories", () => {
 	mkdirSync(day, { recursive: true });
 	writeAged(join(day, "rollout-2026-07-10-abc.jsonl"), 0);
 
-	const found = scanCodexSessions(codex, Date.now() - 60_000);
+	const found = scanCodexSessions(codex, Date.now() - 60_000).sessions;
 	assert.equal(found.length, 1);
 	const s = found[0];
 	if (!s) throw new Error("expected a session");
@@ -101,5 +101,17 @@ test("finds codex rollouts nested in date directories", () => {
 });
 
 test("missing roots scan to empty instead of throwing", () => {
-	assert.deepEqual(scanSessions("/nonexistent-a", "/nonexistent-b", 0), []);
+	assert.deepEqual(scanSessions("/nonexistent-a", "/nonexistent-b", 0), { sessions: [], diagnostics: [] });
+});
+
+test("permission and I/O discovery errors are returned as diagnostics", () => {
+	const fs = {
+		readdirSync: () => { const error = new Error("denied") as NodeJS.ErrnoException; error.code = "EACCES"; throw error; },
+		statSync: () => { throw new Error("unexpected stat"); },
+	};
+	const result = scanSessions("/claude", "/codex", 0, fs);
+	assert.deepEqual(result.sessions, []);
+	assert.deepEqual(result.diagnostics.map(({ operation, code }) => [operation, code]), [
+		["readdir", "EACCES"], ["readdir", "EACCES"],
+	]);
 });

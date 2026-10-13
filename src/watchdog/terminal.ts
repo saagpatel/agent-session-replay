@@ -1,4 +1,4 @@
-import type { TickReport } from "./types.ts";
+import type { DiscoveryDiagnostic, TickReport } from "./types.ts";
 import { failureDiagnostic, tickFailureProgress, type StatePublicationProgress } from "./progress.ts";
 
 interface DestinationReadback {
@@ -72,6 +72,7 @@ export interface AutomationTerminalState {
 	observed_at: string;
 	invocation: AutomationInvocation;
 	message: string;
+	discovery_diagnostics: DiscoveryDiagnostic[];
 	exit_code: number;
 	duration_ms: number;
 }
@@ -90,8 +91,9 @@ export function terminalStateForReport(
 		report.alertsPosted !== report.acceptedEventIds.length;
 	const notificationFailures = report.postFailures + report.terminalFailures;
 	const unresolvedRequests = report.progress?.unresolved_adapter_requests ?? notificationFailures;
+	const discoveryFailure = report.discoveryDiagnostics.length > 0;
 	const partial =
-		!dryRun && (coverageFailure || notificationFailures > 0 || unresolvedRequests > 0 || readbackFailure || report.retentionCapReached);
+		discoveryFailure || (!dryRun && (coverageFailure || notificationFailures > 0 || unresolvedRequests > 0 || readbackFailure || report.retentionCapReached));
 	const deliveryRequired =
 		!dryRun && (report.alertsPosted > 0 || notificationFailures > 0 || unresolvedRequests > 0);
 	const adapterHandled =
@@ -162,12 +164,15 @@ export function terminalStateForReport(
 		invocation,
 		message: report.retentionCapReached
 			? "watchdog retention cap reached; operator action required"
-			: partial
-				? "watchdog tick completed with delivery or coverage failures"
+			: discoveryFailure
+				? `watchdog discovery incomplete; ${report.discoveryDiagnostics.length} filesystem diagnostic(s) require operator review`
+				: partial
+					? "watchdog tick completed with delivery or coverage failures"
 				: dryRun
 					? "watchdog dry run completed without adapter invocation or state writes"
 					: "watchdog tick completed",
 		exit_code: partial ? 1 : 0,
+		discovery_diagnostics: report.discoveryDiagnostics.map((item) => ({ ...item })),
 		duration_ms: durationMs,
 	};
 }
@@ -236,6 +241,7 @@ export function terminalStateForFailure(
 		invocation,
 		message: `watchdog tick crashed: ${diagnostic}`,
 		exit_code: 1,
+		discovery_diagnostics: [],
 		duration_ms: durationMs,
 	};
 }

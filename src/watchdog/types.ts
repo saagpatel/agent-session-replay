@@ -24,10 +24,22 @@ export interface SessionFile {
 	sizeBytes: number;
 }
 
+export interface DiscoveryDiagnostic {
+	operation: "readdir" | "stat";
+	code: string;
+	path: string;
+	message: string;
+}
+
+export interface SessionScanResult {
+	sessions: SessionFile[];
+	diagnostics: DiscoveryDiagnostic[];
+}
+
 export interface WatchdogConfig {
-	/** ~/.claude/projects */
+	/** Claude Code project session root. */
 	claudeProjectsDir: string;
-	/** ~/.codex/sessions */
+	/** Codex session root. */
 	codexSessionsDir: string;
 	/** Stable executable for the daemonless local notification adapter. */
 	localAdapterPath: string;
@@ -66,6 +78,8 @@ export interface NotificationEvent {
 }
 
 export interface TickReport {
+	/** Non-expected filesystem gaps encountered during discovery. */
+	discoveryDiagnostics: DiscoveryDiagnostic[];
 	/** Immutable outcome observations; excludes payloads and transcript paths. */
 	progress?: TickFailureProgress;
 	scannedSessions: number;

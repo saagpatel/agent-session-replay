@@ -57,7 +57,7 @@ function ccGrindTranscript(calls: number): string {
 				sessionId: "sess-grind",
 				uuid: `u${i}`,
 				timestamp: ts(),
-				cwd: "/Users/x/Projects/bridge-db",
+				cwd: "/fixture/bridge-db",
 				message: {
 					role: "assistant",
 					content: [
@@ -179,6 +179,15 @@ function writeCodexSession(codexRoot: string, text: string): string {
 }
 
 /* ---------- tests ---------- */
+
+test("expected missing discovery roots stay silent in tick and terminal state", async () => {
+	const { config } = fixture();
+	config.claudeProjectsDir = join(tmpdir(), `missing-claude-${Date.now()}`);
+	config.codexSessionsDir = join(tmpdir(), `missing-codex-${Date.now()}`);
+	const report = await tick(config, Date.now());
+	assert.deepEqual(report.discoveryDiagnostics, []);
+	assert.equal(reportTerminal(report, config).state, "succeeded");
+});
 
 test("a grinding CC session posts one grind_loop alert; the next tick skips the unchanged file", async () => {
 	const { config, claudeRoot } = fixture();

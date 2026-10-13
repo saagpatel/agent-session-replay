@@ -204,6 +204,7 @@ async function tickWithProgress(
 	progress: TickProgress,
 ): Promise<TickReport> {
 	const report: TickReport = {
+		discoveryDiagnostics: [],
 		scannedSessions: 0,
 		windowedSessions: 0,
 		skippedOversize: 0,
@@ -223,11 +224,13 @@ async function tickWithProgress(
 	let dirty = false;
 
 	const cutoffMs = nowMs - config.windowMinutes * 60 * 1000;
-	const sessions = scanSessions(
+	const scan = scanSessions(
 		config.claudeProjectsDir,
 		config.codexSessionsDir,
 		cutoffMs,
 	);
+	const sessions = scan.sessions;
+	report.discoveryDiagnostics = scan.diagnostics;
 	const state = loadState(config.statePath);
 	const sessionsByPath = new Map(sessions.map(session => [session.path, session]));
 	// Missing observations (including parse failures) cannot prove resolution.
