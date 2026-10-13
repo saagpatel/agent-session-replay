@@ -76,6 +76,12 @@ function status(ok: boolean | null): string {
 	return "missing";
 }
 
+function reportStatus(report: AfrBundle["reportStatuses"][keyof AfrBundle["reportStatuses"]], ok: boolean | null): string {
+	if (report === "invalid") return "invalid";
+	if (report === "absent") return "missing";
+	return status(ok);
+}
+
 function list(values: string[]): string {
 	return values.length > 0 ? values.join(", ") : "none";
 }
@@ -217,16 +223,18 @@ function CommandDeltaPreview({
 	);
 }
 
-function ActionBundleReplayPreview({
+export function ActionBundleReplayPreview({
 	archiveName,
 	report,
 	fullReport,
+	initialBundleText = "",
 }: {
 	archiveName: string;
 	report: ControlReport;
 	fullReport: ControlReport;
+	initialBundleText?: string;
 }) {
-	const [bundleText, setBundleText] = useState("");
+	const [bundleText, setBundleText] = useState(initialBundleText);
 	const preview = previewImportedActionBundle(bundleText, report, fullReport);
 	const decisionNote = exportDecisionNote({
 		archiveName,
@@ -830,13 +838,13 @@ export function DecisionFlightDeck({
 				</div>
 				<div className="stat">
 					<span className="label">Privacy</span>
-					<span className="stat__value">{status(summary.privacyOk)}</span>
+					<span className="stat__value">{reportStatus(bundle.reportStatuses.privacyReport, summary.privacyOk)}</span>
 					<span className="stat__sub">{sourceCounts(summary.privacyTierCounts)}</span>
 				</div>
 				<div className="stat">
 					<span className="label">Validation</span>
-					<span className="stat__value">{status(summary.validationOk)}</span>
-					<span className="stat__sub">reconcile {status(summary.reconciliationOk)}</span>
+					<span className="stat__value">{reportStatus(bundle.reportStatuses.validationReport, summary.validationOk)}</span>
+					<span className="stat__sub">reconcile {reportStatus(bundle.reportStatuses.reconciliationReport, summary.reconciliationOk)}</span>
 				</div>
 				<div className="stat">
 					<span className="label">Signals</span>
@@ -847,6 +855,14 @@ export function DecisionFlightDeck({
 				</div>
 			</section>
 			<section className="control-deck__body">
+				{bundle.diagnostics.length > 0 ? (
+					<div className="control-deck__diagnostics" role="status" aria-label="AFR report diagnostics">
+						<strong>{bundle.diagnostics.length} invalid report field(s)</strong>
+						{bundle.diagnostics.map((diagnostic, index) => (
+							<span key={`${diagnostic.report}:${index}`}>{diagnostic.message}</span>
+						))}
+					</div>
+				) : null}
 				<div className="control-deck__summary">
 					<div>
 						<span className="label">Source preset</span>
@@ -868,6 +884,11 @@ export function DecisionFlightDeck({
 							{filteredReport.actions.length} action(s)
 						</p>
 						<CommandDeltaPreview delta={commandDelta} />
+						<ActionBundleReplayPreview
+							archiveName={bundle.name}
+							report={filteredReport}
+							fullReport={report}
+						/>
 					</div>
 					<div>
 						<span className="label">Sources</span>
@@ -911,14 +932,7 @@ export function DecisionFlightDeck({
 				</div>
 				<div className="control-deck__findings">
 					{filteredReport.actions.length > 0 ? (
-						<>
-							<ActionRail actions={filteredReport.actions} />
-							<ActionBundleReplayPreview
-								archiveName={bundle.name}
-								report={filteredReport}
-								fullReport={report}
-							/>
-						</>
+						<ActionRail actions={filteredReport.actions} />
 					) : null}
 					<div className="findings__head">
 						<span className="label">Ranked Control Findings</span>
