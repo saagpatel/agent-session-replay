@@ -1,262 +1,67 @@
 # Agent Session Replay
 
-Local-first failure-forensics for coding-agent sessions. Drop in a Claude Code or
-Codex transcript and find out *exactly where the run went wrong*: which guard trip,
-Read-to-Edit race, runaway subagent, or cost spike broke it. Drop in an Agent
-Flight Recorder local metadata archive and switch into a Decision Flight Deck for
-ranked control-plane findings across local agent evidence.
-
-The transcript never leaves the machine. Parsing and rendering happen entirely
-locally.
-
-## Install the macOS app
-
-Download the Apple silicon (`arm64`) disk image from the
-[latest release](https://github.com/saagpatel/agent-session-replay/releases/latest),
-open it, and drag **Agent Session Replay** into **Applications**. The app and
-disk image are signed with a notarized Developer ID and pass macOS Gatekeeper.
-
-Release asset: `Agent-Session-Replay_0.1.2_aarch64.dmg`
-
-```bash
-shasum -a 256 "Agent-Session-Replay_0.1.2_aarch64.dmg"
-```
-
-Compare the result with the public verification receipt attached to the same
-release. This build is for Apple silicon Macs; no Intel build is published.
-
-## Why this exists
-
-Generic local-first session viewers already exist (Mantra, claude-replay). They
-render the timeline; they do not understand the harness. Agent Session Replay is a
-**diagnostic engine first, viewer second**: it knows what `Blocked (bash-egress)`
-means, that a `staleReadFileStateHint` is a Read-to-Edit race, and that a subagent
-burning 200k tokens is a cost runaway. The scrubbable timeline is the evidence
-panel; the ranked findings are the product.
-
-## Design
-
-- **Data model:** the [plumbline](https://github.com/saagpatel/plumbline) trace
-  schema (`{ run, steps[] }`, an OTel-shaped decision DAG). Our parser output is
-  drop-in compatible, and we enrich it through plumbline's open `attributes` bag
-  rather than forking the schema.
-- **Cross-tool:** one schema for Claude Code (`~/.claude/projects/**/*.jsonl`) and
-  Codex (`~/.codex/sessions/**/rollout-*.jsonl`).
-- **Current Codex shell records:** the parser accepts both legacy function/custom
-  tool calls and the current `local_shell_call` / `local_shell_call_output`
-  response items, including their nested `action` and item-id correlation.
-- **Core is dependency-free TypeScript.** The parser and detector engine run under
-  `node --test` with native type-stripping, no toolchain install required. The
-  browser UI (Vite + React) is a separate, later layer.
+Agent Session Replay is a local-first diagnostic viewer for coding-agent sessions. It parses Claude Code, Codex, and Agent Flight Recorder metadata into a shared trace model, then presents timelines, findings, and decision-oriented next steps. Transcript and archive data stay on the device.
 
 ## Status
 
-Shipped v1 local replay plus a v0 Decision Flight Deck for AFR metadata archives.
-The deck parses `trace.afr.jsonl` with optional privacy, validation,
-reconciliation, and manifest reports, then ranks privacy, validation, freshness,
-reconciliation, boundary, cost-quality, bridge handoff, eval outcome, and failure
-findings without uploading data.
+The repository contains a browser app, a Tauri desktop shell, a TypeScript parsing and findings core, and an optional local watchdog. Desktop distribution uses the maintained macOS release lane. This repository does not collect transcripts in the background or upload them.
 
-The AFR path has been smoke-tested against a real metadata-only all-source local
-archive. It supports the local collector's reconciliation source rows and treats
-stale per-source evidence as ranked decision findings rather than passive
-summary data when the archive is otherwise current; stale all-source archives
-collapse source freshness to a single refresh decision while preserving source
-freshness in the summary. Ranked findings also feed a compact action rail that
-groups safe next commands into
-route, inspect, refresh, and repair moves. Source-specific stale findings in a
-fresh archive use inspect commands instead of looping back into another all-source
-collection. Cost-tracker freshness respects healthy live ccusage reconciliation
-so billing-period timestamps do not masquerade as stale source evidence.
-Healthy artifact-store samples are marked historical rather than stale, keeping
-the deck focused on operationally risky freshness gaps.
-Eval failures preserve AFR's redaction boundary while still surfacing failed
-observation counts, assertion counts when available, command-result counts, and
-the failed observation time window for safer routing decisions.
-The action rail deduplicates repeated evidence refs and uses source-specific route
-titles so eval and cost follow-up are decision commands rather than generic alerts.
-Each action includes a compact decision reason, such as critical eval failures,
-estimated cost signal, or stale source evidence.
-The repo also includes a read-only archive candidate helper
-(`pnpm afr:archives`) that ranks existing local AFR run folders and prints the
-best folder path to drop into the deck without collecting or modifying archives.
-When multiple findings share one safe command, the rail keeps a single row while
-showing every contributing action category and reason.
-Source-specific freshness and routing quirks live in a small source contract
-layer, rather than being scattered through the control engine. The source
-freshness summary shows the contract or timestamp reason behind each state, so
-`historical` and live-billing freshness are legible without opening raw AFR rows.
-Freshness override contracts carry representative reconciliation-row fixtures, so
-new source-specific contracts have to document their expected decision shape.
-Source contracts also carry decision wording for bridge handoffs,
-notification routing, hook boundaries, and MCP boundary evidence, keeping those
-action labels declarative instead of embedded in the control engine.
-Stale source-specific archives now surface a runnable read-only source timeline
-inspection alongside the approval-gated refresh command, so sparse archives do
-not dead-end on collection approval.
-Boundary/control findings are split per source, so mixed hook, MCP, and
-notification evidence routes into separate source-filtered action rows. Boundary
-summaries now ride along on the action rows too, so follow-up commands show
-whether they came from bridge handoff pressure, notification routing, hooks, MCP,
-or a generic control signal without opening evidence refs. Each action also
-explains its local safety boundary and the source freshness reason behind the
-command, keeping command choice inspectable without exposing raw AFR rows. The
-rail keeps the top three commands visible and folds lower-priority actions behind
-a source-labeled expander so dense all-source archives stay scannable. Commands
-carry a compact read-only/local-write/external-write/unknown safety chip and can
-be copied from the action row by explicit user click; no clipboard write happens
-during passive viewing. Actions also show readiness: runnable now, needs a
-placeholder value, or needs explicit approval because it creates local artifacts
-or crosses an unknown/write boundary. Each action can expand into a compact
-preview explaining why the command was suggested, what boundary it crosses, and
-which metadata-only evidence refs triggered it. The rail can also export one
-grouped command block by explicit click, limited to commands that are both
-read-only and runnable now; placeholder and approval-required commands stay out
-of the exported block by default. Actions and findings can also copy grouped
-metadata evidence refs by explicit click, with raw-looking values excluded from
-the copied block. Each action also has a compact bundle preview showing command
-export eligibility, readiness, boundary, and evidence-ref counts before anything
-is copied or run. Runnable read-only actions can copy an action bundle with the
-command plus preflight and metadata refs; approval-required or placeholder
-commands keep the bundle copy disabled with the blocked reason visible. Copied
-action bundles can be pasted back into the deck for a replay preview against the
-currently loaded AFR evidence, surfacing missing commands, missing metadata refs,
-source freshness drift, and blocked export status before anything is run. The
-replay preview can also copy an export-only markdown decision note with top
-findings, next actions, replay verdict, and metadata evidence refs; the app does
-not write the note anywhere automatically. A scope preview shows included
-metadata refs, raw-looking excluded ref count, evidence sources, and privacy tier
-counts before the note is copied. Source presets filter the decision context to
-all, bridge-db, evals, cost, or hooks/MCP so findings, actions, replay preview,
-and decision note scope can narrow without changing the loaded AFR archive. Empty
-presets distinguish absent metadata from quiet metadata with no active findings,
-then show a read-only latest-timeline command for inspection, never a collection
-command. The action rail also includes a
-command safety ledger that groups every surfaced command by read-only,
-local-write, external-write, or unknown safety while keeping grouped export
-limited to runnable read-only commands. Preset switches also show a command
-delta preview, making hidden, appeared, and changed command safety/readiness
-visible before anything is copied or run. Pasted action-bundle replay uses the
-same context awareness, distinguishing commands hidden by the active preset from
-commands missing from the archive and surfacing title, safety, and readiness
-drift from older bundles. Replay previews also include an operator next-step hint
-for matched, hidden, missing, and blocked bundles, so the UI says whether to
-switch presets, inspect evidence, refresh, or resolve approval first. Copied
-decision notes include that replay scope, drift, and next-step hint, so handoffs
-preserve why a pasted command is runnable, hidden, stale, or gone. Action bundles
-and decision notes also include a compact finding-to-command
-trace with finding kind, severity, source, signal, and metadata-ref count, so the
-handoff explains why each command exists. Decision note evidence keeps explicit
-source prefixes such as `evals:` even when a note is scoped to another preset,
-while generic report/timestamp refs stay in a metadata bucket. The same trace is
-visible inside each action's "Why this command" preview before copying anything,
-sorted by impact with lower-signal rows tucked behind a small disclosure when
-needed. Validation warnings are bucketed into decision-oriented signals such as
-cost-quality, correlation-confidence, multiple-trace, and schema-field warnings,
-then routed to the likely source when the warning text carries a source-shaped
-record id. Copied decision notes lead with a Decision Pressure Map that
-compresses top actions by reason, source freshness, labeled signals, and safe
-command. Notes copied from filtered source presets include a Scope Caveat with
-hidden all-source finding/action counts, and empty presets can copy a scoped note
-with the safe read-only inspect command. A filtered or empty preset note is
-therefore a scoped handoff, not an all-clear.
+### Stack
 
-## Develop
+- TypeScript 6 core, tested with Node's built-in test runner.
+- Vite 8 and React 19 browser UI.
+- Tauri 2 shell with a Rust package.
+- pnpm and Node versions pinned in the repository; Rust uses the stable toolchain with `rustfmt` and `clippy`.
 
-From the repository root, use Node 24 and pnpm 10.25.0 (the CI versions):
+### Known risks
 
-```bash
+- Very large sessions may eventually need timeline virtualization.
+- The optional watchdog reads recently changed session files and can invoke a local notification adapter when explicitly run. It does not kill, pause, or modify sessions. Filesystem discovery gaps are reported as partial, operator-actionable results; missing roots and sidechain directories remain expected and silent.
+- Handled adapter receipts prove the adapter handled an attempt. They do not prove that a notification appeared or that a person read it.
+- A clean local build does not prove independent desktop installation or acceptance on another machine.
+
+### Next steps
+
+Run `pnpm check` before changing parser, detector, or action-rail behavior. Use the desktop release lane for distribution work. Repository ownership questions about the control-plane/AFR and watchdog components remain for the maintainer.
+
+## Features
+
+- Drop a Claude Code or Codex transcript to inspect a proportional timeline, findings, tool calls, and session integrity.
+- Drop one Agent Flight Recorder archive to view privacy, validation, reconciliation, freshness, cost, evaluation, and control-boundary findings.
+- Replay a copied action bundle against loaded metadata. Source presets narrow the view; pasted bundle text remains available across preset changes, including empty presets.
+- Copy a scoped decision note or eligible read-only command bundle by explicit user action. Viewing data does not write to the clipboard.
+- Use the archive candidate helper to list existing local metadata archives without collecting or modifying them.
+
+## Setup and checks
+
+Install the pinned toolchain and dependencies, then run the aggregate check:
+
+```sh
+corepack enable
 pnpm install --frozen-lockfile
-pnpm test:core     # focused parser/detector tests with local fixtures
-pnpm test         # broader Node test suite
-pnpm typecheck
-pnpm build        # browser UI build, not a desktop package
+pnpm check
+pnpm test:ui
 ```
 
-The core tests use Node's built-in runner and type stripping; they can also run
-without installing UI dependencies via the `test:core` script in `package.json`.
-No separate lint/format script is defined. For UI or report changes, use `pnpm dev`
-and synthetic JSONL/AFR fixtures to check parsing, findings, filtering, and export
-in the browser; `pnpm tauri dev` additionally needs Rust and Tauri platform dependencies.
+`pnpm check` runs type-checking, the Node test suite, the browser build, and a deterministic server-render smoke check. It does not modify source files. `pnpm test:ui` runs SSR checks for replay behavior and AFR import grouping. High severity dependency advisories are checked separately with `pnpm audit --audit-level high`.
 
-`pnpm afr:archives` reads workstation archives by default, and `pnpm watchdog`
-starts the live fleet loop. These are operational lanes, not routine fixture gates.
-Watchdog dry-run still discovers and reads local session state but never writes
-state; use the test suite for isolated verification without personal session
-data or notifications.
+Other useful commands:
 
-## Watchdog
-
-`src/watchdog/` is the live counterpart to the forensic viewer: a daemon that
-re-scans recently-written CC / Codex transcripts on an interval, runs them
-through the same parsers + detector engine, and sends approved findings to the
-daemonless local notification adapter. The notification-hub HTTP sink is retired;
-its source identifiers remain supported for replaying historical AFR archives.
-Alert-only by contract — it never kills, pauses, or mutates a session.
-
-```bash
-pnpm watchdog --once --dry-run      # one tick, log instead of post; state is read-only
-pnpm watchdog                       # 45s loop; --window 30 --stall-quiet 600
-```
-
-The adapter is resolved from `--adapter`, then `LOCAL_NOTIFICATION_ADAPTER`, then
-`~/.local/bin/local-notifier`. `--receipts` defaults to
-`~/.local/share/infrastructure/notifications/receipts.sqlite3`. The watchdog
-invokes `<adapter> --store <receipts>` with one JSON event on stdin; no HTTP
-service or producer token is used. Exit 0 plus a stable event ID and a handled
-receipt (`accepted_by_os`, `delivered`, `deduped`, `held_for_digest`,
-`suppressed_quiet_hours`, or `suppressed_hourly_cap`) acknowledges the attempt.
-Handled receipts do not prove notification display or a human read.
-
-Live-mode policy on top of the engine: only `grind_loop`, `silent_stall`, and
-`transcript_budget_exceeded` may alert. Other findings remain detected and logged
-in tick counts; `incomplete_run` never alerts (every running session is
-incomplete). `silent_stall` waits for real quiescence
-(`--stall-quiet`, default 10 min) because the Codex parser stamps `ended_at`
-on every event. Dedupe state lives at `~/.local/state/agent-watchdog/` keyed
-by (session, finding, severity), so a severity escalation re-alerts once.
-State saves use one private sibling slot, `state.json.owned-stage.tmp`. Repeated
-failures reuse only the inode this process created and retain the latest failed
-bytes; retries verify its descriptor identity, owner, private mode and single
-link before writing. No staging files are deleted by error handling. An occupied
-slot after restart, failed descriptor close, unknown identity, or changed slot
-fails closed. Operator recovery requires stopping the writer, inspecting and
-preserving the retained file as appropriate, clearing the slot only after that
-review, and restarting. Old UUID/PID staging files are never adopted or removed.
-launchd install scripts are staged at `~/.launchd-staging/`
-(`com.saagar.agent-watchdog`).
-
-Watchdog completion lines use `AutomationTerminalStateV2`. `mutation_count`
-counts observed handled adapter receipts (including status reconciliation),
-not new OS attempts, state writes, display or human reads. Its certainty is
-`exact` when all requests have known outcomes, `lower_bound` when a request is
-unresolved, or `unknown` with a null count for a failure without tick context.
-Generic failures also leave destination requirements null and write/readback
-results unknown. A failed tick carries a distinct error with its original cause
-and a frozen progress snapshot; acknowledged IDs survive later logging or state
-publication failures. Send and status request counts remain separate, and state
-publication counts only successfully completed saves, excluding staging writes.
-An adapter's terminal unknown/no-retry disposition does not establish a zero
-outcome. A late state failure remains failed, incomplete and operator-actionable
-even when its adapter handling succeeded. This version changes the watchdog
-schema; readers that require V1 must explicitly support V2's nullable fields.
-
-## Decision Flight Deck Input
-
-To pick a local AFR archive without collecting anything new:
-
-```bash
+```sh
+pnpm dev
+pnpm tauri dev
 pnpm afr:archives
+pnpm watchdog --once --dry-run
 ```
 
-Drop the printed `BEST` folder path into the app. The helper reads existing
-metadata archives only; it does not create, modify, or upload archives.
+The archive helper and watchdog are operational commands that read existing local session or archive data. Use synthetic fixtures and the test suite for routine verification. The watchdog dry run avoids adapter calls and state writes, but still discovers and reads configured session files.
 
-Inside the deck:
+## Watchdog boundaries
 
-- Use source presets to narrow the view without changing the loaded archive.
-- Use action bundles when you want to replay one command against current evidence.
-- Use decision notes when handing off context; they include pressure map, scope
-  caveat, replay verdict, and metadata-only evidence refs.
-- Empty preset notes are copyable too, and include the safe inspect command plus
-  hidden all-source counts.
+The watchdog is an optional, explicit local process. It scans recent Claude Code and Codex session files, applies the shared parser and detector, and may send approved findings to a local notification adapter. Only grind loops, quiescent silent stalls, and transcript-window budget failures may alert. Other findings remain in tick counts. The watchdog retains local dedupe and retry state so a failed acknowledgement can be reconciled without inventing a successful outcome.
+
+Its terminal result distinguishes successful, partial, failed, and skipped runs. Discovery errors such as access denial or I/O failure make the result partial and require operator review. Expected missing roots or sidechain directories do not. Receipt counts describe adapter handling only, not operating-system display or human attention.
+
+## Privacy and release
+
+Parsing and rendering happen locally. The app does not upload transcripts or AFR archives. Keep test fixtures synthetic and never commit session data. Use the repository's maintained macOS release process for signing, notarization, packaging, and publication; this repository's checks do not perform those actions.
