@@ -32,7 +32,6 @@ const html = renderToStaticMarkup(
 );
 
 const count = (re: RegExp) => (html.match(re) || []).length;
-const totalBars = timeline.lanes.reduce((n, l) => n + l.bars.length, 0);
 const actual = {
 	harness,
 	stats: count(/stat__value/g),
