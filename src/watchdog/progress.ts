@@ -20,7 +20,7 @@ export interface TickFailureProgress {
 
 /** A distinct carrier per failed tick; the original error remains its cause. */
 export class TickFailure extends Error {
-	readonly progress: TickFailureProgress;
+	declare readonly progress: TickFailureProgress;
 	readonly code?: string;
 
 	constructor(cause: unknown, progress: TickFailureProgress) {
@@ -37,16 +37,16 @@ export class TickFailure extends Error {
 			const code = (cause as { code?: unknown } | null)?.code;
 			if (typeof code === "string") this.code = code;
 		} catch { /* Diagnostic getters must not erase the original failure. */ }
-		this.progress = Object.freeze({
-			adapter_requests: progress.adapter_requests,
-			send_requests: progress.send_requests,
-			status_requests: progress.status_requests,
-			unresolved_adapter_requests: progress.unresolved_adapter_requests,
-			failed_adapter_requests: progress.failed_adapter_requests,
-			accepted_event_ids: Object.freeze([...progress.accepted_event_ids]),
-			state_publication: Object.freeze({ ...progress.state_publication }),
-		});
 		Object.defineProperty(this, "progress", {
+			value: Object.freeze({
+				adapter_requests: progress.adapter_requests,
+				send_requests: progress.send_requests,
+				status_requests: progress.status_requests,
+				unresolved_adapter_requests: progress.unresolved_adapter_requests,
+				failed_adapter_requests: progress.failed_adapter_requests,
+				accepted_event_ids: Object.freeze([...progress.accepted_event_ids]),
+				state_publication: Object.freeze({ ...progress.state_publication }),
+			}),
 			writable: false, configurable: false, enumerable: false,
 		});
 	}
