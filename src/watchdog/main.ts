@@ -78,6 +78,32 @@ const config: WatchdogConfig = {
 
 const intervalMs = num("interval", args.interval) * 1000;
 
+let stopping = false;
+let stopSignal: NodeJS.Signals | undefined;
+let wakeInterval: (() => void) | undefined;
+const requestStop = (signal: NodeJS.Signals): void => {
+	if (stopping) return;
+	stopping = true;
+	stopSignal = signal;
+	wakeInterval?.();
+};
+const onSigint = (): void => requestStop("SIGINT");
+const onSigterm = (): void => requestStop("SIGTERM");
+
+function waitForNextTick(): Promise<void> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			wakeInterval = undefined;
+			resolve();
+		}, intervalMs);
+		wakeInterval = () => {
+			clearTimeout(timer);
+			wakeInterval = undefined;
+			resolve();
+		};
+	});
+}
+
 async function runOnce(): Promise<number> {
 	const started = Date.now();
 	try {
@@ -109,20 +135,29 @@ async function runOnce(): Promise<number> {
 	}
 }
 
-if (args.once) {
-	process.exitCode = await runOnce();
-} else {
-	console.log(
-		`watchdog: watching (interval ${intervalMs / 1000}s, window ${config.windowMinutes}m, ` +
-			`adapter ${config.localAdapterPath}${config.dryRun ? ", DRY-RUN" : ""})`,
-	);
-	// Sequential loop, never overlapping ticks; a tick failure logs and continues.
-	for (;;) {
-		try {
-			await runOnce();
-		} catch (err) {
-			console.error(`watchdog: tick crashed: ${String(err)}`);
+process.on("SIGINT", onSigint);
+process.on("SIGTERM", onSigterm);
+try {
+	if (args.once) {
+		process.exitCode = await runOnce();
+	} else {
+		console.log(
+			`watchdog: watching (interval ${intervalMs / 1000}s, window ${config.windowMinutes}m, ` +
+				`adapter ${config.localAdapterPath}${config.dryRun ? ", DRY-RUN" : ""})`,
+		);
+		// Sequential loop, never overlapping ticks; a tick failure logs and continues.
+		while (!stopping) {
+			try {
+				await runOnce();
+			} catch (err) {
+				console.error(`watchdog: tick crashed: ${String(err)}`);
+			}
+			if (!stopping) await waitForNextTick();
 		}
-		await new Promise((resolve) => setTimeout(resolve, intervalMs));
 	}
+	if (stopSignal) process.exitCode = stopSignal === "SIGINT" ? 130 : 143;
+	// The signal handlers let an active tick finish and release its lock first.
+} finally {
+	process.off("SIGINT", onSigint);
+	process.off("SIGTERM", onSigterm);
 }

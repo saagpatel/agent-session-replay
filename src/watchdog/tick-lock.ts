@@ -40,6 +40,15 @@ export function acquireTickLock(statePath: string): () => void {
 	}
 	return () => {
 		// Do not unlink a path whose ownership changed while this tick ran.
-		if (readFileSync(lockPath, "utf8") === contents) unlinkSync(lockPath);
+		let current: string;
+		try {
+			current = readFileSync(lockPath, "utf8");
+		} catch {
+			throw new Error("watchdog tick lost state lock ownership before release");
+		}
+		if (current !== contents) {
+			throw new Error("watchdog tick lost state lock ownership before release");
+		}
+		unlinkSync(lockPath);
 	};
 }
