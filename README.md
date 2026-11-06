@@ -62,6 +62,8 @@ The watchdog is an optional, explicit local process. It scans recent Claude Code
 
 Its terminal result distinguishes successful, partial, failed, and skipped runs. Discovery errors such as access denial or I/O failure make the result partial and require operator review. Expected missing roots or sidechain directories do not. Receipt counts describe adapter handling only, not operating-system display or human attention.
 
+Each tick exclusively locks the resolved state path for its full scan, adapter reconciliation, and state write. Separate watchdog instances may use the same state path, but an overlapping tick fails closed and reports the lock path; use distinct state paths only when independent dedupe histories are intended. The lock is a sibling file named `<state path>.lock`, so the JSON state format stays unchanged. A normal tick removes only the lock it created. If a process crashes, the lock remains: inspect its PID and confirm no watchdog still uses that state path before manually removing the stale lock and retrying. Locks are not reclaimed automatically.
+
 ## Privacy and release
 
 Parsing and rendering happen locally. The app does not upload transcripts or AFR archives. Keep test fixtures synthetic and never commit session data. Use the repository's maintained macOS release process for signing, notarization, packaging, and publication; this repository's checks do not perform those actions.

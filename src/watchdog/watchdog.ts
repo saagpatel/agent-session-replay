@@ -17,6 +17,7 @@ import type { Trace } from "../core/types.ts";
 import { buildEvent, liveVerdict, withEventId } from "./policy.ts";
 import { TickProgress } from "./progress.ts";
 import { scanSessions } from "./scan.ts";
+import { acquireTickLock } from "./tick-lock.ts";
 import { eventStatus, isTerminalFailure, postEvent, type PostResult } from "./sink.ts";
 import {
 	canSkip,
@@ -201,12 +202,15 @@ export async function tick(
 	activeTicks.set(statePath, turn);
 	await previous;
 	const progress = new TickProgress();
+	let releaseFilesystemLock: (() => void) | undefined;
 	try {
+		releaseFilesystemLock = acquireTickLock(statePath);
 		const report = await tickWithProgress(config, nowMs, progress);
 		return { ...report, progress: progress.snapshot() };
 	} catch (error) {
 		throw progress.failure(error);
 	} finally {
+		releaseFilesystemLock?.();
 		release();
 		if (activeTicks.get(statePath) === turn) activeTicks.delete(statePath);
 	}
