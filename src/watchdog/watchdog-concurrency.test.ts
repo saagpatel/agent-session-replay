@@ -224,6 +224,7 @@ await tick({ claudeProjectsDir: process.env.PROJECTS, codexSessionsDir: process.
 			if (child.exitCode !== null) return resolveExit(child.exitCode);
 			child.once("close", resolveExit);
 		})));
+		assert.equal(first.exitCode, 0, childErrors.join(""));
 		assert.equal(exits.filter(code => code === 0).length, 1, childErrors.join(""));
 		assert.equal(observed, 1, "overlapping processes must not both invoke the local adapter");
 		assert.ok(exits.some(code => code !== 0), "one overlapping tick should fail closed while state is owned");
