@@ -135,9 +135,10 @@ await tick({ claudeProjectsDir: process.env.PROJECTS, codexSessionsDir: process.
 			}
 		};
 		const first = start(projectsA);
-		const second = start(projectsB);
 		await waitUntil(() => existsSync(count));
-		await new Promise(r => setTimeout(r, 200));
+		const second = start(projectsB);
+		await waitUntil(() => second.exitCode !== null ||
+			(existsSync(count) && Number(readFileSync(count, "utf8")) >= 2));
 		const observed = Number(readFileSync(count, "utf8"));
 		writeFileSync(release, "go");
 		const exits = await Promise.all(children.map(child => new Promise<number | null>(resolveExit => {
