@@ -196,16 +196,16 @@ export async function tick(
 	nowMs: number,
 ): Promise<TickReport> {
 	const statePath = resolve(config.statePath);
+	const progress = new TickProgress();
 	const previous = activeTicks.get(statePath);
 	let release!: () => void;
 	const turn = new Promise<void>((resolveTurn) => { release = resolveTurn; });
 	activeTicks.set(statePath, turn);
-	await previous;
-	const progress = new TickProgress();
 	let releaseFilesystemLock: (() => void) | undefined;
 	let report: TickReport | undefined;
 	let failure: Error | undefined;
 	try {
+		await previous;
 		if (!config.dryRun) releaseFilesystemLock = acquireTickLock(statePath);
 		report = await tickWithProgress(config, nowMs, progress);
 	} catch (error) {
