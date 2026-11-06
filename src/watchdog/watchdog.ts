@@ -203,17 +203,30 @@ export async function tick(
 	await previous;
 	const progress = new TickProgress();
 	let releaseFilesystemLock: (() => void) | undefined;
+	let report: TickReport | undefined;
+	let failure: Error | undefined;
 	try {
-		releaseFilesystemLock = acquireTickLock(statePath);
-		const report = await tickWithProgress(config, nowMs, progress);
-		return { ...report, progress: progress.snapshot() };
+		if (!config.dryRun) releaseFilesystemLock = acquireTickLock(statePath);
+		report = await tickWithProgress(config, nowMs, progress);
 	} catch (error) {
-		throw progress.failure(error);
+		failure = progress.failure(error);
 	} finally {
-		releaseFilesystemLock?.();
-		release();
-		if (activeTicks.get(statePath) === turn) activeTicks.delete(statePath);
+		try {
+			releaseFilesystemLock?.();
+		} catch (error) {
+			if (failure) {
+				console.error("watchdog: state lock release also failed after tick failure; inspect the retained lock");
+			} else {
+				failure = progress.failure(error);
+			}
+		} finally {
+			release();
+			if (activeTicks.get(statePath) === turn) activeTicks.delete(statePath);
+		}
 	}
+	if (failure) throw failure;
+	if (!report) throw new Error("watchdog tick completed without a report");
+	return { ...report, progress: progress.snapshot() };
 }
 
 async function tickWithProgress(

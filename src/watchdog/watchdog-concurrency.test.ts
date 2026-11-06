@@ -5,6 +5,67 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
+import { tick } from "./watchdog.ts";
+
+test("dry-run does not create a persistent state lock", async () => {
+	const root = mkdtempSync(join(tmpdir(), "watchdog-dry-run-lock-"));
+	const state = join(root, "state.json");
+	try {
+		mkdirSync(join(root, "projects"));
+		mkdirSync(join(root, "codex"));
+		await tick({
+			claudeProjectsDir: join(root, "projects"), codexSessionsDir: join(root, "codex"),
+			localAdapterPath: join(root, "unused-adapter"), localReceiptStore: join(root, "unused-receipts"),
+			windowMinutes: 30, stallQuietSeconds: 600, maxSessionBytes: 1000,
+			statePath: state, dryRun: true,
+		}, Date.now());
+		assert.equal(existsSync(`${state}.lock`), false);
+		assert.equal(existsSync(state), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("lock release failure still clears the in-process tick queue", async () => {
+	const root = mkdtempSync(join(tmpdir(), "watchdog-lock-release-"));
+	const projects = join(root, "projects");
+	const project = join(projects, "fixture");
+	const state = join(root, "state.json");
+	const adapter = join(root, "adapter.cjs");
+	try {
+		mkdirSync(project, { recursive: true });
+		mkdirSync(join(root, "codex"));
+		const lines = Array.from({ length: 320 }, (_, i) => JSON.stringify({
+			type: "assistant", sessionId: "synthetic", uuid: `u${i}`,
+			timestamp: `2026-07-10T10:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`,
+			cwd: "/fixture/project", message: { role: "assistant", content: [{
+				type: "tool_use", id: `tu${i}`, name: i % 2 ? "Write" : "Bash", input: {},
+			}] },
+		}));
+		writeFileSync(join(project, "session.jsonl"), `${lines.join("\n")}\n`);
+		writeFileSync(adapter, `#!/usr/bin/env node
+const fs = require("node:fs"); let body = "";
+process.stdin.on("data", chunk => body += chunk).on("end", () => {
+  const event = JSON.parse(body);
+  try { fs.unlinkSync(${JSON.stringify(`${state}.lock`)}); } catch {}
+  console.log(JSON.stringify({ state: "accepted_by_os", stable_event_id: event.event_id }));
+});
+`, { mode: 0o700 });
+		chmodSync(adapter, 0o700);
+		const config = {
+			claudeProjectsDir: projects, codexSessionsDir: join(root, "codex"),
+			localAdapterPath: adapter, localReceiptStore: join(root, "receipts"),
+			windowMinutes: 30, stallQuietSeconds: 600, maxSessionBytes: 64_000_000,
+			statePath: state, dryRun: false,
+		};
+		await assert.rejects(tick(config, Date.now()));
+		const next = await tick(config, Date.now());
+		assert.equal(next.skippedUnchanged, 1);
+		assert.equal(existsSync(`${state}.lock`), false);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 test("separate normal watchdog callers share one state-path critical section", async () => {
 	const root = mkdtempSync(join(tmpdir(), "watchdog-cross-process-"));
