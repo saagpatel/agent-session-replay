@@ -8,7 +8,7 @@
  */
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { detect } from "../core/detect/engine.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
@@ -43,6 +43,11 @@ import type {
 } from "./types.ts";
 
 class TranscriptBudgetError extends Error {}
+
+// Public callers may request ticks concurrently even though the CLI loop is
+// sequential. Serialize stateful ticks per state file so a later completion
+// cannot publish an older loadState snapshot over newer session outcomes.
+const activeTicks = new Map<string, Promise<void>>();
 
 export function boundedReadSnapshotIsValid(
 	before: { dev: number; ino: number; size: number; mtimeMs: number },
@@ -189,12 +194,21 @@ export async function tick(
 	config: WatchdogConfig,
 	nowMs: number,
 ): Promise<TickReport> {
+	const statePath = resolve(config.statePath);
+	const previous = activeTicks.get(statePath);
+	let release!: () => void;
+	const turn = new Promise<void>((resolveTurn) => { release = resolveTurn; });
+	activeTicks.set(statePath, turn);
+	await previous;
 	const progress = new TickProgress();
 	try {
 		const report = await tickWithProgress(config, nowMs, progress);
 		return { ...report, progress: progress.snapshot() };
 	} catch (error) {
 		throw progress.failure(error);
+	} finally {
+		release();
+		if (activeTicks.get(statePath) === turn) activeTicks.delete(statePath);
 	}
 }
 

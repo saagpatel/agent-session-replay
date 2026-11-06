@@ -223,6 +223,59 @@ test("a grinding CC session posts one grind_loop alert; the next tick skips the 
 	assert.equal(postedEvents(config).length, 1);
 });
 
+test("concurrent ticks sharing state serialize so a later session cannot be overwritten", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const firstPath = writeCcSession(claudeRoot, ccGrindTranscript(320));
+	const countPath = config.localReceiptStore + ".count";
+	const gatePath = (attempt: number) => config.localReceiptStore + `.gate${attempt}`;
+	writeFileSync(config.localAdapterPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+let text = "";
+process.stdin.on("data", chunk => text += chunk).on("end", () => {
+	const event = JSON.parse(text), store = process.argv[3], countFile = store + ".count";
+	const count = Number(fs.existsSync(countFile) ? fs.readFileSync(countFile, "utf8") : "0") + 1;
+	fs.writeFileSync(countFile, String(count));
+	const timer = setInterval(() => {
+		if (!fs.existsSync(store + ".gate" + count)) return;
+		clearInterval(timer);
+		fs.appendFileSync(store + ".events", JSON.stringify(event) + "\\n");
+		console.log(JSON.stringify({ state: "accepted_by_os", stable_event_id: event.event_id }));
+	}, 5);
+});
+`, { mode: 0o700 });
+	chmodSync(config.localAdapterPath, 0o700);
+
+	const waitUntil = async (condition: () => boolean) => {
+		const deadline = Date.now() + 5000;
+		while (!condition()) {
+			if (Date.now() >= deadline) throw new Error("timed out waiting for synthetic adapter");
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	};
+	const first = tick(config, Date.now());
+	await waitUntil(() => existsSync(countPath) && readFileSync(countPath, "utf8") === "1");
+	const secondProject = join(claudeRoot, "-Users-x-Projects-second");
+	mkdirSync(secondProject, { recursive: true });
+	const secondPath = join(secondProject, "sess-second.jsonl");
+	writeFileSync(secondPath, ccGrindTranscript(320));
+	const second = tick(config, Date.now());
+	await new Promise((resolve) => setTimeout(resolve, 75));
+	assert.equal(readFileSync(countPath, "utf8"), "1", "second adapter attempt waits for first tick");
+
+	writeFileSync(gatePath(1), "");
+	const firstReport = await first;
+	await waitUntil(() => readFileSync(countPath, "utf8") === "2");
+	writeFileSync(gatePath(2), "");
+	const secondReport = await second;
+
+	assert.equal(firstReport.alertsPosted, 1);
+	assert.equal(secondReport.alertsPosted, 1);
+	assert.ok(loadState(config.statePath).sessions[firstPath]);
+	assert.ok(loadState(config.statePath).sessions[secondPath]);
+	assert.equal(postedEvents(config).length, 2);
+});
+
 test("incomplete_run on a live session is suppressed entirely", async () => {
 	const { config, claudeRoot } = fixture();
 	// Small clean session: parses fine, live (just written), no clean end_turn.
