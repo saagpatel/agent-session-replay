@@ -1153,3 +1153,59 @@ test("a blocked step's explanation is clipped for display", () => {
 	const long = `guard: ${"x".repeat(200)}`;
 	assert.ok(describeStep({ ...step("blocked", long) }).length < 120);
 });
+
+// ---- #112: result attribution ----------------------------------------------
+
+test("a command counts only when it is one static literal in real code (#112 item 1)", () => {
+	const chunk = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 1, output: "ℹ tests 1\nℹ pass 0\nℹ fail 1" }));
+	const of = (input: string) => normalizeTrace(rawCell(input, chunk)).map((s) => `${s.action}:${s.target ?? s.note}:${s.status}`);
+	// Joined strings are not read as their first piece: the command is unparsed,
+	// and only its own result chunk (exit 1 here) speaks for it.
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test" + " && cat old.log"}));'), ["run:unparsed command:error"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test".concat(" -- --ci")}));'), ["run:unparsed command:error"]);
+	// The old log's failing summary is never credited to a test.
+	const joined = rawCell('text(await tools.exec_command({cmd:"npm test" + " && cat old.log"}));', chunk);
+	assert.ok(normalizeTrace(joined).every((s) => s.action !== "test"));
+	assert.notEqual(diffRuns(joined, joined).left.verdict, "failed");
+	// A cmd property inside a comment or a string is not the command.
+	assert.deepEqual(
+		of('text(await tools.exec_command({/* cmd:"npm test", */ cmd:"git status"}));'),
+		["read:git status:error"],
+	);
+	assert.deepEqual(
+		of('text(await tools.exec_command({note:"cmd: \\"npm test\\"", cmd:"git log"}));'),
+		["read:git log:error"],
+	);
+	// A plain literal, quoted key or not, is still read.
+	assert.deepEqual(of('text(await tools.exec_command({"cmd":"npm test", "max_output_tokens":100}));'), ["test:npm test:error"]);
+	assert.deepEqual(of("text(await tools.exec_command({cmd:'npm test'}));"), ["test:npm test:error"]);
+});
+
+test("only reads and searches fall back to ok in a chain that exited 0 (#112 item 3)", () => {
+	const write = classifyCommand("echo x > missing/out.txt; true", null);
+	assert.deepEqual(write.map((c) => c.action), ["write"]);
+	assert.deepEqual(resolveStatuses(write, "seq", "ok", false), ["unknown"]);
+	const both = classifyCommand("cat a.ts; echo x > out.txt; npm run build", null);
+	assert.deepEqual(resolveStatuses(both, "seq", "ok", false), ["ok", "unknown", "ok"]);
+	// A successful && chain ran every stage, writes included.
+	const and = classifyCommand("echo x > out.txt && npm run build", null);
+	assert.deepEqual(resolveStatuses(and, "and", "ok", false), ["ok", "ok"]);
+});
+
+test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
+	const grep = classifyCommand("npm run build | grep -q ERROR", null);
+	assert.equal(grep[0]?.piped, true);
+	assert.deepEqual(resolveStatuses(grep, "single", "error", false), ["unknown"]);
+	assert.deepEqual(resolveStatuses(grep, "single", "ok", false), ["unknown"]);
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "npm run build 2>&1 | tail -20", error: "Exit code 1" }]),
+	);
+	assert.deepEqual(normalizeTrace(trace).map((s) => s.status), ["unknown"]);
+	// tee owns the status only when it ends the pipeline.
+	const tee = classifyCommand("npm run build | tee build.log", null);
+	assert.deepEqual(resolveStatuses(tee, "single", "ok", false), ["unknown", "ok"]);
+	const teeMid = classifyCommand("npm run build | tee build.log | grep x", null);
+	assert.deepEqual(resolveStatuses(teeMid, "single", "ok", false), ["unknown", "unknown"]);
+	// An unpiped command still owns its exit.
+	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
+});

@@ -315,12 +315,20 @@ interface Classified {
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
 function classifyStage(stage: string, where: Where): Classified[] {
-	const base = classifyFirst(stage, where);
-	// `… | tee f` also writes f, after the command that feeds it.
-	const tee = pipeline(stage).slice(1).map((c) => words(c)).find((w) => w[0] === "tee");
-	const teeInto = tee?.slice(1).find((w) => !w.startsWith("-"));
-	if (teeInto && !teeInto.startsWith("/dev/"))
-		return [...base, { action: "write", target: resolveIn(teeInto, where) }];
+	const cmds = pipeline(stage);
+	// A pipeline exits with its last command's status, so the command that
+	// feeds it never owns that status (`npm run build | grep -q ERROR`).
+	const base = classifyFirst(stage, where).map((c) =>
+		cmds.length > 1 ? { ...c, piped: true } : c,
+	);
+	// `… | tee f` also writes f, after the command that feeds it; tee owns the
+	// pipeline's status only when it is the last command.
+	const teeAt = cmds.findIndex((c, i) => i > 0 && words(c)[0] === "tee");
+	const teeInto = teeAt > 0 ? words(cmds[teeAt] as string).slice(1).find((w) => !w.startsWith("-")) : undefined;
+	if (teeInto && !teeInto.startsWith("/dev/")) {
+		const write: Classified = { action: "write", target: resolveIn(teeInto, where) };
+		return [...base, teeAt === cmds.length - 1 ? write : { ...write, piped: true }];
+	}
 	return base;
 }
 
@@ -590,16 +598,37 @@ const CELL_CALL_RE = /tools\.([A-Za-z0-9_]+)\s*\(/g;
 const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
 
 /** The first string-literal argument after `key:` (or the first positional one). */
-function literalArg(body: string, key: string | null): { found: boolean; value?: string } {
-	const re = key
-		? new RegExp(String.raw`\b${key}["']?\s*:\s*(${STRING_LIT})`, "s")
-		: new RegExp(String.raw`\(\s*(${STRING_LIT})`, "s");
-	const lit = re.exec(body)?.[1];
-	if (lit === undefined) return { found: false };
-	const value = jsString(lit);
-	return value === undefined ? { found: true } : { found: true, value };
+/**
+ * A call argument that is exactly one static string literal: found as real
+ * code (never inside a comment or another string), and followed directly by
+ * `,`, `}` or `)` so nothing is concatenated or called on it. Anything else is
+ * `found` without a value: the call happened but its argument is not known.
+ */
+function exactLiteralArg(body: string, key: string | null): { found: boolean; value?: string } {
+	const masked = maskCode(body);
+	const lead = key
+		? new RegExp(String.raw`(["']?)\b${key}\1\s*:\s*`, "g")
+		: /\(\s*/g;
+	for (const m of body.matchAll(lead)) {
+		const at = m.index ?? 0;
+		if (key) {
+			const q = m[1] ?? "";
+			const keyAt = at + q.length;
+			const real = q
+				? masked[at] === q && masked[keyAt + key.length] === q
+				: masked.slice(keyAt, keyAt + key.length) === key;
+			if (!real) continue;
+		} else if (masked[at] !== "(") continue;
+		const valueAt = at + m[0].length;
+		const lit = new RegExp(String.raw`^(?:${STRING_LIT})`, "s").exec(body.slice(valueAt))?.[0];
+		if (!lit) return { found: true };
+		const rest = masked.slice(valueAt + lit.length).trimStart();
+		if (!/^[,})]/.test(rest)) return { found: true };
+		const value = jsString(lit);
+		return value === undefined ? { found: true } : { found: true, value };
+	}
+	return { found: false };
 }
-
 
 /**
  * One unit of work with its own result: a shell command (possibly several
@@ -751,8 +780,8 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 					? partResult(tool, printed[i], completed)
 					: UNKNOWN;
 		if (tool === "exec_command") {
-			const cmd = literalArg(body, "cmd");
-			const workdir = literalArg(body, "workdir").value;
+			const cmd = exactLiteralArg(body, "cmd");
+			const workdir = exactLiteralArg(body, "workdir").value;
 			const unit = cmd.value !== undefined
 				? { ...commandParts(cmd.value, cwd, workdir), ...res }
 				: // A command we cannot read statically still happened: keep it, unresolved.
@@ -762,7 +791,7 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
 			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
 		} else if (tool === "apply_patch") {
-			const patch = literalArg(body, null).value ?? body;
+			const patch = exactLiteralArg(body, null).value ?? "";
 			const parts = patchTargets(patch, cwd);
 			out.push({ parts: parts.length ? parts : [{ action: "edit", target: null }], chain: "single", ...res });
 		} else if (tool === "update_plan") {
@@ -946,8 +975,10 @@ export function resolveStatuses(
 	};
 	const out: DiffStatus[] = parts.map((c, i) => {
 		if (owns(i)) return result as DiffStatus;
-		// Reads and searches that ran before a stage that is known to have run.
-		if (!isCommand(c) && known && !failedResult && chain !== "mixed") return "ok";
+		// Reads and searches that ran before a stage known to have run. Writes and
+		// edits do not: in `echo x > missing/f; true` the write failed silently.
+		const looks = c.action === "read" || c.action === "search";
+		if (looks && !c.piped && known && !failedResult && chain !== "mixed") return "ok";
 		return "unknown";
 	});
 	// A failing summary speaks for the test only when nothing else could have
