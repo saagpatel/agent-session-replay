@@ -124,8 +124,9 @@ function execResults(v: unknown): { results: ExecResult[]; aggregateExits: numbe
 		}
 		const chunk = asObj(parsed);
 		if (!("chunk_id" in chunk)) {
-			// An aggregate the cell printed itself (e.g. Promise.allSettled):
-			// evidence that some command failed, but not which one.
+			// Possibly an aggregate the cell printed itself (e.g. Promise.allSettled):
+			// evidence that some command failed, but not which one. The caller
+			// decides whether the cell's code makes it one.
 			aggregateExits.push(...nestedExitCodes(parsed));
 			continue;
 		}
@@ -246,9 +247,14 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		// A legacy string output carries its exit code in the header; current
 		// exec cells (a list of parts) carry one JSON chunk per inner command.
 		const m = legacyExit(rawOutput);
-		const { results, aggregateExits } = m
-			? { results: [], aggregateExits: [] }
-			: execResults(rawOutput);
+		const parsed = m ? { results: [], aggregateExits: [] } : execResults(rawOutput);
+		const { results } = parsed;
+		// JSON a cell prints is only a result aggregate when the cell itself fanned
+		// out tool calls (`Promise.allSettled([tools.exec_command(…), …])`); any
+		// other printed JSON with an `exit_code` key is just data.
+		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
+		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
+		const aggregateExits = fansOut ? parsed.aggregateExits : [];
 		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
