@@ -446,7 +446,7 @@ test("current exec-cell outputs (a list of text parts) carry exit codes and test
 	assert.equal(passing?.status, "ok");
 	assert.equal(passing?.attributes[ATTR.TEST_FAILURES], undefined);
 	assert.deepEqual(failing?.attributes[ATTR.EXEC_RESULTS], [
-		{ exit_code: 1, session_id: null, test_failures: true },
+		{ exit_code: 1, session_id: null, test_failures: true, test_passes: false },
 	]);
 });
 

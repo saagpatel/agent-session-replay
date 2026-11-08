@@ -22,7 +22,7 @@
  */
 
 import { parseJsonlWithStats } from "../jsonl.ts";
-import { hasTestFailures } from "../test-signal.ts";
+import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
 	ATTR,
 	type ExecResult,
@@ -51,8 +51,30 @@ const RESULT_KIND: Record<string, string> = {
 	web_search: "search",
 };
 
-/** A shell tool output carries this header; a non-zero code is a failed call. */
+/**
+ * A legacy shell tool output carries this header before its `Output:` body; a
+ * non-zero code is a failed call. Only the header is searched, so a command
+ * that prints an old log containing the phrase is never misread.
+ */
 const EXIT_RE = /Process exited with code (\d+)/;
+const HEADER_MAX = 400;
+
+function legacyExit(raw: unknown): RegExpExecArray | null {
+	if (typeof raw !== "string") return null;
+	const header = (raw.split(/\nOutput:/)[0] ?? "").slice(0, HEADER_MAX);
+	return EXIT_RE.exec(header);
+}
+
+/** Every numeric `exit_code` anywhere inside a parsed JSON value. */
+function nestedExitCodes(v: unknown, out: number[] = []): number[] {
+	if (Array.isArray(v)) for (const x of v) nestedExitCodes(x, out);
+	else if (typeof v === "object" && v !== null)
+		for (const [k, x] of Object.entries(v as Json)) {
+			if (k === "exit_code" && typeof x === "number") out.push(x);
+			else nestedExitCodes(x, out);
+		}
+	return out;
+}
 
 type Json = Record<string, unknown>;
 
@@ -87,30 +109,40 @@ function outputText(v: unknown): string {
  * in call order. Parse those parts only, never free text that merely contains
  * an `exit_code` key.
  */
-function execResults(v: unknown): ExecResult[] {
-	const out: ExecResult[] = [];
+function execResults(v: unknown): { results: ExecResult[]; aggregateExits: number[] } {
+	const results: ExecResult[] = [];
+	const aggregateExits: number[] = [];
 	for (const part of Array.isArray(v) ? v : []) {
 		const text = str(asObj(part)["text"])?.trim();
-		if (!text?.startsWith("{") || !text.includes('"chunk_id"')) continue;
-		let chunk: Json;
+		if (!text || !/^[[{]/.test(text)) continue;
+		if (!text.includes('"chunk_id"') && !text.includes("exit_code")) continue;
+		let parsed: unknown;
 		try {
-			chunk = asObj(JSON.parse(text));
+			parsed = JSON.parse(text);
 		} catch {
 			continue;
 		}
-		if (!("chunk_id" in chunk)) continue;
+		const chunk = asObj(parsed);
+		if (!("chunk_id" in chunk)) {
+			// An aggregate the cell printed itself (e.g. Promise.allSettled):
+			// evidence that some command failed, but not which one.
+			aggregateExits.push(...nestedExitCodes(parsed));
+			continue;
+		}
 		const exit = chunk["exit_code"];
 		const session = chunk["session_id"];
-		out.push({
+		const body = str(chunk["output"]) ?? "";
+		results.push({
 			exit_code: typeof exit === "number" ? exit : null,
 			session_id:
 				typeof session === "number" || typeof session === "string"
 					? String(session)
 					: null,
-			test_failures: hasTestFailures(str(chunk["output"]) ?? ""),
+			test_failures: hasTestFailures(body),
+			test_passes: hasTestPasses(body),
 		});
 	}
-	return out;
+	return { results, aggregateExits };
 }
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
@@ -211,19 +243,25 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const output = outputText(rawOutput);
 		step.ended_at = when;
 		if (status === "incomplete" || status === "failed") step.status = "error";
-		// The legacy shell header is authoritative; only header-less exec-cell
-		// output is read as per-command JSON chunks.
-		const m = EXIT_RE.exec(output);
-		const results = m ? [] : execResults(rawOutput);
+		// A legacy string output carries its exit code in the header; current
+		// exec cells (a list of parts) carry one JSON chunk per inner command.
+		const m = legacyExit(rawOutput);
+		const { results, aggregateExits } = m
+			? { results: [], aggregateExits: [] }
+			: execResults(rawOutput);
 		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
-		const failedChunk = results.some(
-			(r) => r.exit_code !== null && r.exit_code !== 0,
-		);
-		if ((m && m[1] !== "0") || failedChunk) {
+		if (!m && /^Script completed\b/.test(output.trimStart()))
+			step.attributes[ATTR.EXEC_COMPLETED] = true;
+		const failedInner = [
+			...results.map((r) => r.exit_code),
+			...aggregateExits,
+		].some((code) => code !== null && code !== 0);
+		if ((m && m[1] !== "0") || failedInner) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
 		if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
+		else if (hasTestPasses(output)) step.attributes[ATTR.TEST_PASSES] = true;
 	};
 
 	events.forEach((ev, idx) => {
