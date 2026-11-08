@@ -957,7 +957,8 @@ test("a summary speaks for a test only when the test is the whole command", () =
 		ccEvents(PROMPT, [{ name: "Bash", command: "cat old-test.log; npm test", output: stale }]),
 	);
 	const steps = normalizeTrace(trace);
-	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}:${s.summary ?? "-"}`), ["read:ok:-", "test:ok:-"]);
+	// The read is not vouched for: a `;` chain keeps going after a failed cat.
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}:${s.summary ?? "-"}`), ["read:unknown:-", "test:ok:-"]);
 	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
 	const codex = plainCalls([
 		{ name: "exec_command", args: { cmd: "cat old-test.log && npm test" }, output: `Process exited with code 0\nOutput:\n${stale}` },
@@ -1181,12 +1182,13 @@ test("a command counts only when it is one static literal in real code (#112 ite
 	assert.deepEqual(of("text(await tools.exec_command({cmd:'npm test'}));"), ["test:npm test:error"]);
 });
 
-test("only reads and searches fall back to ok in a chain that exited 0 (#112 item 3)", () => {
+test("nothing before the last stage of a ; chain is vouched for (#112 item 3)", () => {
 	const write = classifyCommand("echo x > missing/out.txt; true", null);
 	assert.deepEqual(write.map((c) => c.action), ["write"]);
 	assert.deepEqual(resolveStatuses(write, "seq", "ok", false), ["unknown"]);
 	const both = classifyCommand("cat a.ts; echo x > out.txt; npm run build", null);
-	assert.deepEqual(resolveStatuses(both, "seq", "ok", false), ["ok", "unknown", "ok"]);
+	// `cat missing.ts; …` keeps going too, so the read is unknown as well.
+	assert.deepEqual(resolveStatuses(both, "seq", "ok", false), ["unknown", "unknown", "ok"]);
 	// A successful && chain ran every stage, writes included.
 	const and = classifyCommand("echo x > out.txt && npm run build", null);
 	assert.deepEqual(resolveStatuses(and, "and", "ok", false), ["ok", "ok"]);
@@ -1208,4 +1210,37 @@ test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
 	assert.deepEqual(resolveStatuses(teeMid, "single", "ok", false), ["unknown", "unknown"]);
 	// An unpiped command still owns its exit.
 	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
+});
+
+test("a file in an unknown directory is never named or vouched for", () => {
+	const root = WORKSPACE_CODEX;
+	const cellAt = (args: string) =>
+		normalizeTrace(
+			rawCell(
+				`text(await tools.exec_command({cmd:"echo x > out.txt", ${args}}));`,
+				parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 })),
+			),
+		).map((s) => `${s.action}:${s.target}:${s.status}`);
+	// A workdir built by joining strings is unknown: the write is not credited to out.txt.
+	assert.deepEqual(cellAt(`workdir:"${root}/packages/api" + ""`), ["write:null:unknown"]);
+	assert.deepEqual(cellAt(`workdir:"${root}/packages/api"`), ["write:packages/api/out.txt:ok"]);
+	assert.deepEqual(cellAt(""), ["write:out.txt:ok"]);
+	// A dynamic cd loses the directory too.
+	const cd = (cmd: string) =>
+		normalizeTrace(plainCalls([{ name: "exec_command", args: { cmd }, output: "Process exited with code 0\nOutput:\nx" }])).map(
+			(s) => `${s.action}:${s.target}:${s.status}`,
+		);
+	assert.deepEqual(cd("cd $PKG && cat a.ts"), ["read:null:unknown"]);
+	assert.deepEqual(cd("cd packages/api && cat a.ts"), ["read:packages/api/a.ts:ok"]);
+	assert.deepEqual(cd("cat /work/b/fixture-repo/a.ts"), ["read:a.ts:ok"]);
+});
+
+test("a template literal with an escaped ${ is still static", () => {
+	const patch = "`*** Begin Patch\n*** Update File: src/tpl.ts\n@@\n-const a = \\${x};\n+const a = \\${y};\n*** End Patch`";
+	const trace = rawCell(`text(await tools.apply_patch(${patch}));`, parts("Script completed\n", "{}"));
+	assert.deepEqual(statusesOf(trace), ["edit:ok"]);
+	assert.equal(normalizeTrace(trace)[0]?.target, "src/tpl.ts");
+	// An unescaped ${…} is dynamic: the patch's file stays unknown.
+	const dynamic = rawCell("text(await tools.apply_patch(`*** Update File: ${f}`));", parts("Script completed\n", "{}"));
+	assert.equal(normalizeTrace(dynamic)[0]?.target, null);
 });

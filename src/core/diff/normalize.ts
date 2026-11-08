@@ -236,8 +236,10 @@ function pipeline(stage: string): string[] {
 /** Where a shell command runs: the workspace root and its effective directory. */
 interface Where {
 	root: string | null;
-	/** Absolute working directory, or null once a dynamic `cd` makes it unknown. */
+	/** Absolute working directory, or null when there is no workspace root. */
 	dir: string | null;
+	/** A dynamic `cd` or workdir moved the command somewhere unknown. */
+	lost?: boolean;
 }
 
 /** Join and normalize an absolute directory with a relative path (`.`, `..`). */
@@ -259,14 +261,28 @@ function cdTo(where: Where, arg: string | undefined): string | null {
 }
 
 /** A file argument made workspace-relative from where the command ran. */
-function resolveIn(file: string, where: Where): string {
+/**
+ * A file argument made workspace-relative from where the command ran, or null
+ * when a relative path's directory is unknown (a dynamic `cd` or workdir):
+ * the file is then never named, rather than credited to the wrong path.
+ */
+function resolveIn(file: string, where: Where): string | null {
 	const f = file.trim().replace(/^["']|["']$/g, "");
-	if (f.startsWith("/") || !where.dir) return relPath(f, where.root);
+	if (f.startsWith("/")) return relPath(f, where.root);
+	if (where.lost) return null;
+	if (!where.dir) return relPath(f, where.root);
 	return relPath(joinPath(where.dir, f), where.root);
 }
 
-function whereFor(root: string | null | undefined, workdir: string | undefined): Where {
+/** A file part whose location is unknown: no target, and never a known result. */
+function located(action: "read" | "write", target: string | null): Classified {
+	return target === null ? { action, target: null, unlocated: true } : { action, target };
+}
+
+/** `workdir` null means one was given but could not be read (it is unknown). */
+function whereFor(root: string | null | undefined, workdir: string | null | undefined): Where {
 	const base = root ?? null;
+	if (workdir === null) return { root: base, dir: null, lost: true };
 	if (!workdir) return { root: base, dir: base };
 	const dir = workdir.startsWith("/") ? joinPath("/", workdir) : base ? joinPath(base, workdir) : null;
 	return { root: base, dir };
@@ -307,8 +323,10 @@ interface Classified {
 	target: string | null;
 	/** Shown in the label but not part of the alignment signature. */
 	note?: string;
-	/** A test piped into another command: its exit status is that command's. */
+	/** A command that feeds a pipe: the pipeline's exit status is the last command's. */
 	piped?: boolean;
+	/** A file read or written in an unknown directory: no target, no known result. */
+	unlocated?: boolean;
 	/** False for a shell stage before the last one (dropped stages included). */
 	last?: boolean;
 }
@@ -326,7 +344,7 @@ function classifyStage(stage: string, where: Where): Classified[] {
 	const teeAt = cmds.findIndex((c, i) => i > 0 && words(c)[0] === "tee");
 	const teeInto = teeAt > 0 ? words(cmds[teeAt] as string).slice(1).find((w) => !w.startsWith("-")) : undefined;
 	if (teeInto && !teeInto.startsWith("/dev/")) {
-		const write: Classified = { action: "write", target: resolveIn(teeInto, where) };
+		const write = located("write", resolveIn(teeInto, where));
 		return [...base, teeAt === cmds.length - 1 ? write : { ...write, piped: true }];
 	}
 	return base;
@@ -350,7 +368,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
 	// Only unquoted redirects count: `echo "==> Building"` writes nothing.
 	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
-	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
+	if (into && !into.startsWith("/dev/")) return [located("write", resolveIn(into, where))];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	// sed fails closed: only `sed -n '<range>p' file…` is a read.
 	const sedRead = head === "sed" ? plainSedRead(withoutLeadingEnv(toks)) : null;
@@ -362,7 +380,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
-			.map((f) => ({ action: "read" as const, target: resolveIn(f, where) }));
+			.map((f) => located("read", resolveIn(f, where)));
 	}
 	// Read-only git inspection is a read of repo state, not a command that changes it.
 	if (head === "git" && GIT_READS.has(ws[1] ?? "") && !(ws[1] === "branch" && branchMutates(ws.slice(2))))
@@ -504,7 +522,7 @@ interface CommandParts {
 function commandParts(
 	cmd: string,
 	root: string | null | undefined,
-	workdir?: string,
+	workdir?: string | null,
 ): CommandParts {
 	const core = coreCommand(cmd);
 	const where = whereFor(root, workdir);
@@ -521,7 +539,14 @@ function commandParts(
 		// A `cd` moves where the following stages run; it stays a stage, so a
 		// failing `cd dir && npm test` never runs (or fails) the test.
 		const w = words(stage);
-		if (w[0] === "cd") where.dir = cdTo(where, w[1]);
+		if (w[0] === "cd") {
+			const to = cdTo(where, w[1]);
+			// A dynamic target (`cd $DIR`, `cd -`, `cd ~x`) loses the directory;
+			// without a workspace root, a static relative cd just stays relative.
+			const dynamic = !w[1] || /[$`~*]/.test(w[1]) || w[1] === "-";
+			if (dynamic || (to === null && where.dir !== null)) where.lost = true;
+			where.dir = to;
+		}
 		else if (stage) printing++;
 		for (const c of classifyStage(stage, where)) parts.push(last ? c : { ...c, last });
 	});
@@ -580,7 +605,8 @@ function jsString(lit: string): string | undefined {
 	const q = lit[0];
 	if (!q || lit.at(-1) !== q || lit.length < 2) return undefined;
 	const body = lit.slice(1, -1);
-	if (q === "`" && body.includes("${")) return undefined;
+	// Only an unescaped `${` makes a template dynamic; `\${` is literal text.
+	if (q === "`" && /(?:^|[^\\])(?:\\\\)*\$\{/.test(body)) return undefined;
 	if (q === '"') {
 		try {
 			const v = JSON.parse(lit) as unknown;
@@ -597,7 +623,6 @@ function jsString(lit: string): string | undefined {
 const CELL_CALL_RE = /tools\.([A-Za-z0-9_]+)\s*\(/g;
 const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
 
-/** The first string-literal argument after `key:` (or the first positional one). */
 /**
  * A call argument that is exactly one static string literal: found as real
  * code (never inside a comment or another string), and followed directly by
@@ -781,7 +806,9 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 					: UNKNOWN;
 		if (tool === "exec_command") {
 			const cmd = exactLiteralArg(body, "cmd");
-			const workdir = exactLiteralArg(body, "workdir").value;
+			// A workdir that is present but not one static literal is unknown.
+			const wd = exactLiteralArg(body, "workdir");
+			const workdir = wd.found ? (wd.value ?? null) : undefined;
 			const unit = cmd.value !== undefined
 				? { ...commandParts(cmd.value, cwd, workdir), ...res }
 				: // A command we cannot read statically still happened: keep it, unresolved.
@@ -885,8 +912,8 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			}
 			const cmd = commandOf(args);
 			if (cmd !== undefined) {
-				const workdir =
-					str(args["workdir"]) ?? str(args["working_directory"]) ?? str(args["cwd"]);
+				const raw = args["workdir"] ?? args["working_directory"] ?? args["cwd"];
+				const workdir = raw === undefined ? undefined : (str(raw) ?? null);
 				return [{ ...commandParts(cmd, cwd, workdir), ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
@@ -939,9 +966,6 @@ function make(
 	return out;
 }
 
-const isCommand = (c: Classified): boolean =>
-	c.action === "test" || c.action === "run";
-
 /**
  * Give each part of a unit a result, inventing none.
  *
@@ -974,11 +998,10 @@ export function resolveStatuses(
 		return c.last !== false && (result === "ok" || i === n - 1);
 	};
 	const out: DiffStatus[] = parts.map((c, i) => {
+		if (c.unlocated) return "unknown";
 		if (owns(i)) return result as DiffStatus;
-		// Reads and searches that ran before a stage known to have run. Writes and
-		// edits do not: in `echo x > missing/f; true` the write failed silently.
-		const looks = c.action === "read" || c.action === "search";
-		if (looks && !c.piped && known && !failedResult && chain !== "mixed") return "ok";
+		// No other part is vouched for: a `;` chain keeps going after a failed
+		// stage (`cat missing.ts; true`, `echo x > missing/f; true`).
 		return "unknown";
 	});
 	// A failing summary speaks for the test only when nothing else could have
