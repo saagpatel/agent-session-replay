@@ -132,6 +132,14 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(loader, /cc\.jsonl/);
+
+	// Steps without a recorded result say so, reads included.
+	const unknownRead = diffRuns(
+		parseTranscript(toJsonl(ccEvents("look", [{ name: "Read", file: "src/a.ts" }]).filter((e) => e["uuid"] !== "r0"))).trace,
+		right,
+	);
+	const unknownHtml = renderToStaticMarkup(<RunDiffView diff={unknownRead} leftFile="a" rightFile="b" />);
+	assert.match(unknownHtml, /rd-cell__unknown/);
 	assert.match(loader, /codex\.jsonl/);
 }
 

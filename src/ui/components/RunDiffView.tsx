@@ -67,8 +67,8 @@ function Cell({ step, side }: { step: DiffStep | null; side: "left" | "right" })
 	if (!step) return <div className={`rd-cell rd-cell--${side} rd-cell--empty`} aria-hidden="true" />;
 	const failed = isFailure(step.status);
 	// Missing results only matter for commands and tests, not reads.
-	const unknown =
-		step.status === "unknown" && (step.action === "test" || step.action === "run");
+	// Never guess: every step without a recorded result says so.
+	const unknown = step.status === "unknown";
 	return (
 		<div
 			className={`rd-cell rd-cell--${side}${failed ? " rd-cell--err" : ""}`}
