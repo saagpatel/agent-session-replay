@@ -11,6 +11,9 @@ export const WORKSPACE_CODEX = "/work/b/fixture-repo";
 
 type Json = Record<string, unknown>;
 
+/** What a passing node --test run prints last; test commands echo it by default. */
+const PASS_SUMMARY = "ℹ tests 2\nℹ pass 2\nℹ fail 0";
+
 // ---- Claude Code ---------------------------------------------------------
 
 export type CcTool =
@@ -72,7 +75,13 @@ export function ccEvents(
 						type: "tool_result",
 						tool_use_id: id,
 						is_error: Boolean(tool.error),
-						content: tool.error ?? ("output" in tool && tool.output ? tool.output : "ok"),
+						content:
+							tool.error ??
+							("output" in tool && tool.output
+								? tool.output
+								: tool.name === "Bash" && /\btest\b/.test(tool.command)
+									? PASS_SUMMARY
+									: "ok"),
 					},
 				],
 			},
@@ -137,7 +146,7 @@ export function codexEvents(
 	tools.forEach((tool, i) => {
 		const callId = `call_${i}`;
 		const exitOut = (code: number) =>
-			`Process exited with code ${code}\nOutput:\n${code ? "error: fixture failure" : "ok"}`;
+			`Process exited with code ${code}\nOutput:\n${code ? "error: fixture failure" : tool.kind === "shell" && /\btest\b/.test(tool.command) ? PASS_SUMMARY : "ok"}`;
 		if (tool.kind === "shell") {
 			out.push(
 				env("response_item", {

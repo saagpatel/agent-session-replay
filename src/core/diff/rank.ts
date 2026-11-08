@@ -82,6 +82,14 @@ function pivot(slice: DiffRow[]): number {
 	return best.row;
 }
 
+/**
+ * Outcomes differ only when both are known: "unclear" against "passed" is a gap
+ * in the evidence, not a different result.
+ */
+function provenlyDifferent(left: RunSide, right: RunSide): boolean {
+	return left.verdict !== right.verdict && left.verdict !== "unclear" && right.verdict !== "unclear";
+}
+
 export function rankDivergences(
 	rows: DiffRow[],
 	left: RunSide,
@@ -91,7 +99,7 @@ export function rankDivergences(
 	const rightFailSigs = failingSignatures(right.steps);
 	const leftFiles = touchedFiles(left.steps);
 	const rightFiles = touchedFiles(right.steps);
-	const outcomeDiffers = left.verdict !== right.verdict;
+	const outcomeDiffers = provenlyDifferent(left, right);
 	const total = Math.max(1, rows.length);
 
 	const blocks = spans(rows).map(([startRow, endRow]): DivergenceBlock => {
@@ -109,7 +117,9 @@ export function rankDivergences(
 			if (r.left) weights.push(stepWeight(r.left));
 			if (r.right) weights.push(stepWeight(r.right));
 		}
-		const maxW = Math.max(0, ...weights);
+		// reduce, not Math.max(...spread): a long one-sided span could exceed the
+		// engine's argument limit.
+		const maxW = weights.reduce((m, w) => Math.max(m, w), 0);
 		const sumW = weights.reduce((a, b) => a + b, 0);
 		score += maxW * 2 + Math.min(sumW, 6) * 0.25;
 		if (maxW >= 3) reasons.push([maxW, "changes edits or test runs"]);
@@ -122,11 +132,12 @@ export function rankDivergences(
 			...(failed(r.left) && !rightFailSigs.has((r.left as DiffStep).signature) ? [r.left as DiffStep] : []),
 			...(failed(r.right) && !leftFailSigs.has((r.right as DiffStep).signature) ? [r.right as DiffStep] : []),
 		]);
-		const failW = Math.max(0, ...exclusiveFails.map((x) => WEIGHT[x.action]));
+		const failW = exclusiveFails.reduce((m, x) => Math.max(m, WEIGHT[x.action]), 0);
 		const flip = failW > 1;
 		if (flip) {
-			score += 4;
-			reasons.push([4, "hits an error the other run never does"]);
+			// A failing test or edit outweighs a failing ad-hoc command.
+			score += failW + 1;
+			reasons.push([failW + 1, "hits an error the other run never does"]);
 		} else if (exclusiveFails.length > 0) {
 			score += 1;
 		}
@@ -158,7 +169,7 @@ export function rankDivergences(
 		const reachedEnd = endRow + 1 + matched >= rows.length && matched > 0;
 		const persistence = reachedEnd ? 0 : 1 - matched / RECONVERGE;
 		score += 3 * persistence;
-		if (persistence >= 0.5) reasons.push([2.5, "the runs do not re-converge"]);
+		if (persistence >= 1) reasons.push([2.5, "the runs do not re-converge"]);
 
 		// Reads, searches and plan updates change nothing on their own; if they led
 		// somewhere different, the later edit or test fork is what gets flagged.
@@ -261,7 +272,8 @@ export function explainDivergence(
 	if (!block) {
 		return `${left.label} and ${right.label} took the same ${rows.length} steps in the same order, so there is no divergence to flag.`;
 	}
-	const r = rows[block.pivotRow] as DiffRow;
+	// A cosmetic block is introduced by where it starts; a real fork by its pivot.
+	const r = rows[block.cosmetic ? block.startRow : block.pivotRow] as DiffRow;
 	const at = `At row ${r.row + 1}`;
 	let first: string;
 	if (r.left && r.right && r.relation === "same") {
@@ -281,7 +293,12 @@ export function explainDivergence(
 	}
 
 	let second: string;
-	if (block.cosmetic && left.verdict !== right.verdict) {
+	const unclear = [left, right].filter((x) => x.verdict === "unclear");
+	if (left.verdict !== right.verdict && unclear.length === 1) {
+		const u = unclear[0] as RunSide;
+		const other = u === left ? right : left;
+		second = `${u.label}'s test result is unclear while ${other.label} ended ${VERDICT_PHRASE[other.verdict]}, so this ${block.cosmetic ? "difference" : "fork"} is not proven to have changed the outcome.`;
+	} else if (block.cosmetic && left.verdict !== right.verdict) {
 		second = `The runs differ only in steps with no visible effect, so these steps do not explain why ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
 	} else if (left.verdict !== right.verdict) {
 		const opener = block.reasons.includes("the runs do not re-converge")

@@ -551,7 +551,6 @@ test("a successful compound command only vouches for the stages it proves ran", 
 	assert.deepEqual(resolveStatuses(mixed, "mixed", "ok", false), mixed.map(() => "unknown"));
 	const seq = classifyCommand("npm test; git status", null);
 	assert.deepEqual(resolveStatuses(seq, "seq", "ok", false), ["unknown", "ok"]);
-	assert.deepEqual(resolveStatuses(seq, "seq", "ok", false, true), ["ok", "ok"]);
 	// The exit status of `npm test; echo done` is echo's, even though echo is dropped.
 	const trailing = classifyCommand("npm test; echo done", null);
 	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", false), ["unknown"]);
@@ -561,7 +560,6 @@ test("a successful compound command only vouches for the stages it proves ran", 
 	const piped = classifyCommand("npm test 2>&1 | tail -5", null);
 	assert.equal(piped[0]?.piped, true);
 	assert.deepEqual(resolveStatuses(piped, "single", "ok", false), ["unknown"]);
-	assert.deepEqual(resolveStatuses(piped, "single", "ok", false, true), ["ok"]);
 });
 
 test("a mixed chain that exits 0 does not make the verdict passed", () => {
@@ -689,11 +687,8 @@ test("fit keeps the table under the cap and trims the long run first", () => {
 
 test("a passing summary never overrides a known failing exit", () => {
 	const t = classifyCommand("pnpm test", null);
-	assert.deepEqual(resolveStatuses(t, "single", "error", false, true), ["error"]);
-	assert.deepEqual(resolveStatuses(t, "single", "interrupted", false, true), ["interrupted"]);
-	// It still fills in a missing one (a piped run).
-	const piped = classifyCommand("pnpm test | tail", null);
-	assert.deepEqual(resolveStatuses(piped, "single", "ok", false, true), ["ok"]);
+	assert.deepEqual(resolveStatuses(t, "single", "error", false), ["error"]);
+	assert.deepEqual(resolveStatuses(t, "single", "interrupted", false), ["interrupted"]);
 	const trace = parseClaudeCodeEvents(
 		ccEvents(PROMPT, [
 			{ name: "Bash", command: "pnpm test", error: "Tests  10 passed (10)\nERROR: Coverage for lines (60%) does not meet threshold (80%)" },
@@ -771,4 +766,108 @@ test("a one-sided call with no recorded result cannot headline the diff", () => 
 	const right = parseClaudeCodeEvents(events.filter((e) => e["uuid"] !== "r0"));
 	const diff = diffRuns(left, right);
 	assert.equal(diff.flagged?.cosmetic, true);
+});
+
+// ---- simplified verdict ------------------------------------------------------
+
+test("passed needs both a clean exit and the runner's passing summary", () => {
+	const verdict = (command: string, output?: string, error?: string) => {
+		const trace = parseClaudeCodeEvents(
+			ccEvents(PROMPT, [{ name: "Bash", command, ...(output ? { output } : {}), ...(error ? { error } : {}) }]),
+		);
+		return diffRuns(trace, trace).left;
+	};
+	assert.equal(verdict("npm test", "ℹ tests 2\nℹ pass 2\nℹ fail 0").verdict, "passed");
+	// Clean exit, no summary.
+	const quiet = verdict("npm test", "done");
+	assert.equal(quiet.verdict, "unclear");
+	assert.match(quiet.verdictReason, /no passing summary/);
+	// Passing summary, but the exit belongs to `tail`.
+	const piped = verdict("npm test | tail -3", "ℹ tests 2\nℹ pass 2\nℹ fail 0");
+	assert.equal(piped.verdict, "unclear");
+	assert.match(piped.verdictReason, /exit status is unknown/);
+	// A failing summary or a failing exit is enough to fail.
+	assert.equal(verdict("npm test | tail -3", "ℹ tests 2\nℹ pass 1\nℹ fail 1").verdict, "failed");
+	assert.equal(verdict("npm test", undefined, "Exit code 1").verdict, "failed");
+});
+
+// ---- review regressions, round 4 -------------------------------------------
+
+/** A plain-format Codex function call and its string output. */
+function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; output: string }>) {
+	let t = 0;
+	const ts = () => `2026-10-01T13:00:${String(t++).padStart(2, "0")}.000Z`;
+	return parseCodexEvents([
+		{ timestamp: ts(), type: "session_meta", payload: { id: "plain", cwd: WORKSPACE_CODEX } },
+		...calls.flatMap((c, i) => [
+			{
+				timestamp: ts(),
+				type: "response_item",
+				payload: { type: "function_call", name: c.name, call_id: `p${i}`, arguments: JSON.stringify(c.args) },
+			},
+			{ timestamp: ts(), type: "response_item", payload: { type: "function_call_output", call_id: `p${i}`, output: c.output } },
+		]),
+	]);
+}
+
+test("a yielded plain-format command is settled by its write_stdin poll", () => {
+	const yielded = { name: "exec_command", args: { cmd: "pnpm test" }, output: "Wall time: 10s\nProcess running with session ID 123\nOutput:\n" };
+	const failing = plainCalls([
+		yielded,
+		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 1\nOutput:\nℹ tests 2\nℹ pass 1\nℹ fail 1" },
+	]);
+	assert.deepEqual(normalizeTrace(failing).map((s) => `${s.action}:${s.status}`), ["test:error"]);
+	assert.equal(diffRuns(failing, failing).left.verdict, "failed");
+	const passing = plainCalls([
+		yielded,
+		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 0\nOutput:\nℹ tests 2\nℹ pass 2\nℹ fail 0" },
+	]);
+	assert.equal(diffRuns(passing, passing).left.verdict, "passed");
+	const never = plainCalls([yielded]);
+	assert.deepEqual(normalizeTrace(never).map((s) => s.status), ["unknown"]);
+	assert.equal(diffRuns(never, never).left.verdict, "unclear");
+});
+
+test("the stage cap never drops a test run or the final stage", () => {
+	const cmd = "npm test; git status; git diff; cat a; cat b; cat c; npm run test:integration";
+	assert.deepEqual(sig(cmd).at(-1), "test:npm test:integration");
+	const trace = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command: cmd, error: "Exit code 1" }]));
+	assert.equal(diffRuns(trace, trace).left.verdict, "failed");
+});
+
+test("a fan-out cell's passing summary cannot make an unattributed test pass", () => {
+	const input =
+		'const [t, g] = await Promise.all([tools.exec_command({cmd:"npm test"}), tools.exec_command({cmd:"git status"})]); text(t); text(g);';
+	const trace = rawCell(
+		input,
+		parts(
+			"Script completed\n",
+			JSON.stringify({ chunk_id: "1", exit_code: 1, output: "Tests  4 passed (4)\nERROR: coverage below threshold" }),
+			JSON.stringify({ chunk_id: "2", exit_code: 0 }),
+		),
+	);
+	assert.equal(trace.steps[0]?.status, "error");
+	assert.notEqual(diffRuns(trace, trace).left.verdict, "passed");
+});
+
+test("TAP and here-strings are read correctly", () => {
+	assert.equal(hasTestFailures("ok 1 - a\nnot ok 2 - b"), true);
+	assert.equal(hasTestPasses("ok 1 - a\nok 2 - b"), false);
+	assert.equal(hasTestPasses("ok  \texample.com/pkg\t0.012s"), true);
+	assert.deepEqual(sig('grep foo <<< "bar"\nnpm test'), ["search:(grep)", "test:npm test"]);
+	assert.deepEqual(sig('echo "<<EOF"\nnpm test'), ["test:npm test"]);
+	assert.deepEqual(sig("cat <<EOF > notes.md\nnpm test\nEOF\ngit status"), ["write:notes.md", "read:git status"]);
+	assert.deepEqual(sig("cat > src/a.ts <<'EOF'\nx\nEOF"), ["write:src/a.ts"]);
+	assert.deepEqual(sig("echo done >> log.txt; npm test 2>&1 >/dev/null"), ["write:log.txt", "test:npm test"]);
+	assert.deepEqual(sig("cat a.ts 2>/dev/null"), ["read:a.ts"]);
+});
+
+test("an all-cosmetic diff points at where its first difference starts", () => {
+	const left = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: "a.ts" }]));
+	const right = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Read", file: "README.md" }, { name: "TodoWrite" }, { name: "Edit", file: "a.ts" }]),
+	);
+	const diff = diffRuns(left, right);
+	assert.equal(diff.flagged?.cosmetic, true);
+	assert.match(diff.explanation, /^At row 1 Claude Code B read `README\.md`/);
 });

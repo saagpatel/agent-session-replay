@@ -62,6 +62,8 @@ const NOISE_CMDS = new Set([
 	"which",
 	"date",
 ]);
+/** Commands that write a file when their output is redirected into it. */
+const WRITE_CMDS = new Set(["cat", "printf", "echo"]);
 const GIT_READS = new Set([
 	"status",
 	"log",
@@ -180,6 +182,12 @@ function classifyStage(
 		return [piped ? { action: "test", target, piped } : { action: "test", target }];
 	}
 	const head = (ws[0] ?? "").replace(/^.*\//, "");
+	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
+	const into = WRITE_CMDS.has(head) ? /(?:^|[^\d&>])>>?\s*([^\s&|;<>]+)/.exec(first)?.[1] : undefined;
+	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: relPath(into, cwd) }];
+	const teeInto = /\|\s*tee\s+(?:-a\s+)?([^\s&|;<>-][^\s&|;<>]*)/.exec(stage)?.[1];
+	if (teeInto && !teeInto.startsWith("/dev/") && !TEST_RE.test(ws.join(" ")))
+		return [{ action: "write", target: relPath(teeInto, cwd) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	if (READ_CMDS.has(head) && !/\s-i\b/.test(first)) {
 		const files = fileArgs(ws);
@@ -219,7 +227,8 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 	const seps: string[] = [];
 	let quote: string | null = null;
 	let cur = "";
-	let line = "";
+	// Delimiter of a heredoc opened on the current line, outside quotes.
+	let heredoc: string | null = null;
 	const flush = (sep: string | null) => {
 		const t = cur.trim();
 		if (t && !t.startsWith("#")) {
@@ -236,22 +245,34 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 		if (quote) {
 			if (ch === "\\" && quote === '"') {
 				cur += ch + (text[i + 1] ?? "");
-				line += ch + (text[i + 1] ?? "");
 				i++;
 				continue;
 			}
 			if (ch === quote) quote = null;
 			cur += ch;
-			line += ch;
 			continue;
 		}
+		if (ch === "<" && text.startsWith("<<", i)) {
+			// A here-string (`<<<`) carries no body; a heredoc's body follows the line.
+			if (text.startsWith("<<<", i)) {
+				cur += "<<<";
+				i += 2;
+				continue;
+			}
+			const op = /^<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(text.slice(i));
+			if (op) {
+				heredoc = op[2] as string;
+				cur += op[0];
+				i += op[0].length - 1;
+				continue;
+			}
+		}
 		if (ch === "\n") {
-			const heredoc = /<<-?\s*(['"]?)([A-Za-z_][\w]*)\1/.exec(line);
 			flush(";");
-			line = "";
 			if (heredoc) {
 				// Skip the body up to the delimiter line.
-				const delim = heredoc[2] as string;
+				const delim = heredoc;
+				heredoc = null;
 				let j = i + 1;
 				while (j < text.length) {
 					const nl = text.indexOf("\n", j);
@@ -273,18 +294,15 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 		if (ch === '"' || ch === "'") {
 			quote = ch;
 			cur += ch;
-			line += ch;
 			continue;
 		}
 		const two = text.slice(i, i + 2);
 		if (ch === ";" || two === "&&" || two === "||") {
 			flush(ch === ";" ? ";" : two);
-			line += ch === ";" ? ch : two;
 			if (ch !== ";") i++;
 			continue;
 		}
 		cur += ch;
-		line += ch;
 	}
 	flush(null);
 	return { stages, seps: seps.slice(0, Math.max(0, stages.length - 1)) };
@@ -327,7 +345,9 @@ function commandParts(cmd: string, cwd: string | null | undefined): CommandParts
 	// Every separator counts, including those around dropped stages: the
 	// `|| true` in `false && npm test || true` decides what the exit status means.
 	return {
-		parts: parts.slice(0, MAX_STAGES),
+		// Cap noisy scripts, but never drop a test run or the final stage: they
+		// decide the run's outcome and what the exit status means.
+		parts: parts.filter((c, i) => i < MAX_STAGES || c.action === "test" || c.last !== false),
 		chain: control ? "mixed" : parts.length > 1 || stages.length > 1 ? chainOf(seps) : "single",
 	};
 }
@@ -538,6 +558,13 @@ function stepResult(step: Step): { result: DiffStatus; testFailures: boolean; te
 	};
 }
 
+/** A plain-format command's result: pending when it yielded, else the step's own. */
+function yieldedOr(step: Step): UnitResult {
+	const raw = step.attributes[ATTR.EXEC_RESULTS];
+	const only = Array.isArray(raw) && raw.length === 1 ? (raw[0] as ExecResult) : undefined;
+	return only ? chunkResult(only) : stepResult(step);
+}
+
 function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 	const name = str(step.attributes[ATTR.TOOL_NAME]) ?? "";
 	const args = asObj(step.attributes[ATTR.TOOL_ARGS]);
@@ -578,10 +605,16 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			return units.length ? units : one([{ action: "other", target: "exec" }]);
 		}
 		default: {
+			// A plain-format poll of a yielded command: its result settles that command.
+			if (name === "write_stdin") {
+				const session = args["session_id"];
+				if (typeof session === "number" || typeof session === "string")
+					return [{ parts: [], chain: "single", ...yieldedOr(step), pollOf: String(session) }];
+			}
 			const cmd = commandOf(args);
 			if (cmd !== undefined) {
 				const { parts, chain } = commandParts(cmd, cwd);
-				return one(parts, chain);
+				return [{ parts, chain, ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
 		}
@@ -639,16 +672,15 @@ const isCommand = (c: Classified): boolean =>
  * Exit status: a single command owns it; an `&&` chain that succeeded ran every
  * stage successfully; a `;` chain only reports its last stage; a mixed chain
  * (`a && b || c`) says nothing about any one stage; a piped test reports the
- * pipe's last command, not the test. A test runner's own summary line is direct
- * evidence and overrides all of that, but only when the unit holds one test.
- * Everything else without evidence is `unknown`.
+ * pipe's last command, not the test. A failing summary line from the test
+ * runner marks its test failed whatever the exit said, when the unit holds one
+ * test. Everything else without evidence is `unknown`.
  */
 export function resolveStatuses(
 	parts: Classified[],
 	chain: Chain,
 	result: DiffStatus | "pending",
 	testFailures: boolean,
-	testPasses = false,
 ): DiffStatus[] {
 	const n = parts.length;
 	const known = result === "ok" || result === "error" || result === "interrupted";
@@ -677,13 +709,31 @@ export function resolveStatuses(
 			out[t] = failedResult ? (result as DiffStatus) : "error";
 			// After a failed stage of an `&&` chain nothing else ran.
 			if (chain === "and") for (let i = t + 1; i < n; i++) out[i] = "unknown";
-		} else if (testPasses && out[t] === "unknown") {
-			// A passing summary fills in a missing exit status; it never overrides
-			// a known failure (coverage gates, a later `&& tsc`, a crashed crate).
-			out[t] = "ok";
 		}
 	}
 	return out;
+}
+
+/**
+ * The test summary a unit's output carries, tied to its test part only when the
+ * unit holds exactly one test. A passing summary is recorded, never promoted to
+ * an exit status: "passed" needs both (see `runVerdict`).
+ */
+function summaries(
+	parts: Classified[],
+	testFailures: boolean,
+	testPasses: boolean,
+): Array<DiffStep["summary"]> {
+	const tests = parts.flatMap((c, i) => (c.action === "test" ? [i] : []));
+	return parts.map((_, i) =>
+		tests.length === 1 && tests[0] === i
+			? testFailures
+				? "fail"
+				: testPasses
+					? "pass"
+					: undefined
+			: undefined,
+	);
 }
 
 function stepUnits(step: Step, cwd: string | null | undefined): Unit[] {
@@ -743,15 +793,12 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 				waiting.unit.testPasses ||= unit.testPasses;
 				if (unit.result === "pending") continue;
 				const { unit: orig, steps } = waiting;
-				const statuses = resolveStatuses(
-					orig.parts,
-					orig.chain,
-					unit.result,
-					orig.testFailures,
-					orig.testPasses,
-				);
+				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures);
+				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
+					const sum = sums[i];
+					if (sum) d.summary = sum;
 					if (isFailure(d.status) && error) d.error = clip(error.trim(), ERROR_MAX);
 				});
 				pending.delete(unit.pollOf);
@@ -759,13 +806,8 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
-			const statuses = resolveStatuses(
-				parts,
-				unit.chain,
-				unit.result,
-				unit.testFailures,
-				unit.testPasses,
-			);
+			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures);
+			const sums = summaries(parts, unit.testFailures, unit.testPasses);
 			const made = parts.map((c, i) =>
 				make(
 					step,
@@ -777,6 +819,10 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 						: error,
 				),
 			);
+			made.forEach((d, i) => {
+				const sum = sums[i];
+				if (sum) d.summary = sum;
+			});
 			out.push(...made);
 			if (unit.result === "pending" && unit.sessionId)
 				pending.set(unit.sessionId, { unit: { ...unit, parts }, steps: made });

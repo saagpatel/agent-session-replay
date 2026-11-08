@@ -109,7 +109,14 @@ export function RunDiffView({
 	const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
 	const items = useMemo(() => foldRows(diff.rows, expanded), [diff.rows, expanded]);
 	const flagged = diff.flagged;
+	// The row the callout points at: a real fork's pivot, a cosmetic block's start.
+	const markRow = flagged ? (flagged.cosmetic ? flagged.startRow : flagged.pivotRow) : -1;
 	const firstDiff = diff.firstDifferenceRow;
+	// Only call a fork "the divergence that mattered" when the outcomes provably differ.
+	const provenOutcome =
+		diff.left.verdict !== diff.right.verdict &&
+		diff.left.verdict !== "unclear" &&
+		diff.right.verdict !== "unclear";
 	const firstIsElsewhere =
 		firstDiff !== null && flagged !== null && (firstDiff < flagged.startRow || firstDiff > flagged.endRow);
 	const counts = useMemo(() => {
@@ -133,7 +140,7 @@ export function RunDiffView({
 
 	useEffect(() => {
 		if (flagged)
-			document.getElementById(`rd-row-${flagged.pivotRow}`)?.scrollIntoView({ block: "nearest" });
+			document.getElementById(`rd-row-${markRow}`)?.scrollIntoView({ block: "nearest" });
 	}, [flagged]);
 
 	return (
@@ -147,11 +154,13 @@ export function RunDiffView({
 						{!flagged
 							? "No divergence"
 							: flagged.cosmetic
-								? `Only cosmetic differences · first at row ${flagged.pivotRow + 1}`
-								: `Divergence that mattered · row ${flagged.pivotRow + 1}`}
+								? `Only cosmetic differences · first at row ${markRow + 1}`
+								: provenOutcome
+									? `Divergence that mattered · row ${markRow + 1}`
+									: `Biggest change in approach · row ${markRow + 1}`}
 					</span>
 					{flagged ? (
-						<button type="button" className="rd-btn rd-btn--small" onClick={() => jump(flagged.pivotRow)}>
+						<button type="button" className="rd-btn rd-btn--small" onClick={() => jump(markRow)}>
 							{flagged.cosmetic ? "jump to it" : "jump to fork"}
 						</button>
 					) : null}
@@ -213,7 +222,7 @@ export function RunDiffView({
 						}
 						const r = it.row;
 						const inFlag = flagged !== null && r.row >= flagged.startRow && r.row <= flagged.endRow;
-						const isPivot = flagged?.pivotRow === r.row;
+						const isPivot = markRow === r.row;
 						const isFirst = firstIsElsewhere && firstDiff === r.row;
 						const cls = [
 							"rd-row",

@@ -8,14 +8,19 @@ import type { Trace } from "../types.ts";
 import { alignSteps } from "./align.ts";
 import { normalizeTrace } from "./normalize.ts";
 import { explainDivergence, rankDivergences } from "./rank.ts";
-import type { DiffStep, RunDiff, RunSide, RunVerdict } from "./types.ts";
+import { type DiffStep, isFailure, type RunDiff, type RunSide, type RunVerdict } from "./types.ts";
 
 const HARNESS_LABEL: Record<string, string> = {
 	"claude-code": "Claude Code",
 	codex: "Codex",
 };
 
-/** Coarse end state: the last test run wins, else the harness completion signal. */
+/**
+ * Coarse end state, from evidence only. A run passed when its last test run
+ * both exited successfully and printed the runner's passing summary; it failed
+ * when that run failed by exit status or by its summary; anything in between is
+ * unclear. Runs without tests fall back to the harness completion signal.
+ */
 export function runVerdict(
 	trace: Trace,
 	steps: DiffStep[],
@@ -23,16 +28,19 @@ export function runVerdict(
 	for (let i = steps.length - 1; i >= 0; i--) {
 		const s = steps[i] as DiffStep;
 		if (s.action !== "test") continue;
-		if (s.status === "unknown")
+		const name = `\`${s.target ?? "tests"}\``;
+		if (isFailure(s.status))
 			return {
-				verdict: "unclear",
-				reason: `last test run \`${s.target ?? "tests"}\` has no clear result`,
+				verdict: "failed",
+				reason: `last test run ${name} ${s.summary === "fail" ? "reported failing tests" : "exited with a failure"}`,
 			};
-		const ok = s.status === "ok";
-		return {
-			verdict: ok ? "passed" : "failed",
-			reason: `last test run \`${s.target ?? "tests"}\` ${ok ? "passed" : "failed"}`,
-		};
+		if (s.status === "ok" && s.summary === "pass")
+			return { verdict: "passed", reason: `last test run ${name} exited cleanly and reported passing tests` };
+		if (s.status === "ok")
+			return { verdict: "unclear", reason: `last test run ${name} exited cleanly but printed no passing summary` };
+		if (s.summary === "pass")
+			return { verdict: "unclear", reason: `last test run ${name} reported passing tests but its exit status is unknown` };
+		return { verdict: "unclear", reason: `last test run ${name} has no clear result` };
 	}
 	if (trace.run.outcome?.status === "completed")
 		return { verdict: "completed", reason: "the agent reported the task complete" };

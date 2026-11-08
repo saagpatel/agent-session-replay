@@ -72,6 +72,11 @@ export interface DiffStep {
 	/** Short human label: "edit src/parse.ts", "test pnpm test". */
 	label: string;
 	status: DiffStatus;
+	/**
+	 * For a test run: what the runner's own summary line said, when the step's
+	 * output had one that could be tied to this test alone.
+	 */
+	summary?: "pass" | "fail";
 	/** Truncated error text when the step failed. */
 	error?: string;
 	startedAt: string;
