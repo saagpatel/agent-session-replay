@@ -62,6 +62,33 @@ const NOISE_CMDS = new Set([
 	"which",
 	"date",
 ]);
+/** A bare redirect operator, whose target is the next word (`> out.txt`). */
+const BARE_REDIRECT = /^(?:\d+|&)?(?:>>?|>\||<<?<?-?)$/;
+
+/**
+ * The words that make up the command itself: env assignments stay for the
+ * caller to strip, while unquoted redirects go, together with the target of a
+ * spaced one (`npm run build > build.log` is `npm run build`).
+ */
+function commandWords(toks: Array<{ text: string; quoted: boolean }>): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < toks.length; i++) {
+		const t = toks[i] as { text: string; quoted: boolean };
+		if (!t.quoted && BARE_REDIRECT.test(t.text)) {
+			i++;
+			continue;
+		}
+		if (!t.quoted && /^(?:\d*|&)[<>]/.test(t.text)) continue;
+		out.push(t.text);
+	}
+	return out;
+}
+
+/** `sed` that edits its files: `-i`, `-i.bak`, a flag group with `i`, or `--in-place`. */
+function sedInPlace(toks: Array<{ text: string; quoted: boolean }>): boolean {
+	return toks.some((t) => !t.quoted && (/^-[A-Za-z]*i/.test(t.text) || /^--in-place\b/.test(t.text)));
+}
+
 /** The file an unquoted `>`/`>>` redirect writes to, if any. */
 function redirectTarget(toks: Array<{ text: string; quoted: boolean }>): string | undefined {
 	for (let i = 0; i < toks.length; i++) {
@@ -262,7 +289,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	const cmds = pipeline(stage);
 	const first = cmds[0] ?? "";
 	const toks = tokens(first);
-	const ws = toks.filter((t) => t.quoted || !/^\d*[<>]/.test(t.text)).map((t) => t.text);
+	const ws = commandWords(toks);
 	while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
 	const test = TEST_RE.exec(ws.join(" ").replace(RUNNER_PREFIX, ""));
 	if (test) {
@@ -277,7 +304,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
 	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
-	if (READ_CMDS.has(head) && !/\s-i\b/.test(first)) {
+	if (READ_CMDS.has(head) && !(head === "sed" && sedInPlace(toks))) {
 		const files = fileArgs(ws);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
@@ -814,14 +841,17 @@ function make(
 	status: DiffStatus,
 	error: string | undefined,
 ): DiffStep {
-	const target = c.target ? clip(c.target, TARGET_MAX) : null;
+	// The full target identifies the step; only the label is clipped, so two
+	// long paths that share a prefix never collapse into one signature.
+	const target = c.target;
+	const shown = target ? clip(target, TARGET_MAX) : null;
 	const out: DiffStep = {
 		index,
 		stepId: step.step_id,
 		action: c.action,
 		target,
-		label: target
-			? `${VERB[c.action]} ${target}`
+		label: shown
+			? `${VERB[c.action]} ${shown}`
 			: c.note
 				? `${VERB[c.action]} (${c.note})`
 				: VERB[c.action],

@@ -1068,3 +1068,40 @@ test("test summary detection stays linear on long blank runs", () => {
 	hasTestPasses(big);
 	assert.ok(Date.now() - start < 500, "summary regexes must not backtrack across lines");
 });
+
+// ---- #112: exact signatures ------------------------------------------------
+
+test("long targets keep their full text in the signature (#112 item 2)", () => {
+	const deep = (leaf: string) => `src/${"very-long-directory-name/".repeat(4)}${leaf}.ts`;
+	const left = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: deep("alpha") }]));
+	const right = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: deep("beta") }]));
+	const [a] = normalizeTrace(left);
+	const [b] = normalizeTrace(right);
+	assert.ok((a?.target ?? "").length > 80);
+	assert.notEqual(a?.signature, b?.signature);
+	const diff = diffRuns(left, right);
+	assert.notEqual(diff.flagged, null);
+	assert.ok(diff.flagged?.reasons.includes("touches a file the other run never edits"));
+	// Labels and explanations stay readable.
+	assert.ok((a?.label.length ?? 0) <= 90);
+	assert.ok(diff.explanation.includes("…"));
+});
+
+test("sed that edits in place is a command, never a read (#112 item 5)", () => {
+	assert.deepEqual(sig("sed --in-place 's/a/b/' src/a.ts"), ["run:sed --in-place s/a/b/ src/a.ts"]);
+	assert.deepEqual(sig("sed -i.bak 's/a/b/' src/a.ts"), ["run:sed -i.bak s/a/b/ src/a.ts"]);
+	assert.deepEqual(sig("sed -Ei 's/a/b/' src/a.ts"), ["run:sed -Ei s/a/b/ src/a.ts"]);
+	assert.deepEqual(sig("sed -n 1,20p src/a.ts"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("sed -E -n 's/a/b/p' src/a.ts"), ["read:src/a.ts"]);
+});
+
+test("a spaced redirect's target never leaks into the command (#112 item 6)", () => {
+	assert.deepEqual(sig("npm run build > build.log"), ["run:npm run build"]);
+	assert.deepEqual(sig("npm run build 2> err.log"), ["run:npm run build"]);
+	assert.deepEqual(sig("npm run build >> build.log 2>&1"), ["run:npm run build"]);
+	assert.deepEqual(sig("npm run build 2>&1"), ["run:npm run build"]);
+	assert.deepEqual(sig("head -5 src/a.ts > top.txt"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("sort < input.txt"), ["run:sort"]);
+	// A quoted ">" is data, not a redirect.
+	assert.deepEqual(sig('node -e "1 > 0" x.js'), ["run:node -e 1 > 0 x.js"]);
+});
