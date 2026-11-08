@@ -263,7 +263,8 @@ export function describeStep(s: DiffStep): string {
 		return s.action === "test" || s.action === "run" ? `${phrase}, with no clear result` : phrase;
 	}
 	if (isFailure(s.status)) return `${phrase}, which failed`;
-	if (s.action === "test") return `${phrase}, which passed`;
+	// "Passed" needs the runner's own summary; a clean exit alone says less.
+	if (s.action === "test") return s.summary === "pass" ? `${phrase}, which passed` : `${phrase}, which exited cleanly`;
 	return phrase;
 }
 

@@ -11,7 +11,7 @@
  * subagent sidechains are summarized by their `delegate` step.
  */
 
-import { ATTR, type ExecResult, type Step, type Trace } from "../types.ts";
+import { ATTR, type ExecPart, type ExecResult, type Step, type Trace } from "../types.ts";
 import {
 	type DiffAction,
 	type DiffStatus,
@@ -113,21 +113,6 @@ const GIT_READS = new Set([
 const MAX_STAGES = 6;
 const READ_CMDS = new Set(["cat", "sed", "head", "tail", "nl", "less", "bat"]);
 const SEARCH_CMDS = new Set(["rg", "grep", "find", "ls", "fd", "tree", "ag"]);
-/** Commands that take a subcommand worth keeping in the target ("git status"). */
-const SUBCOMMAND_CMDS = new Set([
-	"git",
-	"pnpm",
-	"npm",
-	"yarn",
-	"bun",
-	"cargo",
-	"go",
-	"gh",
-	"docker",
-	"make",
-	"uv",
-	"swift",
-]);
 
 /** Make a path comparable across worktrees: strip the run's cwd, else keep the tail. */
 export function relPath(path: string, cwd: string | null | undefined): string {
@@ -304,12 +289,10 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 		return [{ action: "read", target: `git ${ws[1]}` }];
 	// Searches align regardless of tool (rg vs Grep vs find).
 	if (SEARCH_CMDS.has(head)) return [{ action: "search", target: null, note: head }];
-	const sub = ws[1];
-	const target =
-		SUBCOMMAND_CMDS.has(head) && sub && !sub.startsWith("-")
-			? `${head} ${sub}`
-			: head;
-	return [{ action: "run", target }];
+	// Scripts and tools are not parsed further: the full command (env and
+	// redirects aside) is the target, so `npm run build` and `npm run lint`
+	// never share a signature.
+	return [{ action: "run", target: ws.join(" ").replace(/\s+/g, " ").trim() }];
 }
 
 /** Shell keywords that start or end control flow; stripped from a stage's head. */
@@ -544,33 +527,6 @@ function literalArg(body: string, key: string | null): { found: boolean; value?:
 	return value === undefined ? { found: true } : { found: true, value };
 }
 
-/**
- * Whether a cell prints each chunked call's result right where it is awaited,
- * in call order: `text(await tools.x(…))`, or `const r = await tools.x(…);
- * text(r)` before the next call. Only then can result chunks be matched to calls
- * by position; concurrent or reordered printing leaves them unattributed.
- */
-function printsInCallOrder(input: string, calls: RegExpMatchArray[]): boolean {
-	if (/\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input)) return false;
-	let printed = 0;
-	for (let i = 0; i < calls.length; i++) {
-		const call = calls[i] as RegExpMatchArray;
-		if (!CHUNKED.has(call[1] ?? "")) continue;
-		const at = call.index ?? 0;
-		const before = input.slice(Math.max(0, at - 40), at);
-		const segment = input.slice(at, calls[i + 1]?.index ?? input.length);
-		if (/text\(\s*(?:String\(\s*)?await\s+$/.test(before)) {
-			printed++;
-			continue;
-		}
-		const name = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+$/.exec(before)?.[1];
-		if (!name) return false;
-		const prints = [...segment.matchAll(/\btext\(\s*(?:String\(\s*)?([A-Za-z_$][\w$]*)/g)];
-		if (prints.length !== 1 || prints[0]?.[1] !== name) return false;
-		printed++;
-	}
-	return printed > 0;
-}
 
 /**
  * One unit of work with its own result: a shell command (possibly several
@@ -592,37 +548,6 @@ interface Unit {
 
 type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId">;
 
-/** Code that makes the rest of a statement conditional or deferred. */
-const CONDITIONAL_RE = /\b(?:if|else|while|for|do|switch|case|catch|try|function|return)\b|=>|\?|&&|\|\|/;
-
-/**
- * Whether the call at `at` is a top-level, unconditional statement of the cell:
- * outside every `{}` block (branches, loops, functions, try/catch) and not
- * guarded by a condition. Strings and template literals are skipped, so a
- * patch body full of braces never counts.
- */
-function isUnconditional(input: string, at: number): boolean {
-	let depth = 0;
-	let quote: string | null = null;
-	let statementStart = 0;
-	for (let i = 0; i < at; i++) {
-		const ch = input[i] as string;
-		if (quote) {
-			if (ch === "\\") i++;
-			else if (ch === quote) quote = null;
-			continue;
-		}
-		if (ch === '"' || ch === "'" || ch === "`") quote = ch;
-		else if (ch === "{") {
-			depth++;
-			statementStart = i + 1;
-		} else if (ch === "}") {
-			depth--;
-			statementStart = i + 1;
-		} else if (ch === ";") statementStart = i + 1;
-	}
-	return depth === 0 && !CONDITIONAL_RE.test(input.slice(statementStart, at));
-}
 
 /** Calls in an exec cell that write one result chunk each. */
 const CHUNKED = new Set(["exec_command", "write_stdin"]);
@@ -638,48 +563,128 @@ function chunkResult(r: ExecResult | undefined): UnitResult {
 }
 
 /**
+ * The cell's code with every comment and string body blanked to spaces (quote
+ * marks kept, length unchanged), so a call that appears in a comment, a patch
+ * body or a string is never read as a call, and indices still line up with the
+ * original text for reading literal arguments.
+ */
+export function maskCode(code: string): string {
+	let out = "";
+	let i = 0;
+	while (i < code.length) {
+		const ch = code[i] as string;
+		const next = code[i + 1];
+		if (ch === "/" && next === "/") {
+			const end = code.indexOf("\n", i);
+			const stop = end < 0 ? code.length : end;
+			out += " ".repeat(stop - i);
+			i = stop;
+		} else if (ch === "/" && next === "*") {
+			const end = code.indexOf("*/", i + 2);
+			const stop = end < 0 ? code.length : end + 2;
+			out += code.slice(i, stop).replace(/[^\n]/g, " ");
+			i = stop;
+		} else if (ch === '"' || ch === "'" || ch === "`") {
+			let j = i + 1;
+			while (j < code.length && code[j] !== ch) j += code[j] === "\\" ? 2 : 1;
+			const stop = Math.min(j + 1, code.length);
+			out += ch + code.slice(i + 1, stop - 1).replace(/[^\n]/g, " ") + (stop - 1 > i ? ch : "");
+			i = stop;
+		} else {
+			out += ch;
+			i++;
+		}
+	}
+	return out.slice(0, code.length);
+}
+
+/** Anything that makes a cell's flow non-linear or its printing ambiguous. */
+const COMPLEX_RE =
+	/\b(?:if|else|for|while|do|switch|case|try|catch|finally|function|class|return|yield|new|Promise)\b|=>|\?|&&|\|\||\.then\s*\(/;
+
+/**
+ * Whether a masked cell is straight-line: no branches, loops, functions,
+ * promises or short-circuits, and every tool call is a top-level awaited
+ * statement that prints its own result exactly once, either inline
+ * (`text(await tools.x(…))`) or right after (`const r = await tools.x(…);
+ * text(r)`), with nothing else printed. Only then does the n-th printed part
+ * belong to the n-th call.
+ */
+function straightLine(masked: string, calls: RegExpMatchArray[]): boolean {
+	if (calls.length === 0 || COMPLEX_RE.test(masked)) return false;
+	const prints = [...masked.matchAll(/\btext\s*\(/g)].length;
+	if (prints !== calls.length) return false;
+	let depth = 0;
+	let k = 0;
+	for (let i = 0; i < masked.length && k < calls.length; i++) {
+		const at = calls[k]?.index ?? -1;
+		if (i === at) {
+			if (depth !== 0) return false;
+			const before = masked.slice(Math.max(0, at - 40), at);
+			const end = calls[k + 1]?.index ?? masked.length;
+			const after = masked.slice(at, end);
+			const inline = /text\(\s*(?:String\(\s*)?await\s+$/.test(before);
+			const name = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+$/.exec(before)?.[1];
+			const later = name
+				? [...after.matchAll(/\btext\(\s*(?:String\(\s*)?([A-Za-z_$][\w$]*)/g)].map((m) => m[1])
+				: [];
+			if (!inline && !(name && later.length === 1 && later[0] === name)) return false;
+			k++;
+		}
+		const ch = masked[i];
+		if (ch === "{") depth++;
+		else if (ch === "}") depth--;
+	}
+	return k === calls.length;
+}
+
+/** The result one printed part proves for the call it belongs to. */
+function partResult(tool: string, part: ExecPart | undefined, completed: boolean): UnitResult {
+	if (!part || !completed) return UNKNOWN;
+	if (CHUNKED.has(tool)) return part.kind === "chunk" ? chunkResult(part.result) : UNKNOWN;
+	// A patch applied only when its own result is the `{}` apply_patch prints.
+	if (tool === "apply_patch") return part.kind === "empty-object" ? OK : UNKNOWN;
+	return part.kind === "other" && part.error ? UNKNOWN : OK;
+}
+
+const OK: UnitResult = { result: "ok", testFailures: false, testPasses: false };
+
+/**
  * Current Codex rollouts route tools through a JS `exec` cell, e.g.
- * `text(await tools.exec_command({cmd:"pnpm test"}))`. One cell may call several
- * tools; each call becomes its own unit. A command's result comes only from its
- * own result chunk, matched by position when the cell provably prints in call
- * order. A cell that merely finished running says nothing about its commands.
+ * `text(await tools.exec_command({cmd:"pnpm test"}))`. Each call becomes its
+ * own unit, and fails closed: results are read only from a straight-line cell
+ * that ran to completion, where the n-th printed part is the n-th call's own
+ * result. Any other cell keeps its calls visible with unknown results, except
+ * that a cell failing on `apply_patch` marks its single patch failed.
  */
 function codexExecCell(step: Step, input: string, cwd: string | null | undefined): Unit[] {
-	const calls = [...input.matchAll(CELL_CALL_RE)];
-	const raw = step.attributes[ATTR.EXEC_RESULTS];
-	const results = Array.isArray(raw) ? (raw as ExecResult[]) : [];
-	const chunked = calls.filter((c) => CHUNKED.has(c[1] ?? "")).length;
-	const perCall = results.length === chunked && chunked > 0 && printsInCallOrder(input, calls);
-	const cell = stepResult(step);
-	// Non-command calls (patches, plans) throw on failure, so a script that ran
-	// to completion vouches for them; otherwise a failed cell only for a lone call.
+	const masked = maskCode(input);
+	const calls = [...masked.matchAll(CELL_CALL_RE)];
+	const rawParts = step.attributes[ATTR.EXEC_PARTS];
+	const printed = Array.isArray(rawParts) ? (rawParts as ExecPart[]) : [];
 	const completed = step.attributes[ATTR.EXEC_COMPLETED] === true;
-	const plain: UnitResult = completed
-		? { result: "ok", testFailures: false, testPasses: false }
-		: cell.result === "ok" || calls.length === 1
-			? { result: cell.result, testFailures: false, testPasses: false }
-			: UNKNOWN;
-	// Cell-wide test evidence can only speak for a lone test in the cell.
-	const cellEvidence = { testFailures: cell.testFailures, testPasses: cell.testPasses };
-	let k = 0;
+	const linear = straightLine(masked, calls) && printed.length === calls.length;
+	const patches = calls.filter((c) => c[1] === "apply_patch").length;
+	const patchFailed =
+		!completed && patches === 1 && /apply_patch|patch rejected/i.test(String(step.attributes[ATTR.TOOL_ERROR] ?? ""));
 	const out: Unit[] = [];
 	calls.forEach((call, i) => {
 		const tool = call[1] ?? "";
 		const body = input.slice(call.index ?? 0, calls[i + 1]?.index ?? input.length);
-		const res: UnitResult = CHUNKED.has(tool)
-			? perCall
-				? chunkResult(results[k++])
-				: { ...UNKNOWN, ...cellEvidence }
-			: // A finished cell only vouches for calls it certainly reached.
-				isUnconditional(input, call.index ?? 0)
-				? plain
-				: UNKNOWN;
+		const res: UnitResult =
+			tool === "apply_patch" && patchFailed
+				? { result: "error", testFailures: false, testPasses: false }
+				: linear
+					? partResult(tool, printed[i], completed)
+					: UNKNOWN;
 		if (tool === "exec_command") {
 			const cmd = literalArg(body, "cmd");
 			const workdir = literalArg(body, "workdir").value;
-			if (cmd.value !== undefined) out.push({ ...commandParts(cmd.value, cwd, workdir), ...res });
-			// A command we cannot read statically still happened: keep it, unresolved.
-			else out.push({ parts: [{ action: "run", target: null, note: "unparsed command" }], chain: "single", ...res });
+			const unit = cmd.value !== undefined
+				? { ...commandParts(cmd.value, cwd, workdir), ...res }
+				: // A command we cannot read statically still happened: keep it, unresolved.
+					{ parts: [{ action: "run" as const, target: null, note: "unparsed command" }], chain: "single" as const, ...res };
+			out.push(unit);
 		} else if (tool === "write_stdin") {
 			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
 			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
@@ -695,9 +700,8 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			out.push({ parts: [{ action: "other", target: tool }], chain: "single", ...res });
 		}
 	});
-	// Without one chunk per call, the cell's output is shared by every call: it
-	// can only speak for a lone call that is itself a solo test run.
-	if (!perCall && calls.length !== 1)
+	// Evidence only ever comes from a call's own part; never share it.
+	if (!linear)
 		for (const u of out) {
 			u.solo = false;
 			u.testFailures = false;
@@ -758,7 +762,13 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 		case "apply_patch": {
 			const input = str(args["input"]) ?? str(args["patch"]) ?? "";
 			const parts = patchTargets(input, cwd);
-			return one(parts.length ? parts : [{ action: "edit", target: null }]);
+			// A patch counts as applied only when its own output said so.
+			const own = stepResult(step);
+			const result: DiffStatus =
+				own.result !== "ok" ? own.result : step.attributes[ATTR.PATCH_CONFIRMED] === true ? "ok" : "unknown";
+			return [
+				{ parts: parts.length ? parts : [{ action: "edit", target: null }], chain: "single", ...own, result },
+			];
 		}
 		case "exec": {
 			const units = codexExecCell(step, str(args["input"]) ?? "", cwd);

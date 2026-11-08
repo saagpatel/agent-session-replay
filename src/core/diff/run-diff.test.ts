@@ -49,9 +49,9 @@ test("classifyCommand maps shell commands onto harness-neutral verbs", () => {
 	assert.deepEqual(c(`cat ${WORKSPACE_CODEX}/README.md`), ["read:README.md"]);
 	assert.deepEqual(c("rg -n parseDate src"), ["search:(rg)"]);
 	assert.deepEqual(c("git status --short"), ["read:git status"]);
-	assert.deepEqual(c("git commit -m x"), ["run:git commit"]);
+	assert.deepEqual(c("git commit -m x"), ["run:git commit -m x"]);
 	// sed -i edits in place; it is not a read
-	assert.deepEqual(c("sed -i 's/a/b/' src/date.ts"), ["run:sed"]);
+	assert.deepEqual(c("sed -i 's/a/b/' src/date.ts"), ["run:sed -i s/a/b/ src/date.ts"]);
 });
 
 test("test runs normalize to the runner, ignoring flags, pipes and redirects", () => {
@@ -73,13 +73,13 @@ test("compound commands split into one step per stage, dropping shell noise", ()
 	]);
 	assert.deepEqual(c("cat src/a.ts src/b.ts"), ["read:src/a.ts", "read:src/b.ts"]);
 	// heredoc bodies are not commands
-	assert.deepEqual(c("python3 - <<'PY'\nimport os; os.remove('x')\nPY"), ["run:python3"]);
+	assert.deepEqual(c("python3 - <<'PY'\nimport os; os.remove('x')\nPY"), ["run:python3 -"]);
 });
 
 test("stage splitting respects quotes", () => {
 	assert.deepEqual(
 		classifyCommand(`node -e "const a = 1; console.log(a)"; git status`, null).map((x) => `${x.action}:${x.target}`),
-		["run:node", "read:git status"],
+		["run:node -e const a = 1; console.log(a)", "read:git status"],
 	);
 });
 
@@ -109,7 +109,7 @@ test("a failing suite both runs hit at different times is not the flagged fork",
 });
 
 test("a Codex exec cell that patches and then tests yields both steps", () => {
-	const input = `const r = await tools.apply_patch(${JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/date.ts\n@@\n-a\n+b\n*** End Patch`)});\ntext(await tools.exec_command({"cmd":"npm test","max_output_tokens":2000}));`;
+	const input = `text(await tools.apply_patch(${JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/date.ts\n@@\n-a\n+b\n*** End Patch`)}));\ntext(await tools.exec_command({"cmd":"npm test","max_output_tokens":2000}));`;
 	const trace = parseCodexEvents([
 		{ timestamp: "2026-10-01T11:00:00.000Z", type: "session_meta", payload: { id: "x", cwd: WORKSPACE_CODEX } },
 		{
@@ -400,7 +400,8 @@ test("raw JSONL for both harnesses flows through the shared parseTranscript snif
 
 test("describeStep reads like a sentence fragment", () => {
 	assert.equal(describeStep(step("test", "pnpm test", "error")), "ran `pnpm test`, which failed");
-	assert.equal(describeStep(step("test", "pnpm test")), "ran `pnpm test`, which passed");
+	assert.equal(describeStep(step("test", "pnpm test")), "ran `pnpm test`, which exited cleanly");
+	assert.equal(describeStep({ ...step("test", "pnpm test"), summary: "pass" }), "ran `pnpm test`, which passed");
 	assert.equal(describeStep(step("write", "src/new.ts")), "created `src/new.ts`");
 	assert.equal(describeStep(step("plan", null)), "updated its plan");
 });
@@ -719,7 +720,7 @@ test("every line of a script counts, heredoc bodies never do", () => {
 	assert.deepEqual(sig("# setup\nnpm ci\n\nnpm test"), ["run:npm ci", "test:npm test"]);
 	assert.deepEqual(
 		sig("python3 - <<'PY'\nimport os\nos.system('npm test')\nPY\ngit status"),
-		["run:python3", "read:git status"],
+		["run:python3 -", "read:git status"],
 	);
 	assert.deepEqual(sig("cat a.ts \\\n  b.ts && npm test"), ["read:a.ts", "read:b.ts", "test:npm test"]);
 	const trace = parseClaudeCodeEvents(
@@ -887,7 +888,7 @@ test("an edit with no recorded result cannot headline over a completed fork", ()
 	const right = parseClaudeCodeEvents(ccEvents(PROMPT, []));
 	const diff = diffRuns(left, right);
 	const pivot = diff.rows[diff.flagged?.pivotRow ?? -1];
-	assert.equal(pivot?.left?.signature, "run:npm run");
+	assert.equal(pivot?.left?.signature, "run:npm run build");
 	assert.ok(!diff.flagged?.reasons.includes("touches a file the other run never edits"));
 	assert.equal(
 		describeStep({ ...step("edit", "src/a.ts"), status: "unknown" }),
@@ -919,9 +920,9 @@ test("git branch is a read only when it lists", () => {
 	assert.deepEqual(sig("git branch"), ["read:git branch"]);
 	assert.deepEqual(sig("git branch -a"), ["read:git branch"]);
 	assert.deepEqual(sig("git branch --show-current"), ["read:git branch"]);
-	assert.deepEqual(sig("git branch -D feature"), ["run:git branch"]);
-	assert.deepEqual(sig("git branch -m renamed"), ["run:git branch"]);
-	assert.deepEqual(sig("git branch new-work"), ["run:git branch"]);
+	assert.deepEqual(sig("git branch -D feature"), ["run:git branch -D feature"]);
+	assert.deepEqual(sig("git branch -m renamed"), ["run:git branch -m renamed"]);
+	assert.deepEqual(sig("git branch new-work"), ["run:git branch new-work"]);
 });
 
 test("only unquoted redirects write files", () => {
@@ -930,7 +931,7 @@ test("only unquoted redirects write files", () => {
 	assert.deepEqual(sig('echo "x" > out.txt'), ["write:out.txt"]);
 	assert.deepEqual(sig("echo x >>log.txt"), ["write:log.txt"]);
 	assert.deepEqual(sig('echo "a | tee b"'), []);
-	assert.deepEqual(sig("npm run build | tee build.log"), ["run:npm run", "write:build.log"]);
+	assert.deepEqual(sig("npm run build | tee build.log"), ["run:npm run build", "write:build.log"]);
 	assert.deepEqual(sig("npm test 2>&1 | tee test.log"), ["test:npm test", "write:test.log"]);
 });
 
@@ -996,4 +997,73 @@ test("two unclear runs never claim the outcome was unchanged", () => {
 	const diff = diffRuns(left, right);
 	assert.equal(diff.left.verdict, "unclear");
 	assert.match(diff.explanation, /whether it changed the outcome is unknown/);
+});
+
+// ---- round 7: fail closed --------------------------------------------------
+
+test("script and tool commands keep their full text as the target", () => {
+	assert.deepEqual(sig("npm run build"), ["run:npm run build"]);
+	assert.deepEqual(sig("npm run lint"), ["run:npm run lint"]);
+	assert.deepEqual(sig("npx tsc --noEmit"), ["run:npx tsc --noEmit"]);
+	assert.deepEqual(sig("npx eslint ."), ["run:npx eslint ."]);
+	assert.deepEqual(sig("FORCE=1 npm run build 2>&1"), ["run:npm run build"]);
+});
+
+test("comments and strings in an exec cell are never read as calls", () => {
+	const done = parts("Script completed\n");
+	const commented = rawCell('// await tools.apply_patch("*** Update File: src/a.ts");\nconst x = 1;', done);
+	assert.ok(normalizeTrace(commented).every((s) => s.action !== "edit"));
+	const inString = rawCell('const note = "text(await tools.exec_command({cmd:\\"npm test\\"}))";', done);
+	assert.ok(normalizeTrace(inString).every((s) => s.action !== "test"));
+	const blockComment = rawCell('/* tools.apply_patch("x") */ text(await tools.exec_command({cmd:"git status"}));', parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 })));
+	assert.deepEqual(statusesOf(blockComment), ["read:ok"]);
+});
+
+test("any cell that is not straight-line keeps its calls but marks them unknown", () => {
+	const patch = JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/a.ts\n*** End Patch`);
+	const chunk = JSON.stringify({ chunk_id: "1", exit_code: 0, output: "ℹ tests 1\nℹ pass 1\nℹ fail 0" });
+	// A rejected patch inside allSettled still completes the cell.
+	const settled = rawCell(
+		`text(await Promise.allSettled([tools.apply_patch(${patch})]));`,
+		parts("Script completed\n", JSON.stringify([{ status: "rejected", reason: "patch failed" }])),
+	);
+	assert.deepEqual(statusesOf(settled), ["edit:unknown"]);
+	// Branches, unprinted results and extra prints all fail closed.
+	assert.deepEqual(statusesOf(rawCell(`if (ok) { text(await tools.exec_command({cmd:"npm test"})); }`, parts("Script completed\n", chunk))), ["test:unknown"]);
+	assert.deepEqual(statusesOf(rawCell(`await tools.apply_patch(${patch});`, parts("Script completed\n"))), ["edit:unknown"]);
+	assert.deepEqual(
+		statusesOf(rawCell(`text("start");\ntext(await tools.exec_command({cmd:"npm test"}));`, parts("Script completed\n", "start", chunk))),
+		["test:unknown"],
+	);
+	// The same calls, straight-line and each printed once, are read.
+	assert.deepEqual(
+		statusesOf(rawCell(`text(await tools.apply_patch(${patch}));\ntext(await tools.exec_command({cmd:"npm test"}));`, parts("Script completed\n", "{}", chunk))),
+		["edit:ok", "test:ok"],
+	);
+});
+
+test("a patch counts as applied only when its own output confirms it", () => {
+	const patchCall = (output: string) =>
+		normalizeTrace(
+			parseCodexEvents([
+				{ timestamp: "2026-10-01T14:00:00.000Z", type: "session_meta", payload: { id: "p", cwd: WORKSPACE_CODEX } },
+				{
+					timestamp: "2026-10-01T14:00:01.000Z",
+					type: "response_item",
+					payload: { type: "custom_tool_call", name: "apply_patch", call_id: "a1", status: "completed", input: `*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/a.ts\n*** End Patch` },
+				},
+				{ timestamp: "2026-10-01T14:00:02.000Z", type: "response_item", payload: { type: "custom_tool_call_output", call_id: "a1", output } },
+			]),
+		).map((s) => `${s.action}:${s.status}`);
+	assert.deepEqual(patchCall("Success. Updated the following files:\nM a.ts"), ["edit:ok"]);
+	assert.deepEqual(patchCall(""), ["edit:unknown"]);
+	assert.deepEqual(patchCall("Process exited with code 1\nOutput:\nerror: hunk failed"), ["edit:error"]);
+});
+
+test("test summary detection stays linear on long blank runs", () => {
+	const big = `x${"\n".repeat(200_000)}${" ".repeat(200_000)}y`;
+	const start = Date.now();
+	hasTestFailures(big);
+	hasTestPasses(big);
+	assert.ok(Date.now() - start < 500, "summary regexes must not backtrack across lines");
 });
