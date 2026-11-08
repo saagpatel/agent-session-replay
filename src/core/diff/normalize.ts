@@ -254,13 +254,18 @@ function joinPath(dir: string, rel: string): string {
 }
 
 /** The directory a `cd` argument leads to, or null when it is not static. */
+/** A `cd` argument whose target cannot be known statically. */
+function dynamicCd(arg: string | undefined): boolean {
+	return !arg || /[$`~*]/.test(arg) || arg === "-";
+}
+
 function cdTo(where: Where, arg: string | undefined): string | null {
-	if (!arg || /[$`~*]/.test(arg) || arg === "-") return null;
+	if (dynamicCd(arg)) return null;
+	if (!arg) return null;
 	if (arg.startsWith("/")) return joinPath("/", arg);
 	return where.dir ? joinPath(where.dir, arg) : null;
 }
 
-/** A file argument made workspace-relative from where the command ran. */
 /**
  * A file argument made workspace-relative from where the command ran, or null
  * when a relative path's directory is unknown (a dynamic `cd` or workdir):
@@ -543,8 +548,7 @@ function commandParts(
 			const to = cdTo(where, w[1]);
 			// A dynamic target (`cd $DIR`, `cd -`, `cd ~x`) loses the directory;
 			// without a workspace root, a static relative cd just stays relative.
-			const dynamic = !w[1] || /[$`~*]/.test(w[1]) || w[1] === "-";
-			if (dynamic || (to === null && where.dir !== null)) where.lost = true;
+			if (dynamicCd(w[1]) || (to === null && where.dir !== null)) where.lost = true;
 			where.dir = to;
 		}
 		else if (stage) printing++;
@@ -623,36 +627,107 @@ function jsString(lit: string): string | undefined {
 const CELL_CALL_RE = /tools\.([A-Za-z0-9_]+)\s*\(/g;
 const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
 
+/** The argument text of the call that opens `body` (between its matching parens). */
+function callArgs(body: string, masked: string): { text: string; masked: string } | null {
+	const open = masked.indexOf("(");
+	if (open < 0) return null;
+	let depth = 0;
+	for (let i = open; i < masked.length; i++) {
+		const ch = masked[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") {
+			depth--;
+			if (depth === 0) return { text: body.slice(open + 1, i), masked: masked.slice(open + 1, i) };
+		}
+	}
+	return null;
+}
+
+/** Split masked text on commas at nesting depth 0, as [start, end) ranges. */
+function topLevelRanges(masked: string): Array<[number, number]> {
+	const out: Array<[number, number]> = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < masked.length; i++) {
+		const ch = masked[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") depth--;
+		else if (ch === "," && depth === 0) {
+			out.push([start, i]);
+			start = i + 1;
+		}
+	}
+	out.push([start, masked.length]);
+	return out.filter(([x, y]) => masked.slice(x, y).trim() !== "");
+}
+
+/** Exactly one static string literal and nothing else, or undefined. */
+function soleLiteral(text: string): string | undefined {
+	const t = text.trim();
+	const lit = new RegExp(String.raw`^(?:${STRING_LIT})$`, "s").exec(t)?.[0];
+	return lit === undefined ? undefined : jsString(lit);
+}
+
 /**
- * A call argument that is exactly one static string literal: found as real
- * code (never inside a comment or another string), and followed directly by
- * `,`, `}` or `)` so nothing is concatenated or called on it. Anything else is
- * `found` without a value: the call happened but its argument is not known.
+ * A call argument read exactly, or reported as present-but-unknown.
+ *
+ * With a `key`, the call's only argument must be one object literal whose
+ * top-level properties all have plain names. The key must appear exactly once,
+ * as `key: "literal"`. A spread, a computed key or method, a duplicate, a
+ * shorthand (`{workdir}`) or a non-literal value all leave the call's argument
+ * unknown (`found` without a value), since any of them can change what runs.
+ * Without a key, the only argument must be one string literal (a patch).
  */
 function exactLiteralArg(body: string, key: string | null): { found: boolean; value?: string } {
 	const masked = maskCode(body);
-	const lead = key
-		? new RegExp(String.raw`(["']?)\b${key}\1\s*:\s*`, "g")
-		: /\(\s*/g;
-	for (const m of body.matchAll(lead)) {
-		const at = m.index ?? 0;
-		if (key) {
-			const q = m[1] ?? "";
-			const keyAt = at + q.length;
-			const real = q
-				? masked[at] === q && masked[keyAt + key.length] === q
-				: masked.slice(keyAt, keyAt + key.length) === key;
-			if (!real) continue;
-		} else if (masked[at] !== "(") continue;
-		const valueAt = at + m[0].length;
-		const lit = new RegExp(String.raw`^(?:${STRING_LIT})`, "s").exec(body.slice(valueAt))?.[0];
-		if (!lit) return { found: true };
-		const rest = masked.slice(valueAt + lit.length).trimStart();
-		if (!/^[,})]/.test(rest)) return { found: true };
-		const value = jsString(lit);
+	const args = callArgs(body, masked);
+	if (!args) return { found: true };
+	const ranges = topLevelRanges(args.masked);
+	if (key === null) {
+		if (ranges.length !== 1) return { found: true };
+		const value = soleLiteral(args.text);
 		return value === undefined ? { found: true } : { found: true, value };
 	}
-	return { found: false };
+	const obj = args.masked.trim();
+	if (ranges.length !== 1 || !obj.startsWith("{") || !obj.endsWith("}")) return { found: true };
+	const lead = args.masked.indexOf("{");
+	const close = args.masked.lastIndexOf("}");
+	const innerMasked = args.masked.slice(lead + 1, close);
+	const innerText = args.text.slice(lead + 1, close);
+	let value: string | undefined;
+	let hits = 0;
+	for (const [x, y] of topLevelRanges(innerMasked)) {
+		const m = innerMasked.slice(x, y);
+		const t = innerText.slice(x, y);
+		const named = /^\s*([A-Za-z_$][\w$]*)\s*(:)?/.exec(m);
+		const quoted = /^\s*(["'])\s*\1\s*:/.exec(m);
+		let name: string | undefined;
+		let colonAt = -1;
+		if (named && named[1] && !["get", "set", "async"].includes(named[1])) {
+			name = named[1];
+			if (!named[2]) {
+				// `{workdir}`: a shorthand names the key but hides its value.
+				if (m.trim() !== name) return { found: true };
+				if (name === key) return { found: true };
+				continue;
+			}
+			colonAt = named[0].length;
+		} else if (quoted) {
+			const keyText = /^\s*(["'])(.*?)\1\s*:/s.exec(t);
+			if (!keyText) return { found: true };
+			name = keyText[2];
+			colonAt = keyText[0].length;
+		} else {
+			// Spread, computed key, method or anything else: cannot be read exactly.
+			return { found: true };
+		}
+		if (name !== key) continue;
+		hits++;
+		value = soleLiteral(t.slice(colonAt));
+	}
+	if (hits === 0) return { found: false };
+	if (hits > 1 || value === undefined) return { found: true };
+	return { found: true, value };
 }
 
 /**
@@ -912,7 +987,10 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			}
 			const cmd = commandOf(args);
 			if (cmd !== undefined) {
-				const raw = args["workdir"] ?? args["working_directory"] ?? args["cwd"];
+				// The first workdir field actually given; an empty string is not one.
+				const raw = [args["workdir"], args["working_directory"], args["cwd"]].find(
+					(v) => v !== undefined && v !== null && v !== "",
+				);
 				const workdir = raw === undefined ? undefined : (str(raw) ?? null);
 				return [{ ...commandParts(cmd, cwd, workdir), ...yieldedOr(step) }];
 			}

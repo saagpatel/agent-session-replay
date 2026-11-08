@@ -1244,3 +1244,39 @@ test("a template literal with an escaped ${ is still static", () => {
 	const dynamic = rawCell("text(await tools.apply_patch(`*** Update File: ${f}`));", parts("Script completed\n", "{}"));
 	assert.equal(normalizeTrace(dynamic)[0]?.target, null);
 });
+
+test("only a plainly written argument object is read; anything that could change it is unknown", () => {
+	const passing = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0, output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" }));
+	const of = (input: string) => normalizeTrace(rawCell(input, passing)).map((s) => `${s.action}:${s.target ?? s.note}`);
+	// A spread or a second cmd can replace the command: never report it as `npm test`.
+	for (const input of [
+		'const opts={cmd:"cat old.log"}; text(await tools.exec_command({cmd:"npm test",...opts}));',
+		'text(await tools.exec_command({cmd:"npm test", cmd:"cat old.log"}));',
+		'text(await tools.exec_command({["cmd"]:"npm test"}));',
+		"text(await tools.exec_command(opts));",
+	]) {
+		assert.deepEqual(of(input), ["run:unparsed command"], input);
+		const trace = rawCell(input, passing);
+		assert.notEqual(diffRuns(trace, trace).left.verdict, "passed", input);
+	}
+	// Other plain properties are fine.
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test", max_output_tokens:500, env:{CI:"1"}}));'), ["test:npm test"]);
+});
+
+test("a shorthand or variable workdir is unknown, never the workspace root", () => {
+	const ok = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 }));
+	const of = (input: string) => normalizeTrace(rawCell(input, ok)).map((s) => `${s.action}:${s.target}:${s.status}`);
+	assert.deepEqual(of('const workdir="/tmp"; text(await tools.exec_command({cmd:"echo x > out.txt",workdir}));'), ["write:null:unknown"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"echo x > out.txt", workdir: dir}));'), ["write:null:unknown"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"echo x > out.txt", "workdir": "packages/api"}));'), ["write:packages/api/out.txt:ok"]);
+});
+
+test("an empty workdir field falls through to the next one", () => {
+	const at = (args: Record<string, unknown>) =>
+		normalizeTrace(plainCalls([{ name: "exec_command", args: { cmd: "cat a.ts", ...args }, output: "Process exited with code 0\nOutput:\nx" }])).map(
+			(s) => `${s.target}:${s.status}`,
+		);
+	assert.deepEqual(at({ workdir: "", cwd: `${WORKSPACE_CODEX}/pkg` }), ["pkg/a.ts:ok"]);
+	assert.deepEqual(at({ workdir: "" }), ["a.ts:ok"]);
+	assert.deepEqual(at({ workdir: 42 }), ["null:unknown"]);
+});
