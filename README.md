@@ -31,6 +31,17 @@ Run `pnpm check` before changing parser, detector, or action-rail behavior. Use 
 - Replay a copied action bundle against loaded metadata. Source presets narrow the view; pasted bundle text remains available across preset changes, including empty presets.
 - Copy a scoped decision note or eligible read-only command bundle by explicit user action. Viewing data does not write to the clipboard.
 - Use the archive candidate helper to list existing local metadata archives without collecting or modifying them.
+- Compare two runs of the same task with Run Diff, for example one by Claude Code and one by Codex (see below).
+
+## Run Diff
+
+On the drop screen, choose **Compare two runs of the same task**, load one transcript per lane, and press **Compare runs**. The two runs line up step by step like a code diff, and the fork that changed the outcome is highlighted with a one- or two-sentence explanation.
+
+- **Normalize** (`src/core/diff/normalize.ts`): the existing parsers produce both traces, then each step maps to a harness-neutral verb (read, search, edit, write, test, run, plan, delegate) and a workspace-relative target. A Claude Code `Read` and a Codex `sed -n` on the same file both become `read src/x.ts`. A compound shell line or a Codex `exec` cell yields one step per stage. Shell noise such as `pwd` is dropped, and read-only git commands count as reads.
+- **Align** (`align.ts`): a global (Needleman-Wunsch) alignment. Matching a test or edit scores higher than matching a read. The same verb on a different target pairs as *changed*. Different verbs never pair; they show as one-sided rows.
+- **Rank** (`rank.ts`): each fork is scored on edits, tests and commands over reads, a failure only one run ever hits, files only one run touches, whether the runs line back up afterwards, and, when the runs ended differently, how early the fork came. Forks that differ only in reads, searches or plan updates are cosmetic and never outrank a consequential one. A run's end state is its last test run, else the harness completion signal. A piped test command that exits 0 but prints failures counts as failed.
+
+Like the rest of the app, Run Diff parses in the browser and uploads nothing.
 
 ## Setup and checks
 
