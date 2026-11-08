@@ -407,3 +407,42 @@ test("noise events and malformed entries produce no steps and never throw", () =
 	]);
 	assert.deepEqual(steps, []);
 });
+
+test("current exec-cell outputs (a list of text parts) carry exit codes and test failures", () => {
+	const { steps } = parseCodexEvents([
+		sessionMeta(),
+		responseItem({
+			type: "custom_tool_call",
+			name: "exec",
+			call_id: "x1",
+			status: "completed",
+			input: 'text(await tools.exec_command({cmd:"npm test"}))',
+		}),
+		responseItem({
+			type: "custom_tool_call_output",
+			call_id: "x1",
+			output: [
+				{ type: "input_text", text: "Script completed\nOutput:\n" },
+				{ type: "input_text", text: '{"exit_code":1,"output":"ℹ pass 1\\nℹ fail 1"}' },
+			],
+		}),
+		responseItem({
+			type: "custom_tool_call",
+			name: "exec",
+			call_id: "x2",
+			status: "completed",
+			input: 'text(await tools.exec_command({cmd:"ls"}))',
+		}),
+		responseItem({
+			type: "custom_tool_call_output",
+			call_id: "x2",
+			output: [{ type: "input_text", text: '{"exit_code":0,"output":"a\\nb"}' }],
+		}),
+	]);
+	const [failing, passing] = byKind(steps, "tool_call");
+	assert.equal(failing?.status, "error");
+	assert.match(String(failing?.attributes[ATTR.TOOL_ERROR]), /exit_code/);
+	assert.equal(failing?.attributes[ATTR.TEST_FAILURES], true);
+	assert.equal(passing?.status, "ok");
+	assert.equal(passing?.attributes[ATTR.TEST_FAILURES], undefined);
+});

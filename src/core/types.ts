@@ -107,6 +107,8 @@ export const ATTR = {
 	TOOL_ARGS: "tool.arguments",
 	TOOL_RESULT_KIND: "tool.result.kind",
 	TOOL_ERROR: "tool.error.message",
+	/** The tool output reports failing tests, whatever the exit code said. */
+	TEST_FAILURES: "tool.output.test_failures",
 	// subagent overlay
 	AGENT_TYPE: "agent.type",
 	AGENT_NAME: "agent.name",

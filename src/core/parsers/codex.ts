@@ -22,6 +22,7 @@
  */
 
 import { parseJsonlWithStats } from "../jsonl.ts";
+import { hasTestFailures } from "../test-signal.ts";
 import { ATTR, type Run, type Step, type Trace } from "../types.ts";
 
 const PLUMBLINE_VERSION = "0.1.0";
@@ -46,6 +47,8 @@ const RESULT_KIND: Record<string, string> = {
 
 /** A shell tool output carries this header; a non-zero code is a failed call. */
 const EXIT_RE = /Process exited with code (\d+)/;
+/** Current `exec` cells report each inner command as JSON with an exit_code. */
+const EXIT_JSON_RE = /"exit_code"\s*:\s*(-?\d+)/g;
 
 type Json = Record<string, unknown>;
 
@@ -62,6 +65,16 @@ function num(v: unknown): number {
 }
 function truncate(s: string, n: number): string {
 	return s.length > n ? s.slice(0, n) : s;
+}
+
+/** Tool output text: a plain string, or (current rollouts) a list of text parts. */
+function outputText(v: unknown): string {
+	if (typeof v === "string") return v;
+	return (Array.isArray(v) ? v : [])
+		.map(asObj)
+		.map((b) => str(b["text"]))
+		.filter((t): t is string => Boolean(t))
+		.join("\n");
 }
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
@@ -162,10 +175,14 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		step.ended_at = when;
 		if (status === "incomplete" || status === "failed") step.status = "error";
 		const m = EXIT_RE.exec(output);
-		if (m && m[1] !== "0") {
+		const nonZeroJson = [...output.matchAll(EXIT_JSON_RE)].some(
+			(x) => x[1] !== "0",
+		);
+		if ((m && m[1] !== "0") || nonZeroJson) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
+		if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
 	};
 
 	events.forEach((ev, idx) => {
@@ -268,7 +285,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "function_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", str(p["output"]) ?? "", ts);
+				mergeOutput(str(p["call_id"]) ?? "", outputText(p["output"]), ts);
 			} else if (ptype === "local_shell_call") {
 				// Current Codex rollouts use a nested action and persist the output
 				// with the item's `id` (the call_id is optional in older records).
@@ -288,7 +305,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			} else if (ptype === "local_shell_call_output") {
 				mergeOutput(
 					str(p["call_id"]) ?? str(p["id"]) ?? "",
-					str(p["output"]) ?? "",
+					outputText(p["output"]),
 					ts,
 					p["status"],
 				);
@@ -306,7 +323,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "custom_tool_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", str(p["output"]) ?? "", ts);
+				mergeOutput(str(p["call_id"]) ?? "", outputText(p["output"]), ts);
 			} else if (ptype === "web_search_call") {
 				const action = asObj(p["action"]);
 				const step = toolStep(

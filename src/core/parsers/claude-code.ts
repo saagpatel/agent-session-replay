@@ -17,6 +17,7 @@
  */
 
 import { parseJsonlWithStats } from "../jsonl.ts";
+import { hasTestFailures } from "../test-signal.ts";
 import {
 	ATTR,
 	type Run,
@@ -219,6 +220,9 @@ function mergeResult(
 		}
 	}
 	if (result["staleReadFileStateHint"]) step.attributes[ATTR.STALE_READ] = true;
+	const output = resultText(block["content"]) ?? str(result["stdout"]);
+	if (output && hasTestFailures(output))
+		step.attributes[ATTR.TEST_FAILURES] = true;
 
 	if (step.kind === "agent") {
 		if (str(result["agentId"]))
