@@ -2056,6 +2056,15 @@ body {
 	color: var(--sev-critical);
 	font-size: 11px;
 }
+.rd-cell__unknown {
+	flex-shrink: 0;
+	margin-left: auto;
+	color: var(--faint);
+	font-size: 11px;
+}
+.rd-verdict--unclear {
+	color: var(--muted);
+}
 .rd-cell--err {
 	background: color-mix(in srgb, var(--sev-critical) 9%, transparent);
 }

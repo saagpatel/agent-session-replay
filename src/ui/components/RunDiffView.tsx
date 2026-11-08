@@ -9,6 +9,7 @@ import type {
 	RunVerdict,
 } from "../../core/diff/types.ts";
 import { foldRows } from "../../core/diff/fold.ts";
+import { isFailure } from "../../core/diff/types.ts";
 
 const ACTION_VAR: Record<DiffAction, string> = {
 	read: "--rd-read",
@@ -28,6 +29,7 @@ const ACTION_VAR: Record<DiffAction, string> = {
 const VERDICT_TEXT: Record<RunVerdict, string> = {
 	passed: "tests passed",
 	failed: "tests failed",
+	unclear: "result unclear",
 	completed: "completed",
 	unfinished: "unfinished",
 };
@@ -62,7 +64,8 @@ function LaneHead({ side, fileName }: { side: RunSide; fileName: string }) {
 
 function Cell({ step, side }: { step: DiffStep | null; side: "left" | "right" }) {
 	if (!step) return <div className={`rd-cell rd-cell--${side} rd-cell--empty`} aria-hidden="true" />;
-	const failed = step.status !== "ok";
+	const failed = isFailure(step.status);
+	const unknown = step.status === "unknown";
 	return (
 		<div
 			className={`rd-cell rd-cell--${side}${failed ? " rd-cell--err" : ""}`}
@@ -76,6 +79,11 @@ function Cell({ step, side }: { step: DiffStep | null; side: "left" | "right" })
 			</span>
 			<span className="rd-cell__target">{step.target ?? step.note ?? ""}</span>
 			{failed ? <span className="rd-cell__fail">✕ {step.status === "interrupted" ? "interrupted" : "failed"}</span> : null}
+			{unknown ? (
+				<span className="rd-cell__unknown" title="No result recorded for this step on its own">
+					? unclear
+				</span>
+			) : null}
 		</div>
 	);
 }

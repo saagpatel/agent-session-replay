@@ -8,7 +8,12 @@
  * each lane, the way a code diff shows a deletion next to an insertion.
  */
 
-import { ACTION_WEIGHT, type DiffRow, type DiffStep } from "./types.ts";
+import {
+	ACTION_WEIGHT,
+	type DiffRow,
+	type DiffStep,
+	isFailure,
+} from "./types.ts";
 
 /** An exact match scores MATCH plus the verb's weight, so tests outrank reads. */
 const MATCH = 2;
@@ -101,7 +106,11 @@ export function alignSteps(
 				left: a,
 				right: b,
 				relation: a.signature === b.signature ? "same" : "changed",
-				statusDiffers: (a.status === "ok") !== (b.status === "ok"),
+				// An unknown result is missing evidence, not a difference.
+				statusDiffers:
+					a.status !== "unknown" &&
+					b.status !== "unknown" &&
+					isFailure(a.status) !== isFailure(b.status),
 			});
 			i--;
 			j--;

@@ -12,7 +12,7 @@ import {
 	WORKSPACE_CC,
 	WORKSPACE_CODEX,
 } from "./fixtures.ts";
-import { classifyCommand, normalizeTrace, relPath } from "./normalize.ts";
+import { classifyCommand, normalizeTrace, relPath, resolveStatuses } from "./normalize.ts";
 import { describeStep } from "./rank.ts";
 import { diffRuns } from "./run-diff.ts";
 import type { DiffAction, DiffStep } from "./types.ts";
@@ -124,7 +124,8 @@ test("a Codex exec cell that patches and then tests yields both steps", () => {
 				call_id: "c1",
 				output: [
 					{ type: "input_text", text: "Script completed\nOutput:\n" },
-					{ type: "input_text", text: '{"exit_code":1,"output":"\\u2139 fail 1\\n"}' },
+					{ type: "input_text", text: "{}" },
+					{ type: "input_text", text: '{"chunk_id":"a1","exit_code":1,"output":"\\u2139 fail 1\\n"}' },
 				],
 			},
 		},
@@ -401,4 +402,143 @@ test("describeStep reads like a sentence fragment", () => {
 	assert.equal(describeStep(step("test", "pnpm test")), "ran `pnpm test`, which passed");
 	assert.equal(describeStep(step("write", "src/new.ts")), "created `src/new.ts`");
 	assert.equal(describeStep(step("plan", null)), "updated its plan");
+});
+
+// ---- review regressions: test detection and result attribution ------------
+
+const sig = (cmd: string) =>
+	classifyCommand(cmd, null).map((x) => `${x.action}:${x.target ?? `(${x.note})`}`);
+
+test("test runners only count at the command position, never as file names or data", () => {
+	assert.deepEqual(sig("sed -n 1,80p vitest.config.ts"), ["read:vitest.config.ts"]);
+	assert.deepEqual(sig("cat jest.config.js"), ["read:jest.config.js"]);
+	assert.deepEqual(sig("cat pytest.ini"), ["read:pytest.ini"]);
+	assert.deepEqual(sig("rg -n jest src"), ["search:(rg)"]);
+	assert.deepEqual(sig('rg "npm test" README.md'), ["search:(rg)"]);
+	assert.deepEqual(sig('echo "run npm test"'), []);
+	assert.deepEqual(sig("npx vitest run"), ["test:vitest"]);
+	assert.deepEqual(sig("pnpm exec jest --ci"), ["test:jest"]);
+	assert.deepEqual(sig("FORCE_COLOR=0 pnpm test"), ["test:pnpm test"]);
+});
+
+test("reading a test config after a failing test does not flip the verdict", () => {
+	const trace = parseCodexEvents(
+		codexEvents(PROMPT, [
+			{ kind: "exec-cell", command: "pnpm test", exit: 1 },
+			{ kind: "exec-cell", command: "sed -n 1,80p vitest.config.ts" },
+		]),
+	);
+	const diff = diffRuns(trace, trace);
+	assert.equal(diff.left.verdict, "failed");
+});
+
+test("a failed && chain without per-stage evidence leaves its commands unknown", () => {
+	const parts = classifyCommand("npm test && npm run test:integration", null);
+	assert.deepEqual(resolveStatuses(parts, "and", "error", false), ["unknown", "unknown"]);
+	// With failure output, the first suite failed and the second never ran.
+	assert.deepEqual(resolveStatuses(parts, "and", "error", true), ["unknown", "unknown"]);
+	const one = classifyCommand("npm test && git status", null);
+	assert.deepEqual(resolveStatuses(one, "and", "error", true), ["error", "unknown"]);
+	const read = classifyCommand("cat a.ts && npm test && npm run build", null);
+	assert.deepEqual(resolveStatuses(read, "and", "error", false), ["unknown", "unknown", "unknown"]);
+	// A `;` chain exits with its last stage's status.
+	const seq = classifyCommand("npm test; npm run lint", null);
+	assert.deepEqual(resolveStatuses(seq, "seq", "error", false), ["unknown", "error"]);
+});
+
+test("an unattributable compound failure makes the verdict unclear, not passed", () => {
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [
+			{ name: "Bash", command: "npm test && npm run test:integration", error: "Exit code 1" },
+		]),
+	);
+	const steps = normalizeTrace(trace);
+	assert.deepEqual(steps.map((s) => s.status), ["unknown", "unknown"]);
+	const diff = diffRuns(trace, trace);
+	assert.equal(diff.left.verdict, "unclear");
+	assert.match(diff.left.verdictReason, /no clear result/);
+});
+
+/** A Codex exec cell with explicit per-call chunks. */
+function cellEvents(
+	cells: Array<{ input: string; chunks: Array<Record<string, unknown>> }>,
+): Record<string, unknown>[] {
+	let t = 0;
+	const ts = () => `2026-10-01T12:00:${String(t++).padStart(2, "0")}.000Z`;
+	const out: Record<string, unknown>[] = [
+		{ timestamp: ts(), type: "session_meta", payload: { id: "cells", cwd: WORKSPACE_CODEX } },
+	];
+	cells.forEach((cell, i) => {
+		out.push(
+			{
+				timestamp: ts(),
+				type: "response_item",
+				payload: { type: "custom_tool_call", name: "exec", call_id: `k${i}`, status: "completed", input: cell.input },
+			},
+			{
+				timestamp: ts(),
+				type: "response_item",
+				payload: {
+					type: "custom_tool_call_output",
+					call_id: `k${i}`,
+					output: [
+						{ type: "input_text", text: "Script completed\nOutput:\n" },
+						...cell.chunks.map((c, j) => ({
+							type: "input_text",
+							text: JSON.stringify({ chunk_id: `k${i}-${j}`, output: "", ...c }),
+						})),
+					],
+				},
+			},
+		);
+	});
+	return out;
+}
+const execCall = (cmd: string) => `text(await tools.exec_command({cmd:${JSON.stringify(cmd)}}));\n`;
+const pollCall = (session: number) => `text(await tools.write_stdin({session_id:${session},chars:""}));\n`;
+
+test("each call in an exec cell keeps its own exit code", () => {
+	const steps = normalizeTrace(
+		parseCodexEvents(
+			cellEvents([
+				{
+					input: execCall("rg foo src") + execCall("pnpm test"),
+					chunks: [{ exit_code: 1 }, { exit_code: 0, output: "ℹ pass 3\nℹ fail 0" }],
+				},
+			]),
+		),
+	);
+	assert.deepEqual(
+		steps.map((s) => `${s.action}:${s.status}`),
+		["search:error", "test:ok"],
+	);
+});
+
+test("a yielded test takes the result of the write_stdin poll that finishes it", () => {
+	const run = (final: Record<string, unknown> | null) =>
+		normalizeTrace(
+			parseCodexEvents(
+				cellEvents([
+					{ input: execCall("pnpm test"), chunks: [{ session_id: 4242 }] },
+					{ input: pollCall(4242), chunks: [{ session_id: 4242 }] },
+					...(final ? [{ input: pollCall(4242), chunks: [final] }] : []),
+				]),
+			),
+		).map((s) => `${s.action}:${s.status}`);
+	assert.deepEqual(run({ exit_code: 1, output: "ℹ fail 2" }), ["test:error"]);
+	assert.deepEqual(run({ exit_code: 0 }), ["test:ok"]);
+	assert.deepEqual(run(null), ["test:unknown"]);
+});
+
+test("cosmetic-only forks never claim to explain different outcomes", () => {
+	const done = parseCodexEvents(
+		codexEvents(PROMPT, [{ kind: "shell", command: "cat README.md" }, { kind: "patch", file: "a.ts" }]),
+	);
+	const stalled = parseCodexEvents(
+		codexEvents(PROMPT, [{ kind: "patch", file: "a.ts" }], { finished: false }),
+	);
+	const diff = diffRuns(done, stalled);
+	assert.equal(diff.flagged?.cosmetic, true);
+	assert.match(diff.explanation, /do not explain why Codex A ended reporting the task complete while Codex B ended without finishing/);
+	assert.doesNotMatch(diff.explanation, /After this fork/);
 });

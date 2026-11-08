@@ -13,6 +13,7 @@
 
 import {
 	ACTION_WEIGHT,
+	isFailure,
 	type DiffRow,
 	type DiffStep,
 	type DivergenceBlock,
@@ -29,7 +30,7 @@ const isDifferent = (r: DiffRow): boolean =>
 	r.relation !== "same" || r.statusDiffers;
 
 const failed = (s: DiffStep | null): boolean =>
-	s !== null && s.status !== "ok";
+	s !== null && isFailure(s.status);
 
 /** Files a run edits or creates anywhere in its sequence. */
 function touchedFiles(steps: DiffStep[]): Set<string> {
@@ -42,7 +43,7 @@ function touchedFiles(steps: DiffStep[]): Set<string> {
 
 /** Signatures of every step that failed somewhere in a run. */
 function failingSignatures(steps: DiffStep[]): Set<string> {
-	return new Set(steps.filter((s) => s.status !== "ok").map((s) => s.signature));
+	return new Set(steps.filter((s) => isFailure(s.status)).map((s) => s.signature));
 }
 
 /** Group consecutive differing rows into candidate forks. */
@@ -230,7 +231,8 @@ export function describeStep(s: DiffStep): string {
 			phrase = `called ${t}`;
 	}
 	phrase = phrase.trim();
-	if (s.status !== "ok") return `${phrase}, which failed`;
+	if (s.status === "unknown") return `${phrase}, with no clear result`;
+	if (isFailure(s.status)) return `${phrase}, which failed`;
 	if (s.action === "test") return `${phrase}, which passed`;
 	return phrase;
 }
@@ -238,6 +240,7 @@ export function describeStep(s: DiffStep): string {
 const VERDICT_PHRASE: Record<RunVerdict, string> = {
 	passed: "with passing tests",
 	failed: "with failing tests",
+	unclear: "with an unclear test result",
 	completed: "reporting the task complete",
 	unfinished: "without finishing",
 };
@@ -255,7 +258,7 @@ export function explainDivergence(
 	const at = `At row ${r.row + 1}`;
 	let first: string;
 	if (r.left && r.right && r.relation === "same") {
-		const who = r.left.status !== "ok" ? left.label : right.label;
+		const who = isFailure(r.left.status) ? left.label : right.label;
 		const shared = describeStep({ ...r.left, status: "ok" }).replace(
 			/, which passed$/,
 			"",
@@ -271,7 +274,9 @@ export function explainDivergence(
 	}
 
 	let second: string;
-	if (left.verdict !== right.verdict) {
+	if (block.cosmetic && left.verdict !== right.verdict) {
+		second = `The runs differ only in reads, searches and lookups, so these steps do not explain why ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
+	} else if (left.verdict !== right.verdict) {
 		const opener = block.reasons.includes("the runs do not re-converge")
 			? "The runs never line back up after this, and"
 			: "After this fork,";

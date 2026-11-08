@@ -9,6 +9,18 @@
 import type { StepStatus } from "../types.ts";
 
 /**
+ * A normalized step's result. `unknown` means the transcript holds no evidence
+ * for this step on its own: a stage of a failed compound command that may have
+ * been skipped, or a yielded command whose result never came back.
+ */
+export type DiffStatus = StepStatus | "unknown";
+
+/** True for a known failure; `unknown` is not a failure. */
+export function isFailure(s: DiffStatus): boolean {
+	return s === "error" || s === "interrupted";
+}
+
+/**
  * Harness-neutral verb for a step. Claude Code's `Read` and a Codex shell
  * `sed -n` on the same file both normalize to `read`, which is what lets two
  * different harnesses line up.
@@ -59,7 +71,7 @@ export interface DiffStep {
 	note?: string;
 	/** Short human label: "edit src/parse.ts", "test pnpm test". */
 	label: string;
-	status: StepStatus;
+	status: DiffStatus;
 	/** Truncated error text when the step failed. */
 	error?: string;
 	startedAt: string;
@@ -81,7 +93,12 @@ export interface DiffRow {
 }
 
 /** A coarse end state for one run, used to tell whether a fork changed the outcome. */
-export type RunVerdict = "passed" | "failed" | "completed" | "unfinished";
+export type RunVerdict =
+	| "passed"
+	| "failed"
+	| "unclear"
+	| "completed"
+	| "unfinished";
 
 export interface RunSide {
 	label: string;

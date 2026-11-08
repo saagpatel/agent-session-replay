@@ -23,6 +23,11 @@ export function runVerdict(
 	for (let i = steps.length - 1; i >= 0; i--) {
 		const s = steps[i] as DiffStep;
 		if (s.action !== "test") continue;
+		if (s.status === "unknown")
+			return {
+				verdict: "unclear",
+				reason: `last test run \`${s.target ?? "tests"}\` has no clear result`,
+			};
 		const ok = s.status === "ok";
 		return {
 			verdict: ok ? "passed" : "failed",

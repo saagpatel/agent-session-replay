@@ -164,7 +164,18 @@ export function codexEvents(
 				env("response_item", {
 					type: "custom_tool_call_output",
 					call_id: callId,
-					output: exitOut(tool.exit ?? 0),
+					// Current exec cells: a header part, then one JSON chunk per call.
+					output: [
+						{ type: "input_text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+						{
+							type: "input_text",
+							text: JSON.stringify({
+								chunk_id: `c${i}`,
+								exit_code: tool.exit ?? 0,
+								output: tool.exit ? "ℹ pass 1\nℹ fail 1" : "ℹ pass 2\nℹ fail 0",
+							}),
+						},
+					],
 				}),
 			);
 		} else if (tool.kind === "patch") {
