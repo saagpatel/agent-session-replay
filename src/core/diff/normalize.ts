@@ -13,6 +13,7 @@
 
 import { ATTR, type ExecPart, type ExecResult, type Step, type Trace } from "../types.ts";
 import {
+	clipForDisplay,
 	type DiffAction,
 	type DiffStatus,
 	type DiffStep,
@@ -22,7 +23,6 @@ import {
 type Json = Record<string, unknown>;
 
 const ERROR_MAX = 240;
-const TARGET_MAX = 80;
 
 function asObj(v: unknown): Json {
 	return typeof v === "object" && v !== null && !Array.isArray(v)
@@ -62,20 +62,26 @@ const NOISE_CMDS = new Set([
 	"which",
 	"date",
 ]);
-/** A bare redirect operator, whose target is the next word (`> out.txt`). */
-const BARE_REDIRECT = /^(?:\d+|&)?(?:>>?|>\||<<?<?-?)$/;
+/** A bare output redirect or heredoc operator; the next word is its operand. */
+const BARE_OPERAND_OP = /^(?:\d+|&)?(?:>>?|>\|)$|^<<<?-?$/;
 
 /**
  * The words that make up the command itself: env assignments stay for the
- * caller to strip, while unquoted redirects go, together with the target of a
- * spaced one (`npm run build > build.log` is `npm run build`).
+ * caller to strip, while unquoted redirects go, together with the operand of a
+ * spaced output redirect or heredoc (`npm run build > build.log` is
+ * `npm run build`). A spaced input redirect's file is kept only when asked
+ * (`cat < src/a.ts` reads src/a.ts); otherwise it is dropped too.
  */
-function commandWords(toks: Array<{ text: string; quoted: boolean }>): string[] {
+function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput = false): string[] {
 	const out: string[] = [];
 	for (let i = 0; i < toks.length; i++) {
 		const t = toks[i] as { text: string; quoted: boolean };
-		if (!t.quoted && BARE_REDIRECT.test(t.text)) {
+		if (!t.quoted && BARE_OPERAND_OP.test(t.text)) {
 			i++;
+			continue;
+		}
+		if (!t.quoted && /^\d*<$/.test(t.text)) {
+			if (!keepInput) i++;
 			continue;
 		}
 		if (!t.quoted && /^(?:\d*|&)[<>]/.test(t.text)) continue;
@@ -84,9 +90,79 @@ function commandWords(toks: Array<{ text: string; quoted: boolean }>): string[] 
 	return out;
 }
 
-/** `sed` that edits its files: `-i`, `-i.bak`, a flag group with `i`, or `--in-place`. */
+/**
+ * The files a read-only `sed` reads, parsed exactly: a `-f` script file, then
+ * every operand except the script itself (the `-e` argument, or else the first
+ * operand).
+ */
+function sedFiles(ws: string[]): string[] {
+	const files: string[] = [];
+	const operands: string[] = [];
+	let scriptGiven = false;
+	for (let i = 1; i < ws.length; i++) {
+		const w = ws[i] as string;
+		if (w === "--") {
+			operands.push(...ws.slice(i + 1));
+			break;
+		}
+		if (w.startsWith("--")) {
+			const [name, value] = w.split("=", 2);
+			const arg = value ?? (/^--(?:expression|file|line-length)$/.test(name ?? "") ? ws[++i] : undefined);
+			if (name === "--expression") scriptGiven = true;
+			if (name === "--file" && arg) {
+				scriptGiven = true;
+				files.push(arg);
+			}
+			continue;
+		}
+		if (w.startsWith("-") && w !== "-") {
+			for (let j = 1; j < w.length; j++) {
+				const opt = w[j] as string;
+				if (!SED_ARG_OPTS.has(opt)) continue;
+				const arg = j < w.length - 1 ? w.slice(j + 1) : ws[++i];
+				if (opt === "e") scriptGiven = true;
+				if (opt === "f" && arg) {
+					scriptGiven = true;
+					files.push(arg);
+				}
+				break;
+			}
+			continue;
+		}
+		operands.push(w);
+	}
+	return [...files, ...(scriptGiven ? operands : operands.slice(1))];
+}
+
+/** sed short options that take an argument (glued or as the next word). */
+const SED_ARG_OPTS = new Set(["e", "f", "l"]);
+
+/**
+ * `sed` that edits its files: `-i` as a real option, alone (`-i`, `-i.bak`) or
+ * in a group of flags (`-Ei`), or `--in-place`. Option arguments are skipped,
+ * so `sed -fscript.sed` or `sed -e 'i\x'` never count.
+ */
 function sedInPlace(toks: Array<{ text: string; quoted: boolean }>): boolean {
-	return toks.some((t) => !t.quoted && (/^-[A-Za-z]*i/.test(t.text) || /^--in-place\b/.test(t.text)));
+	for (let i = 1; i < toks.length; i++) {
+		const t = toks[i] as { text: string; quoted: boolean };
+		if (t.quoted || !t.text.startsWith("-") || t.text === "-") continue;
+		if (t.text === "--") return false;
+		if (t.text.startsWith("--")) {
+			if (/^--in-place(?:=|$)/.test(t.text)) return true;
+			if (/^--(?:expression|file|line-length)$/.test(t.text)) i++;
+			continue;
+		}
+		for (let j = 1; j < t.text.length; j++) {
+			const opt = t.text[j] as string;
+			if (opt === "i") return true;
+			if (SED_ARG_OPTS.has(opt)) {
+				// The rest of the word, or else the next word, is the argument.
+				if (j === t.text.length - 1) i++;
+				break;
+			}
+		}
+	}
+	return false;
 }
 
 /** The file an unquoted `>`/`>>` redirect writes to, if any. */
@@ -305,7 +381,10 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	if (READ_CMDS.has(head) && !(head === "sed" && sedInPlace(toks))) {
-		const files = fileArgs(ws);
+		// A read also reads the file on its stdin (`cat < src/a.ts`).
+		const readWords = commandWords(toks, true);
+		while (readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
+		const files = head === "sed" ? sedFiles(readWords) : fileArgs(readWords);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
@@ -844,7 +923,7 @@ function make(
 	// The full target identifies the step; only the label is clipped, so two
 	// long paths that share a prefix never collapse into one signature.
 	const target = c.target;
-	const shown = target ? clip(target, TARGET_MAX) : null;
+	const shown = target ? clipForDisplay(target) : null;
 	const out: DiffStep = {
 		index,
 		stepId: step.step_id,

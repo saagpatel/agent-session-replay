@@ -8,7 +8,7 @@ import type { Trace } from "../types.ts";
 import { alignSteps } from "./align.ts";
 import { normalizeTrace } from "./normalize.ts";
 import { explainDivergence, rankDivergences } from "./rank.ts";
-import { type DiffStep, isFailure, type RunDiff, type RunSide, type RunVerdict } from "./types.ts";
+import { clipForDisplay, type DiffStep, isFailure, type RunDiff, type RunSide, type RunVerdict } from "./types.ts";
 
 const HARNESS_LABEL: Record<string, string> = {
 	"claude-code": "Claude Code",
@@ -28,7 +28,7 @@ export function runVerdict(
 	for (let i = steps.length - 1; i >= 0; i--) {
 		const s = steps[i] as DiffStep;
 		if (s.action !== "test") continue;
-		const name = `\`${s.target ?? "tests"}\``;
+		const name = `\`${clipForDisplay(s.target ?? "tests")}\``;
 		if (isFailure(s.status))
 			return {
 				verdict: "failed",

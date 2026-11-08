@@ -13,6 +13,7 @@
 
 import {
 	ACTION_WEIGHT,
+	clipForDisplay,
 	isFailure,
 	type DiffRow,
 	type DiffStep,
@@ -214,11 +215,8 @@ export function rankDivergences(
 // ---- explanation ---------------------------------------------------------
 
 /** Targets are full-length for matching; explanations show a readable clip. */
-const SHOWN_MAX = 80;
-
 function code(t: string | null): string {
-	if (!t) return "";
-	return `\`${t.length > SHOWN_MAX ? `${t.slice(0, SHOWN_MAX - 1)}…` : t}\``;
+	return t ? `\`${clipForDisplay(t)}\`` : "";
 }
 
 /** Past-tense phrase for one step: "edited `src/a.ts`", "ran `pnpm test`, which failed". */

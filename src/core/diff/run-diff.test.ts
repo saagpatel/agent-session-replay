@@ -1093,6 +1093,12 @@ test("sed that edits in place is a command, never a read (#112 item 5)", () => {
 	assert.deepEqual(sig("sed -Ei 's/a/b/' src/a.ts"), ["run:sed -Ei s/a/b/ src/a.ts"]);
 	assert.deepEqual(sig("sed -n 1,20p src/a.ts"), ["read:src/a.ts"]);
 	assert.deepEqual(sig("sed -E -n 's/a/b/p' src/a.ts"), ["read:src/a.ts"]);
+	// Option arguments are not flags: an `i` inside them is not in-place.
+	assert.deepEqual(sig("sed -fscript.sed src/a.ts"), ["read:script.sed", "read:src/a.ts"]);
+	assert.deepEqual(sig("sed -f script.sed src/a.ts"), ["read:script.sed", "read:src/a.ts"]);
+	assert.deepEqual(sig("sed -eicmd src/a.ts"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("sed -n -e 'i\\x' src/a.ts"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("sed --expression=p -i src/a.ts"), ["run:sed --expression=p -i src/a.ts"]);
 });
 
 test("a spaced redirect's target never leaks into the command (#112 item 6)", () => {
@@ -1102,6 +1108,10 @@ test("a spaced redirect's target never leaks into the command (#112 item 6)", ()
 	assert.deepEqual(sig("npm run build 2>&1"), ["run:npm run build"]);
 	assert.deepEqual(sig("head -5 src/a.ts > top.txt"), ["read:src/a.ts"]);
 	assert.deepEqual(sig("sort < input.txt"), ["run:sort"]);
+	// A read keeps the file on its stdin.
+	assert.deepEqual(sig("cat < src/a.ts"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("sed -n 1,20p < src/a.ts"), ["read:src/a.ts"]);
+	assert.deepEqual(sig("cat <<EOF > notes.md\nx\nEOF"), ["write:notes.md"]);
 	// A quoted ">" is data, not a redirect.
 	assert.deepEqual(sig('node -e "1 > 0" x.js'), ["run:node -e 1 > 0 x.js"]);
 });
