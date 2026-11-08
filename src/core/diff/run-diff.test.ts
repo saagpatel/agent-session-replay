@@ -938,7 +938,8 @@ test("only unquoted redirects write files", () => {
 // ---- review regressions, round 6: narrowed evidence --------------------------
 
 test("a finished cell vouches only for patches it certainly reached", () => {
-	const patch = JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/a.ts\n@@\n-{}\n+{ x }\n*** End Patch`);
+	// A static JS string literal (the cell source is parsed, never run).
+	const patch = String.raw`"*** Begin Patch\n*** Update File: /work/b/fixture-repo/src/a.ts\n@@\n-{}\n+{ x }\n*** End Patch"`;
 	const done = parts("Script completed\n", "{}");
 	const at = (input: string) => statusesOf(rawCell(input, done));
 	assert.deepEqual(at(`text(await tools.apply_patch(${patch}));`), ["edit:ok"]);
