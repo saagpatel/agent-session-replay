@@ -58,6 +58,8 @@ const RESULT_KIND: Record<string, string> = {
  */
 const EXIT_RE = /Process exited with code (\d+)/;
 const HEADER_MAX = 400;
+/** A plain-format command that yielded before exiting. */
+const RUNNING_RE = /Process running with session ID (\w+)/;
 
 function legacyExit(raw: unknown): RegExpExecArray | null {
 	if (typeof raw !== "string") return null;
@@ -256,6 +258,18 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
 		const aggregateExits = fansOut ? parsed.aggregateExits : [];
 		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
+		// A plain-format command still running reports a session to poll instead
+		// of an exit code; record it like a yielded exec-cell chunk.
+		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
+		if (running?.[1])
+			step.attributes[ATTR.EXEC_RESULTS] = [
+				{
+					exit_code: null,
+					session_id: running[1],
+					test_failures: hasTestFailures(output),
+					test_passes: hasTestPasses(output),
+				},
+			];
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
 		const failedInner = [

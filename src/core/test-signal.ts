@@ -19,6 +19,7 @@ const FAIL_PATTERNS: readonly RegExp[] = [
 	/^Tests:\s+[1-9]\d* failed/m, // jest
 	/^\s*[1-9]\d* failing\s*$/m, // mocha
 	/^test result: FAILED/m, // cargo
+	/^not ok\b/m, // TAP
 	/^--- FAIL:/m, // go
 	/^FAIL\s/m, // go package / jest file summary
 ];
@@ -31,7 +32,7 @@ const PASS_PATTERNS: readonly RegExp[] = [
 	/^Tests:\s+\d+ passed, \d+ total/m, // jest
 	/^\s*\d+ passing\b/m, // mocha
 	/^test result: ok\./m, // cargo
-	/^ok\s+\S+/m, // go
+	/^ok\s+\S+\s+(?:[\d.]+s|\(cached\))\s*$/m, // go: `ok  pkg 0.01s`, never TAP's `ok 1 - name`
 	/^PASS\s*$/m, // go
 ];
 

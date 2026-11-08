@@ -112,8 +112,9 @@ export const ATTR = {
 	/** The tool output's test summary reports success and no failures. */
 	TEST_PASSES: "tool.output.test_passes",
 	/**
-	 * Codex `exec` cells: one result per inner command, in call order
-	 * (`ExecResult[]`). A yielded command has a session_id and no exit_code yet.
+	 * Codex command results (`ExecResult[]`): one per inner command of an `exec`
+	 * cell, in call order, or one for a plain-format command that yielded. A
+	 * yielded command has a session_id and no exit_code yet.
 	 */
 	EXEC_RESULTS: "codex.exec.results",
 	/** The exec cell's script ran to completion (its non-command calls succeeded). */
