@@ -82,12 +82,23 @@ function pivot(slice: DiffRow[]): number {
 	return best.row;
 }
 
+/** Which evidence a verdict rests on; only verdicts of one kind compare. */
+const VERDICT_KIND: Record<RunVerdict, "tests" | "completion" | null> = {
+	passed: "tests",
+	failed: "tests",
+	completed: "completion",
+	unfinished: "completion",
+	unclear: null,
+};
+
 /**
- * Outcomes differ only when both are known: "unclear" against "passed" is a gap
- * in the evidence, not a different result.
+ * Outcomes differ only when both are known and rest on the same evidence:
+ * "unclear" against "passed" is a gap in the evidence, and "passed" (tests)
+ * against "completed" (no tests, harness signal) may both be successes.
  */
-function provenlyDifferent(left: RunSide, right: RunSide): boolean {
-	return left.verdict !== right.verdict && left.verdict !== "unclear" && right.verdict !== "unclear";
+export function provenlyDifferent(left: RunSide, right: RunSide): boolean {
+	const kind = VERDICT_KIND[left.verdict];
+	return kind !== null && kind === VERDICT_KIND[right.verdict] && left.verdict !== right.verdict;
 }
 
 export function rankDivergences(
@@ -295,10 +306,13 @@ export function explainDivergence(
 
 	let second: string;
 	const unclear = [left, right].filter((x) => x.verdict === "unclear");
+	const what = block.cosmetic ? "difference" : "fork";
 	if (left.verdict !== right.verdict && unclear.length === 1) {
 		const u = unclear[0] as RunSide;
 		const other = u === left ? right : left;
-		second = `${u.label}'s test result is unclear while ${other.label} ended ${VERDICT_PHRASE[other.verdict]}, so this ${block.cosmetic ? "difference" : "fork"} is not proven to have changed the outcome.`;
+		second = `${u.label}'s test result is unclear while ${other.label} ended ${VERDICT_PHRASE[other.verdict]}, so this ${what} is not proven to have changed the outcome.`;
+	} else if (left.verdict !== right.verdict && !provenlyDifferent(left, right)) {
+		second = `${left.label} ended ${VERDICT_PHRASE[left.verdict]} and ${right.label} ended ${VERDICT_PHRASE[right.verdict]}; those rest on different evidence, so this ${what} is not proven to have changed the outcome.`;
 	} else if (block.cosmetic && left.verdict !== right.verdict) {
 		second = `The runs differ only in steps with no visible effect, so these steps do not explain why ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
 	} else if (left.verdict !== right.verdict) {
@@ -308,6 +322,8 @@ export function explainDivergence(
 		second = `${opener} ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
 	} else if (block.cosmetic) {
 		second = `Every difference between the runs is a read, search or other step with no visible effect, and both ended ${VERDICT_PHRASE[left.verdict]}, so they took effectively the same path.`;
+	} else if (left.verdict === "unclear") {
+		second = "Neither run's test result is clear, so this is the biggest change in approach; whether it changed the outcome is unknown.";
 	} else {
 		second = `Both runs still ended ${VERDICT_PHRASE[left.verdict]}, so this is the biggest change in approach rather than an outcome change.`;
 	}

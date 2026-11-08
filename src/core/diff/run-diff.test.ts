@@ -439,7 +439,10 @@ test("a failed && chain without per-stage evidence leaves its commands unknown",
 	// Both stages are test runs, so failure output cannot say which one failed.
 	assert.deepEqual(resolveStatuses(parts, "and", "error", true), ["unknown", "unknown"]);
 	const one = classifyCommand("npm test && git status", null);
-	assert.deepEqual(resolveStatuses(one, "and", "error", true), ["error", "unknown"]);
+	// Failure output in a compound command could come from any stage.
+	assert.deepEqual(resolveStatuses(one, "and", "error", true), ["unknown", "unknown"]);
+	// Only a test run that is the whole command owns its summary.
+	assert.deepEqual(resolveStatuses(classifyCommand("npm test", null), "single", "ok", true, true), ["error"]);
 	const read = classifyCommand("cat a.ts && npm test && npm run build", null);
 	assert.deepEqual(resolveStatuses(read, "and", "error", false), ["unknown", "unknown", "unknown"]);
 	// A `;` chain exits with its last stage's status.
@@ -554,7 +557,7 @@ test("a successful compound command only vouches for the stages it proves ran", 
 	// The exit status of `npm test; echo done` is echo's, even though echo is dropped.
 	const trailing = classifyCommand("npm test; echo done", null);
 	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", false), ["unknown"]);
-	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", true), ["error"]);
+	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", true), ["unknown"]);
 	const and = classifyCommand("npm test && npm run build", null);
 	assert.deepEqual(resolveStatuses(and, "and", "ok", false), ["ok", "ok"]);
 	const piped = classifyCommand("npm test 2>&1 | tail -5", null);
@@ -929,4 +932,68 @@ test("only unquoted redirects write files", () => {
 	assert.deepEqual(sig('echo "a | tee b"'), []);
 	assert.deepEqual(sig("npm run build | tee build.log"), ["run:npm run", "write:build.log"]);
 	assert.deepEqual(sig("npm test 2>&1 | tee test.log"), ["test:npm test", "write:test.log"]);
+});
+
+// ---- review regressions, round 6: narrowed evidence --------------------------
+
+test("a finished cell vouches only for patches it certainly reached", () => {
+	const patch = JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/a.ts\n@@\n-{}\n+{ x }\n*** End Patch`);
+	const done = parts("Script completed\n", "{}");
+	const at = (input: string) => statusesOf(rawCell(input, done));
+	assert.deepEqual(at(`text(await tools.apply_patch(${patch}));`), ["edit:ok"]);
+	assert.deepEqual(at(`if (false) { await tools.apply_patch(${patch}); }`), ["edit:unknown"]);
+	assert.deepEqual(at(`if (ready)\n  await tools.apply_patch(${patch});`), ["edit:unknown"]);
+	assert.deepEqual(at(`try { await tools.apply_patch(${patch}); } catch (e) { text(e); }`), ["edit:unknown"]);
+	assert.deepEqual(at(`const later = async () => { await tools.apply_patch(${patch}); };`), ["edit:unknown"]);
+	// A brace inside the patch text is data, not a block.
+	assert.deepEqual(at(`const p = "{"; text(await tools.apply_patch(${patch}));`), ["edit:ok"]);
+});
+
+test("a summary speaks for a test only when the test is the whole command", () => {
+	const stale = "ℹ tests 3\nℹ pass 2\nℹ fail 1\n\nℹ tests 3\nℹ pass 3\nℹ fail 0";
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "cat old-test.log; npm test", output: stale }]),
+	);
+	const steps = normalizeTrace(trace);
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}:${s.summary ?? "-"}`), ["read:ok:-", "test:ok:-"]);
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+	const codex = plainCalls([
+		{ name: "exec_command", args: { cmd: "cat old-test.log && npm test" }, output: `Process exited with code 0\nOutput:\n${stale}` },
+	]);
+	assert.notEqual(diffRuns(codex, codex).left.verdict, "failed");
+});
+
+test("a leading cd stays a dependency of the command after it", () => {
+	const failedCd = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "cd missing-dir && npm test", error: "cd: no such file or directory" }]),
+	);
+	assert.deepEqual(normalizeTrace(failedCd).map((s) => s.status), ["unknown"]);
+	assert.equal(diffRuns(failedCd, failedCd).left.verdict, "unclear");
+	// The cd prints nothing, so the test still owns its own failing summary.
+	const failedTest = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "cd pkg && npm test", error: "ℹ tests 2\nℹ pass 1\nℹ fail 1" }]),
+	);
+	assert.equal(diffRuns(failedTest, failedTest).left.verdict, "failed");
+	const passed = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "cd pkg && npm test", output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" }]),
+	);
+	assert.equal(diffRuns(passed, passed).left.verdict, "passed");
+});
+
+test("passed and completed rest on different evidence and are not a proven difference", () => {
+	const tested = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: "a.ts" }, { name: "Bash", command: "npm test" }]));
+	const untested = parseCodexEvents(codexEvents(PROMPT, [{ kind: "patch", file: "a.ts" }]));
+	const diff = diffRuns(tested, untested);
+	assert.equal(diff.left.verdict, "passed");
+	assert.equal(diff.right.verdict, "completed");
+	assert.ok(!diff.flagged?.reasons.includes("comes before the different outcomes"));
+	assert.match(diff.explanation, /rest on different evidence, so this (fork|difference) is not proven/);
+});
+
+test("two unclear runs never claim the outcome was unchanged", () => {
+	const left = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: "a.ts" }, { name: "Bash", command: "npm test | tail" }]));
+	const right = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Edit", file: "b.ts" }, { name: "Bash", command: "npm test | tail" }]));
+	const diff = diffRuns(left, right);
+	assert.equal(diff.left.verdict, "unclear");
+	assert.match(diff.explanation, /whether it changed the outcome is unknown/);
 });

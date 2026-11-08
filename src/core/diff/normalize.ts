@@ -221,19 +221,11 @@ function whereFor(root: string | null | undefined, workdir: string | undefined):
 }
 
 /** Drop `cd x &&`, env assignments and `bash -lc` wrappers to reach the real command. */
-function coreCommand(cmd: string): { core: string; cds: string[] } {
+function coreCommand(cmd: string): string {
 	let c = cmd.trim();
-	const cds: string[] = [];
 	const wrapped = /^(?:\/bin\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(c);
 	if (wrapped?.[2]) c = wrapped[2].trim();
 	for (;;) {
-		// A leading `cd dir &&` only sets where the rest runs.
-		const cd = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*/.exec(c);
-		if (cd) {
-			cds.push((cd[1] as string).replace(/^["']|["']$/g, ""));
-			c = c.slice(cd[0].length);
-			continue;
-		}
 		const env = /^[A-Z_][A-Z0-9_]*=\S*\s+/.exec(c);
 		if (env) {
 			c = c.slice(env[0].length);
@@ -241,7 +233,7 @@ function coreCommand(cmd: string): { core: string; cds: string[] } {
 		}
 		break;
 	}
-	return { core: c, cds };
+	return c;
 }
 
 /** Path-looking arguments of a read command (`sed -n 1,80p src/a.ts` -> [src/a.ts]). */
@@ -433,6 +425,11 @@ function chainOf(seps: string[]): Chain {
 interface CommandParts {
 	parts: Classified[];
 	chain: Chain;
+	/**
+	 * The command is one test run and nothing else that prints (a `cd` aside),
+	 * so any test summary in its output came from that run.
+	 */
+	solo: boolean;
 }
 
 /**
@@ -445,9 +442,8 @@ function commandParts(
 	root: string | null | undefined,
 	workdir?: string,
 ): CommandParts {
-	const { core, cds } = coreCommand(cmd);
+	const core = coreCommand(cmd);
 	const where = whereFor(root, workdir);
-	for (const cd of cds) where.dir = cdTo(where, cd);
 	const { stages: raw, seps } = splitWithSeps(core);
 	// Shell control flow (`if npm test; then …`) decides what ran by itself, so
 	// such scripts never hand their exit status to one stage.
@@ -455,13 +451,17 @@ function commandParts(
 	// Loop and case headers (`for f in a b`) are not commands themselves.
 	const stages = raw.map((x) => (/^(?:for|case|select)\s/.test(x) ? "" : x.replace(CONTROL_RE, "").trim()));
 	const parts: Classified[] = [];
+	let printing = 0;
 	stages.forEach((stage, i) => {
 		const last = i === stages.length - 1;
-		// A later `cd` moves where the following stages run.
+		// A `cd` moves where the following stages run; it stays a stage, so a
+		// failing `cd dir && npm test` never runs (or fails) the test.
 		const w = words(stage);
 		if (w[0] === "cd") where.dir = cdTo(where, w[1]);
+		else if (stage) printing++;
 		for (const c of classifyStage(stage, where)) parts.push(last ? c : { ...c, last });
 	});
+	const solo = !control && printing === 1 && parts.length === 1 && parts[0]?.action === "test";
 	// Every separator counts, including those around dropped stages: the
 	// `|| true` in `false && npm test || true` decides what the exit status means.
 	return {
@@ -469,6 +469,7 @@ function commandParts(
 		// decide the run's outcome and what the exit status means.
 		parts: parts.filter((c, i) => i < MAX_STAGES || c.action === "test" || c.last !== false),
 		chain: control ? "mixed" : parts.length > 1 || stages.length > 1 ? chainOf(seps) : "single",
+		solo,
 	};
 }
 
@@ -578,6 +579,8 @@ function printsInCallOrder(input: string, calls: RegExpMatchArray[]): boolean {
 interface Unit {
 	parts: Classified[];
 	chain: Chain;
+	/** See `CommandParts.solo`: only then can a test summary speak for the test. */
+	solo?: boolean;
 	result: DiffStatus | "pending";
 	testFailures: boolean;
 	testPasses: boolean;
@@ -588,6 +591,38 @@ interface Unit {
 }
 
 type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId">;
+
+/** Code that makes the rest of a statement conditional or deferred. */
+const CONDITIONAL_RE = /\b(?:if|else|while|for|do|switch|case|catch|try|function|return)\b|=>|\?|&&|\|\|/;
+
+/**
+ * Whether the call at `at` is a top-level, unconditional statement of the cell:
+ * outside every `{}` block (branches, loops, functions, try/catch) and not
+ * guarded by a condition. Strings and template literals are skipped, so a
+ * patch body full of braces never counts.
+ */
+function isUnconditional(input: string, at: number): boolean {
+	let depth = 0;
+	let quote: string | null = null;
+	let statementStart = 0;
+	for (let i = 0; i < at; i++) {
+		const ch = input[i] as string;
+		if (quote) {
+			if (ch === "\\") i++;
+			else if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+		else if (ch === "{") {
+			depth++;
+			statementStart = i + 1;
+		} else if (ch === "}") {
+			depth--;
+			statementStart = i + 1;
+		} else if (ch === ";") statementStart = i + 1;
+	}
+	return depth === 0 && !CONDITIONAL_RE.test(input.slice(statementStart, at));
+}
 
 /** Calls in an exec cell that write one result chunk each. */
 const CHUNKED = new Set(["exec_command", "write_stdin"]);
@@ -635,7 +670,10 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			? perCall
 				? chunkResult(results[k++])
 				: { ...UNKNOWN, ...cellEvidence }
-			: plain;
+			: // A finished cell only vouches for calls it certainly reached.
+				isUnconditional(input, call.index ?? 0)
+				? plain
+				: UNKNOWN;
 		if (tool === "exec_command") {
 			const cmd = literalArg(body, "cmd");
 			const workdir = literalArg(body, "workdir").value;
@@ -657,10 +695,11 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			out.push({ parts: [{ action: "other", target: tool }], chain: "single", ...res });
 		}
 	});
-	// Cell-wide evidence only counts when the cell holds exactly one test.
-	const tests = out.flatMap((u) => u.parts.filter((c) => c.action === "test"));
-	if (!perCall && tests.length !== 1)
+	// Without one chunk per call, the cell's output is shared by every call: it
+	// can only speak for a lone call that is itself a solo test run.
+	if (!perCall && calls.length !== 1)
 		for (const u of out) {
+			u.solo = false;
 			u.testFailures = false;
 			u.testPasses = false;
 		}
@@ -736,8 +775,7 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			if (cmd !== undefined) {
 				const workdir =
 					str(args["workdir"]) ?? str(args["working_directory"]) ?? str(args["cwd"]);
-				const { parts, chain } = commandParts(cmd, cwd, workdir);
-				return [{ parts, chain, ...yieldedOr(step) }];
+				return [{ ...commandParts(cmd, cwd, workdir), ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
 		}
@@ -795,15 +833,16 @@ const isCommand = (c: Classified): boolean =>
  * Exit status: a single command owns it; an `&&` chain that succeeded ran every
  * stage successfully; a `;` chain only reports its last stage; a mixed chain
  * (`a && b || c`) says nothing about any one stage; a piped test reports the
- * pipe's last command, not the test. A failing summary line from the test
- * runner marks its test failed whatever the exit said, when the unit holds one
- * test. Everything else without evidence is `unknown`.
+ * pipe's last command, not the test. A failing summary line marks the test
+ * failed whatever the exit said, but only when the unit is that test run alone
+ * (`solo`). Everything else without evidence is `unknown`.
  */
 export function resolveStatuses(
 	parts: Classified[],
 	chain: Chain,
 	result: DiffStatus | "pending",
 	testFailures: boolean,
+	solo = false,
 ): DiffStatus[] {
 	const n = parts.length;
 	const known = result === "ok" || result === "error" || result === "interrupted";
@@ -825,38 +864,25 @@ export function resolveStatuses(
 		if (!isCommand(c) && known && !failedResult && chain !== "mixed") return "ok";
 		return "unknown";
 	});
-	const tests = parts.flatMap((c, i) => (c.action === "test" ? [i] : []));
-	if (tests.length === 1) {
-		const t = tests[0] as number;
-		if (testFailures) {
-			out[t] = failedResult ? (result as DiffStatus) : "error";
-			// After a failed stage of an `&&` chain nothing else ran.
-			if (chain === "and") for (let i = t + 1; i < n; i++) out[i] = "unknown";
-		}
-	}
+	// A failing summary speaks for the test only when nothing else could have
+	// printed it (`cat old.log; npm test` could).
+	if (solo && testFailures) out[0] = failedResult ? (result as DiffStatus) : "error";
 	return out;
 }
 
 /**
- * The test summary a unit's output carries, tied to its test part only when the
- * unit holds exactly one test. A passing summary is recorded, never promoted to
+ * The test summary a unit's output carries, tied to its test only when the unit
+ * is that test run alone (`CommandParts.solo`). A passing summary is recorded, never promoted to
  * an exit status: "passed" needs both (see `runVerdict`).
  */
 function summaries(
 	parts: Classified[],
 	testFailures: boolean,
 	testPasses: boolean,
+	solo = false,
 ): Array<DiffStep["summary"]> {
-	const tests = parts.flatMap((c, i) => (c.action === "test" ? [i] : []));
-	return parts.map((_, i) =>
-		tests.length === 1 && tests[0] === i
-			? testFailures
-				? "fail"
-				: testPasses
-					? "pass"
-					: undefined
-			: undefined,
-	);
+	const sum = testFailures ? "fail" : testPasses ? "pass" : undefined;
+	return parts.map(() => (solo ? sum : undefined));
 }
 
 function stepUnits(step: Step, cwd: string | null | undefined): Unit[] {
@@ -916,8 +942,8 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 				waiting.unit.testPasses ||= unit.testPasses;
 				if (unit.result === "pending") continue;
 				const { unit: orig, steps } = waiting;
-				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures);
-				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses);
+				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures, orig.solo);
+				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses, orig.solo);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
 					const sum = sums[i];
@@ -929,8 +955,8 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
-			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures);
-			const sums = summaries(parts, unit.testFailures, unit.testPasses);
+			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures, unit.solo);
+			const sums = summaries(parts, unit.testFailures, unit.testPasses, unit.solo);
 			const made = parts.map((c, i) =>
 				make(
 					step,
