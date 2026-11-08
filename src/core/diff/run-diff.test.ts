@@ -1087,18 +1087,36 @@ test("long targets keep their full text in the signature (#112 item 2)", () => {
 	assert.ok(diff.explanation.includes("…"));
 });
 
-test("sed that edits in place is a command, never a read (#112 item 5)", () => {
-	assert.deepEqual(sig("sed --in-place 's/a/b/' src/a.ts"), ["run:sed --in-place s/a/b/ src/a.ts"]);
-	assert.deepEqual(sig("sed -i.bak 's/a/b/' src/a.ts"), ["run:sed -i.bak s/a/b/ src/a.ts"]);
-	assert.deepEqual(sig("sed -Ei 's/a/b/' src/a.ts"), ["run:sed -Ei s/a/b/ src/a.ts"]);
+test("sed fails closed: only `sed -n '<range>p' file` is a read (#112 item 5)", () => {
 	assert.deepEqual(sig("sed -n 1,20p src/a.ts"), ["read:src/a.ts"]);
-	assert.deepEqual(sig("sed -E -n 's/a/b/p' src/a.ts"), ["read:src/a.ts"]);
-	// Option arguments are not flags: an `i` inside them is not in-place.
-	assert.deepEqual(sig("sed -fscript.sed src/a.ts"), ["read:script.sed", "read:src/a.ts"]);
-	assert.deepEqual(sig("sed -f script.sed src/a.ts"), ["read:script.sed", "read:src/a.ts"]);
-	assert.deepEqual(sig("sed -eicmd src/a.ts"), ["read:src/a.ts"]);
-	assert.deepEqual(sig("sed -n -e 'i\\x' src/a.ts"), ["read:src/a.ts"]);
-	assert.deepEqual(sig("sed --expression=p -i src/a.ts"), ["run:sed --expression=p -i src/a.ts"]);
+	assert.deepEqual(sig("sed -n '5,$p' src/a.ts src/b.ts"), ["read:src/a.ts", "read:src/b.ts"]);
+	assert.deepEqual(sig("sed -n 12p src/a.ts | head -3"), ["read:src/a.ts"]);
+	// Everything else is an unparsed command with its full text.
+	const unparsed: Array<[string, string]> = [
+		["sed --in-place 's/a/b/' src/a.ts", "run:sed --in-place s/a/b/ src/a.ts"],
+		["sed -i.bak 's/a/b/' src/a.ts", "run:sed -i.bak s/a/b/ src/a.ts"],
+		["sed -I '' 's/a/b/' src/a.ts", "run:sed -I s/a/b/ src/a.ts"],
+		["sed -Ei 's/a/b/' src/a.ts", "run:sed -Ei s/a/b/ src/a.ts"],
+		["sed -fscript.sed src/a.ts", "run:sed -fscript.sed src/a.ts"],
+		["sed --file=scripts/a=b.sed src/a.ts", "run:sed --file=scripts/a=b.sed src/a.ts"],
+		["sed -E -n 's/a/b/p' src/a.ts", "run:sed -E -n s/a/b/p src/a.ts"],
+		["sed -n 1,20p < src/a.ts", "run:sed -n 1,20p < src/a.ts"],
+		["sed < src/a.ts -n '1,20p'", "run:sed < src/a.ts -n 1,20p"],
+		["sed -n 1,20p src/a.ts 2>/dev/null", "run:sed -n 1,20p src/a.ts"],
+		["sed 's/a/b/' src/a.ts", "run:sed s/a/b/ src/a.ts"],
+	];
+	for (const [cmd, want] of unparsed) assert.deepEqual(sig(cmd), [want], cmd);
+	// Different inputs never collide.
+	assert.notDeepEqual(sig("sed -n 1,20p < src/a.ts"), sig("sed -n 1,20p < src/b.ts"));
+});
+
+test("commands that edit in place with -i are never reads", () => {
+	// No read command edits in place; tools that do are always commands.
+	assert.deepEqual(sig("perl -pi -e 's/a/b/' src/a.ts"), ["run:perl -pi -e s/a/b/ src/a.ts"]);
+	assert.deepEqual(sig("awk -i inplace '{print}' src/a.ts"), ["run:awk -i inplace {print} src/a.ts"]);
+	assert.deepEqual(sig("ruby -i -pe 'x' src/a.ts"), ["run:ruby -i -pe x src/a.ts"]);
+	// For read commands, -i means something else and stays a read.
+	assert.deepEqual(sig("less -i src/a.ts"), ["read:src/a.ts"]);
 });
 
 test("a spaced redirect's target never leaks into the command (#112 item 6)", () => {
@@ -1107,10 +1125,10 @@ test("a spaced redirect's target never leaks into the command (#112 item 6)", ()
 	assert.deepEqual(sig("npm run build >> build.log 2>&1"), ["run:npm run build"]);
 	assert.deepEqual(sig("npm run build 2>&1"), ["run:npm run build"]);
 	assert.deepEqual(sig("head -5 src/a.ts > top.txt"), ["read:src/a.ts"]);
-	assert.deepEqual(sig("sort < input.txt"), ["run:sort"]);
+	assert.deepEqual(sig("sort < input.txt"), ["run:sort < input.txt"]);
+	assert.deepEqual(sig("npm run build >& build.log"), ["run:npm run build"]);
 	// A read keeps the file on its stdin.
 	assert.deepEqual(sig("cat < src/a.ts"), ["read:src/a.ts"]);
-	assert.deepEqual(sig("sed -n 1,20p < src/a.ts"), ["read:src/a.ts"]);
 	assert.deepEqual(sig("cat <<EOF > notes.md\nx\nEOF"), ["write:notes.md"]);
 	// A quoted ">" is data, not a redirect.
 	assert.deepEqual(sig('node -e "1 > 0" x.js'), ["run:node -e 1 > 0 x.js"]);

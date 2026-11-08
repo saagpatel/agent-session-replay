@@ -63,7 +63,7 @@ const NOISE_CMDS = new Set([
 	"date",
 ]);
 /** A bare output redirect or heredoc operator; the next word is its operand. */
-const BARE_OPERAND_OP = /^(?:\d+|&)?(?:>>?|>\|)$|^<<<?-?$/;
+const BARE_OPERAND_OP = /^(?:\d+|&)?(?:>>?|>\||>&)$|^<<<?-?$/;
 
 /**
  * The words that make up the command itself: env assignments stay for the
@@ -81,7 +81,9 @@ function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput 
 			continue;
 		}
 		if (!t.quoted && /^\d*<$/.test(t.text)) {
-			if (!keepInput) i++;
+			// Keep `< file` as written when asked, so two different inputs differ.
+			if (keepInput && toks[i + 1]) out.push("<", (toks[i + 1] as { text: string }).text);
+			i++;
 			continue;
 		}
 		if (!t.quoted && /^(?:\d*|&)[<>]/.test(t.text)) continue;
@@ -90,79 +92,28 @@ function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput 
 	return out;
 }
 
-/**
- * The files a read-only `sed` reads, parsed exactly: a `-f` script file, then
- * every operand except the script itself (the `-e` argument, or else the first
- * operand).
- */
-function sedFiles(ws: string[]): string[] {
-	const files: string[] = [];
-	const operands: string[] = [];
-	let scriptGiven = false;
-	for (let i = 1; i < ws.length; i++) {
-		const w = ws[i] as string;
-		if (w === "--") {
-			operands.push(...ws.slice(i + 1));
-			break;
-		}
-		if (w.startsWith("--")) {
-			const [name, value] = w.split("=", 2);
-			const arg = value ?? (/^--(?:expression|file|line-length)$/.test(name ?? "") ? ws[++i] : undefined);
-			if (name === "--expression") scriptGiven = true;
-			if (name === "--file" && arg) {
-				scriptGiven = true;
-				files.push(arg);
-			}
-			continue;
-		}
-		if (w.startsWith("-") && w !== "-") {
-			for (let j = 1; j < w.length; j++) {
-				const opt = w[j] as string;
-				if (!SED_ARG_OPTS.has(opt)) continue;
-				const arg = j < w.length - 1 ? w.slice(j + 1) : ws[++i];
-				if (opt === "e") scriptGiven = true;
-				if (opt === "f" && arg) {
-					scriptGiven = true;
-					files.push(arg);
-				}
-				break;
-			}
-			continue;
-		}
-		operands.push(w);
-	}
-	return [...files, ...(scriptGiven ? operands : operands.slice(1))];
+/** Tokens after any leading `NAME=value` env assignments. */
+function withoutLeadingEnv(toks: Array<{ text: string; quoted: boolean }>): Array<{ text: string; quoted: boolean }> {
+	let i = 0;
+	while (i < toks.length - 1 && !toks[i]?.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]?.text ?? "")) i++;
+	return toks.slice(i);
 }
 
-/** sed short options that take an argument (glued or as the next word). */
-const SED_ARG_OPTS = new Set(["e", "f", "l"]);
+/** A sed range-print script: `12p`, `1,20p`, `5,$p` or `$p`. */
+const SED_RANGE_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/;
 
 /**
- * `sed` that edits its files: `-i` as a real option, alone (`-i`, `-i.bak`) or
- * in a group of flags (`-Ei`), or `--in-place`. Option arguments are skipped,
- * so `sed -fscript.sed` or `sed -e 'i\x'` never count.
+ * The files of a plain `sed` read, or null. Only the exact form
+ * `sed -n '<range>p' file…` counts: no other options, no redirects, no script
+ * file. Anything else (`-i`, `-I`, `-f`, `--file`, `-e`, input redirects, other
+ * scripts) is left as an unparsed command, never read as a read.
  */
-function sedInPlace(toks: Array<{ text: string; quoted: boolean }>): boolean {
-	for (let i = 1; i < toks.length; i++) {
-		const t = toks[i] as { text: string; quoted: boolean };
-		if (t.quoted || !t.text.startsWith("-") || t.text === "-") continue;
-		if (t.text === "--") return false;
-		if (t.text.startsWith("--")) {
-			if (/^--in-place(?:=|$)/.test(t.text)) return true;
-			if (/^--(?:expression|file|line-length)$/.test(t.text)) i++;
-			continue;
-		}
-		for (let j = 1; j < t.text.length; j++) {
-			const opt = t.text[j] as string;
-			if (opt === "i") return true;
-			if (SED_ARG_OPTS.has(opt)) {
-				// The rest of the word, or else the next word, is the argument.
-				if (j === t.text.length - 1) i++;
-				break;
-			}
-		}
-	}
-	return false;
+function plainSedRead(toks: Array<{ text: string; quoted: boolean }>): string[] | null {
+	const [cmd, flag, script, ...files] = toks;
+	if (cmd?.text.replace(/^.*\//, "") !== "sed" || flag?.quoted || flag?.text !== "-n") return null;
+	if (!script || !SED_RANGE_PRINT.test(script.text) || files.length === 0) return null;
+	if (files.some((f) => !f.quoted && (/^-/.test(f.text) || /^(?:\d+|&)?[<>|]/.test(f.text)))) return null;
+	return files.map((f) => f.text);
 }
 
 /** The file an unquoted `>`/`>>` redirect writes to, if any. */
@@ -380,11 +331,13 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
 	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
-	if (READ_CMDS.has(head) && !(head === "sed" && sedInPlace(toks))) {
+	// sed fails closed: only `sed -n '<range>p' file…` is a read.
+	const sedRead = head === "sed" ? plainSedRead(withoutLeadingEnv(toks)) : null;
+	if (READ_CMDS.has(head) && (head !== "sed" || sedRead !== null)) {
 		// A read also reads the file on its stdin (`cat < src/a.ts`).
 		const readWords = commandWords(toks, true);
 		while (readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
-		const files = head === "sed" ? sedFiles(readWords) : fileArgs(readWords);
+		const files = sedRead ?? fileArgs(readWords);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
@@ -398,7 +351,8 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	// Scripts and tools are not parsed further: the full command (env and
 	// redirects aside) is the target, so `npm run build` and `npm run lint`
 	// never share a signature.
-	return [{ action: "run", target: ws.join(" ").replace(/\s+/g, " ").trim() }];
+	const full = commandWords(withoutLeadingEnv(toks), true);
+	return [{ action: "run", target: full.join(" ").replace(/\s+/g, " ").trim() }];
 }
 
 /** Shell keywords that start or end control flow; stripped from a stage's head. */
