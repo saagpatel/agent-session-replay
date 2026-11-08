@@ -107,6 +107,25 @@ export const ATTR = {
 	TOOL_ARGS: "tool.arguments",
 	TOOL_RESULT_KIND: "tool.result.kind",
 	TOOL_ERROR: "tool.error.message",
+	/** The tool output reports failing tests, whatever the exit code said. */
+	TEST_FAILURES: "tool.output.test_failures",
+	/** The tool output's test summary reports success and no failures. */
+	TEST_PASSES: "tool.output.test_passes",
+	/**
+	 * Codex command results (`ExecResult[]`): one per inner command of an `exec`
+	 * cell, in call order, or one for a plain-format command that yielded. A
+	 * yielded command has a session_id and no exit_code yet.
+	 */
+	EXEC_RESULTS: "codex.exec.results",
+	/** The exec cell's script ran to completion. */
+	EXEC_COMPLETED: "codex.exec.completed",
+	/**
+	 * Every printed part of an exec cell's output after its header, in order
+	 * (`ExecPart[]`), so a straight-line cell can match each part to its call.
+	 */
+	EXEC_PARTS: "codex.exec.parts",
+	/** An `apply_patch` call's own output confirmed the patch applied. */
+	PATCH_CONFIRMED: "codex.patch.confirmed",
 	// subagent overlay
 	AGENT_TYPE: "agent.type",
 	AGENT_NAME: "agent.name",
@@ -130,3 +149,23 @@ export const ATTR = {
 	COMPACT_BEFORE: "harness.compaction.tokens_before",
 	COMPACT_AFTER: "harness.compaction.tokens_after",
 } as const;
+
+/** One inner command result of a Codex `exec` cell (see `ATTR.EXEC_RESULTS`). */
+export interface ExecResult {
+	exit_code: number | null;
+	session_id: string | null;
+	test_failures: boolean;
+	test_passes: boolean;
+}
+
+/**
+ * One printed part of an exec cell's output: a command's result chunk, an
+ * `apply_patch` result (`{}` when it applied), or any other printed text.
+ */
+export interface ExecPart {
+	kind: "chunk" | "empty-object" | "other";
+	result?: ExecResult;
+	/** For `other`: the text reads like an error (`Script error: …`). */
+	error?: boolean;
+}
+

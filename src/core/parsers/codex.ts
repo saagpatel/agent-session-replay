@@ -22,7 +22,15 @@
  */
 
 import { parseJsonlWithStats } from "../jsonl.ts";
-import { ATTR, type Run, type Step, type Trace } from "../types.ts";
+import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
+import {
+	ATTR,
+	type ExecPart,
+	type ExecResult,
+	type Run,
+	type Step,
+	type Trace,
+} from "../types.ts";
 
 const PLUMBLINE_VERSION = "0.1.0";
 const HARNESS_NAME = "codex";
@@ -44,8 +52,32 @@ const RESULT_KIND: Record<string, string> = {
 	web_search: "search",
 };
 
-/** A shell tool output carries this header; a non-zero code is a failed call. */
+/**
+ * A legacy shell tool output carries this header before its `Output:` body; a
+ * non-zero code is a failed call. Only the header is searched, so a command
+ * that prints an old log containing the phrase is never misread.
+ */
 const EXIT_RE = /Process exited with code (\d+)/;
+const HEADER_MAX = 400;
+/** A plain-format command that yielded before exiting. */
+const RUNNING_RE = /Process running with session ID (\w+)/;
+
+function legacyExit(raw: unknown): RegExpExecArray | null {
+	if (typeof raw !== "string") return null;
+	const header = (raw.split(/\nOutput:/)[0] ?? "").slice(0, HEADER_MAX);
+	return EXIT_RE.exec(header);
+}
+
+/** Every numeric `exit_code` anywhere inside a parsed JSON value. */
+function nestedExitCodes(v: unknown, out: number[] = []): number[] {
+	if (Array.isArray(v)) for (const x of v) nestedExitCodes(x, out);
+	else if (typeof v === "object" && v !== null)
+		for (const [k, x] of Object.entries(v as Json)) {
+			if (k === "exit_code" && typeof x === "number") out.push(x);
+			else nestedExitCodes(x, out);
+		}
+	return out;
+}
 
 type Json = Record<string, unknown>;
 
@@ -63,6 +95,92 @@ function num(v: unknown): number {
 function truncate(s: string, n: number): string {
 	return s.length > n ? s.slice(0, n) : s;
 }
+
+/** Tool output text: a plain string, or (current rollouts) a list of text parts. */
+function outputText(v: unknown): string {
+	if (typeof v === "string") return v;
+	return (Array.isArray(v) ? v : [])
+		.map(asObj)
+		.map((b) => str(b["text"]))
+		.filter((t): t is string => Boolean(t))
+		.join("\n");
+}
+
+/**
+ * Current `exec` cells report each inner command as its own JSON chunk
+ * (`{"chunk_id", "exit_code" | "session_id", "output"}`), one text part each,
+ * in call order. Parse those parts only, never free text that merely contains
+ * an `exit_code` key.
+ */
+function execResults(v: unknown): { results: ExecResult[]; aggregateExits: number[] } {
+	const results: ExecResult[] = [];
+	const aggregateExits: number[] = [];
+	for (const part of Array.isArray(v) ? v : []) {
+		const text = str(asObj(part)["text"])?.trim();
+		if (!text || !/^[[{]/.test(text)) continue;
+		if (!text.includes('"chunk_id"') && !text.includes("exit_code")) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			continue;
+		}
+		const chunk = asObj(parsed);
+		if (!("chunk_id" in chunk)) {
+			// Possibly an aggregate the cell printed itself (e.g. Promise.allSettled):
+			// evidence that some command failed, but not which one. The caller
+			// decides whether the cell's code makes it one.
+			aggregateExits.push(...nestedExitCodes(parsed));
+			continue;
+		}
+		const exit = chunk["exit_code"];
+		const session = chunk["session_id"];
+		const body = str(chunk["output"]) ?? "";
+		results.push({
+			exit_code: typeof exit === "number" ? exit : null,
+			session_id:
+				typeof session === "number" || typeof session === "string"
+					? String(session)
+					: null,
+			test_failures: hasTestFailures(body),
+			test_passes: hasTestPasses(body),
+		});
+	}
+	return { results, aggregateExits };
+}
+
+/** The header an exec cell's output starts with. */
+const CELL_HEADER_RE = /^Script (?:completed|failed)\b/;
+const ERROR_TEXT_RE = /\b(?:error|failed|rejected|invalid)\b/i;
+
+/**
+ * An exec cell's printed parts after its header, in order. Each is kept as
+ * evidence for exactly one call; the normalizer decides whether the cell is
+ * simple enough to match parts to calls.
+ */
+function execParts(v: unknown): ExecPart[] {
+	const out: ExecPart[] = [];
+	(Array.isArray(v) ? v : []).forEach((part, i) => {
+		const text = (str(asObj(part)["text"]) ?? "").trim();
+		if (i === 0 && CELL_HEADER_RE.test(text)) return;
+		if (text === "{}") {
+			out.push({ kind: "empty-object" });
+			return;
+		}
+		if (text.startsWith("{") && text.includes('"chunk_id"')) {
+			const [result] = execResults([part]).results;
+			if (result) {
+				out.push({ kind: "chunk", result });
+				return;
+			}
+		}
+		out.push({ kind: "other", error: ERROR_TEXT_RE.test(text) });
+	});
+	return out;
+}
+
+/** A legacy `apply_patch` output that says it applied. */
+const PATCH_OK_RE = /^(?:Success\b|Done!)|"exit_code"\s*:\s*0\b/;
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
 function messageText(payload: Json): string | undefined {
@@ -153,19 +271,57 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 
 	const mergeOutput = (
 		callId: string,
-		output: string,
+		rawOutput: unknown,
 		when: string,
 		status?: unknown,
 	): void => {
 		const step = toolSteps.get(callId);
 		if (!step) return;
+		const output = outputText(rawOutput);
 		step.ended_at = when;
 		if (status === "incomplete" || status === "failed") step.status = "error";
-		const m = EXIT_RE.exec(output);
-		if (m && m[1] !== "0") {
+		// A legacy string output carries its exit code in the header; current
+		// exec cells (a list of parts) carry one JSON chunk per inner command.
+		const m = legacyExit(rawOutput);
+		const parsed = m ? { results: [], aggregateExits: [] } : execResults(rawOutput);
+		const { results } = parsed;
+		// JSON a cell prints is only a result aggregate when the cell itself fanned
+		// out tool calls (`Promise.allSettled([tools.exec_command(…), …])`); any
+		// other printed JSON with an `exit_code` key is just data.
+		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
+		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
+		const aggregateExits = fansOut ? parsed.aggregateExits : [];
+		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
+		// A plain-format command still running reports a session to poll instead
+		// of an exit code; record it like a yielded exec-cell chunk.
+		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
+		if (running?.[1])
+			step.attributes[ATTR.EXEC_RESULTS] = [
+				{
+					exit_code: null,
+					session_id: running[1],
+					test_failures: hasTestFailures(output),
+					test_passes: hasTestPasses(output),
+				},
+			];
+		if (!m && /^Script completed\b/.test(output.trimStart()))
+			step.attributes[ATTR.EXEC_COMPLETED] = true;
+		if (Array.isArray(rawOutput) && step.attributes[ATTR.TOOL_NAME] === "exec")
+			step.attributes[ATTR.EXEC_PARTS] = execParts(rawOutput);
+		if (step.attributes[ATTR.TOOL_NAME] === "apply_patch" && PATCH_OK_RE.test(output.trim()))
+			step.attributes[ATTR.PATCH_CONFIRMED] = true;
+		const failedInner = [
+			...results.map((r) => r.exit_code),
+			...aggregateExits,
+		].some((code) => code !== null && code !== 0);
+		// A cell whose script threw (`Script failed … Script error: …`) failed.
+		const scriptFailed = !m && /^Script failed\b/.test(output.trimStart());
+		if ((m && m[1] !== "0") || failedInner || scriptFailed) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
+		if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
+		else if (hasTestPasses(output)) step.attributes[ATTR.TEST_PASSES] = true;
 	};
 
 	events.forEach((ev, idx) => {
@@ -268,7 +424,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "function_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", str(p["output"]) ?? "", ts);
+				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
 			} else if (ptype === "local_shell_call") {
 				// Current Codex rollouts use a nested action and persist the output
 				// with the item's `id` (the call_id is optional in older records).
@@ -288,7 +444,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			} else if (ptype === "local_shell_call_output") {
 				mergeOutput(
 					str(p["call_id"]) ?? str(p["id"]) ?? "",
-					str(p["output"]) ?? "",
+					p["output"],
 					ts,
 					p["status"],
 				);
@@ -306,7 +462,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "custom_tool_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", str(p["output"]) ?? "", ts);
+				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
 			} else if (ptype === "web_search_call") {
 				const action = asObj(p["action"]);
 				const step = toolStep(

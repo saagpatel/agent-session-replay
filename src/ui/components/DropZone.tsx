@@ -65,13 +65,13 @@ export function readEntry(entry: FileSystemEntry, out: DroppedFile[]): Promise<v
 	});
 }
 
-function droppedFiles(files: File[]): DroppedFile[] {
+export function droppedFiles(files: File[]): DroppedFile[] {
 	return files.map((file) =>
 		droppedFile(file, file.webkitRelativePath || file.name),
 	);
 }
 
-async function filesFromDrop(dt: DataTransfer): Promise<DroppedFile[]> {
+export async function filesFromDrop(dt: DataTransfer): Promise<DroppedFile[]> {
 	const items = dt.items;
 	const roots: FileSystemEntry[] = [];
 	if (items?.length && typeof items[0]?.webkitGetAsEntry === "function") {
@@ -87,7 +87,7 @@ async function filesFromDrop(dt: DataTransfer): Promise<DroppedFile[]> {
 }
 
 /** Merge the .jsonl files of a session into one event stream (main first). */
-async function combine(
+export async function combine(
 	files: DroppedFile[],
 ): Promise<{ name: string; text: string } | null> {
 	const jsonl = files.filter((f) => JSONL.test(f.name));
@@ -139,9 +139,12 @@ export async function afrInput(files: DroppedFile[]): Promise<AfrInput | null> {
 export function DropZone({
 	onLoad,
 	onError,
+	onCompare,
 }: {
 	onLoad: (payload: DropPayload) => void;
 	onError: (message: string) => void;
+	/** Opens Run Diff: two runs of one task, side by side. */
+	onCompare?: () => void;
 }) {
 	const [over, setOver] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -237,6 +240,11 @@ export function DropZone({
 					Parsed entirely in your browser. <b>Nothing is uploaded.</b>
 				</p>
 			</div>
+			{onCompare ? (
+				<button type="button" className="drop__compare" onClick={onCompare}>
+					<span aria-hidden="true">⇆</span> Compare two runs of the same task
+				</button>
+			) : null}
 		</main>
 	);
 }
