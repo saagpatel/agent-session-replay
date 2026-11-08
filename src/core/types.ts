@@ -109,6 +109,11 @@ export const ATTR = {
 	TOOL_ERROR: "tool.error.message",
 	/** The tool output reports failing tests, whatever the exit code said. */
 	TEST_FAILURES: "tool.output.test_failures",
+	/**
+	 * Codex `exec` cells: one result per inner command, in call order
+	 * (`ExecResult[]`). A yielded command has a session_id and no exit_code yet.
+	 */
+	EXEC_RESULTS: "codex.exec.results",
 	// subagent overlay
 	AGENT_TYPE: "agent.type",
 	AGENT_NAME: "agent.name",
@@ -132,3 +137,10 @@ export const ATTR = {
 	COMPACT_BEFORE: "harness.compaction.tokens_before",
 	COMPACT_AFTER: "harness.compaction.tokens_after",
 } as const;
+
+/** One inner command result of a Codex `exec` cell (see `ATTR.EXEC_RESULTS`). */
+export interface ExecResult {
+	exit_code: number | null;
+	session_id: string | null;
+	test_failures: boolean;
+}

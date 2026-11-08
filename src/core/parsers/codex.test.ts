@@ -423,7 +423,7 @@ test("current exec-cell outputs (a list of text parts) carry exit codes and test
 			call_id: "x1",
 			output: [
 				{ type: "input_text", text: "Script completed\nOutput:\n" },
-				{ type: "input_text", text: '{"exit_code":1,"output":"ℹ pass 1\\nℹ fail 1"}' },
+				{ type: "input_text", text: '{"chunk_id":"a1","exit_code":1,"output":"ℹ pass 1\\nℹ fail 1"}' },
 			],
 		}),
 		responseItem({
@@ -436,7 +436,7 @@ test("current exec-cell outputs (a list of text parts) carry exit codes and test
 		responseItem({
 			type: "custom_tool_call_output",
 			call_id: "x2",
-			output: [{ type: "input_text", text: '{"exit_code":0,"output":"a\\nb"}' }],
+			output: [{ type: "input_text", text: '{"chunk_id":"a2","exit_code":0,"output":"a\\nb"}' }],
 		}),
 	]);
 	const [failing, passing] = byKind(steps, "tool_call");
@@ -445,4 +445,27 @@ test("current exec-cell outputs (a list of text parts) carry exit codes and test
 	assert.equal(failing?.attributes[ATTR.TEST_FAILURES], true);
 	assert.equal(passing?.status, "ok");
 	assert.equal(passing?.attributes[ATTR.TEST_FAILURES], undefined);
+	assert.deepEqual(failing?.attributes[ATTR.EXEC_RESULTS], [
+		{ exit_code: 1, session_id: null, test_failures: true },
+	]);
+});
+
+test("a legacy shell header wins over exit_code text inside a successful read", () => {
+	const { steps } = parseCodexEvents([
+		sessionMeta(),
+		responseItem({
+			type: "function_call",
+			name: "shell",
+			call_id: "r1",
+			arguments: JSON.stringify({ command: ["bash", "-lc", "cat fixture.json"] }),
+		}),
+		responseItem({
+			type: "function_call_output",
+			call_id: "r1",
+			output: 'Process exited with code 0\nOutput:\n{"chunk_id":"x","exit_code": 1}',
+		}),
+	]);
+	const [read] = byKind(steps, "tool_call");
+	assert.equal(read?.status, "ok");
+	assert.equal(read?.attributes[ATTR.EXEC_RESULTS], undefined);
 });

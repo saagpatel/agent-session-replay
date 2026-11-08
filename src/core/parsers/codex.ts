@@ -23,7 +23,13 @@
 
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures } from "../test-signal.ts";
-import { ATTR, type Run, type Step, type Trace } from "../types.ts";
+import {
+	ATTR,
+	type ExecResult,
+	type Run,
+	type Step,
+	type Trace,
+} from "../types.ts";
 
 const PLUMBLINE_VERSION = "0.1.0";
 const HARNESS_NAME = "codex";
@@ -47,8 +53,6 @@ const RESULT_KIND: Record<string, string> = {
 
 /** A shell tool output carries this header; a non-zero code is a failed call. */
 const EXIT_RE = /Process exited with code (\d+)/;
-/** Current `exec` cells report each inner command as JSON with an exit_code. */
-const EXIT_JSON_RE = /"exit_code"\s*:\s*(-?\d+)/g;
 
 type Json = Record<string, unknown>;
 
@@ -75,6 +79,38 @@ function outputText(v: unknown): string {
 		.map((b) => str(b["text"]))
 		.filter((t): t is string => Boolean(t))
 		.join("\n");
+}
+
+/**
+ * Current `exec` cells report each inner command as its own JSON chunk
+ * (`{"chunk_id", "exit_code" | "session_id", "output"}`), one text part each,
+ * in call order. Parse those parts only, never free text that merely contains
+ * an `exit_code` key.
+ */
+function execResults(v: unknown): ExecResult[] {
+	const out: ExecResult[] = [];
+	for (const part of Array.isArray(v) ? v : []) {
+		const text = str(asObj(part)["text"])?.trim();
+		if (!text?.startsWith("{") || !text.includes('"chunk_id"')) continue;
+		let chunk: Json;
+		try {
+			chunk = asObj(JSON.parse(text));
+		} catch {
+			continue;
+		}
+		if (!("chunk_id" in chunk)) continue;
+		const exit = chunk["exit_code"];
+		const session = chunk["session_id"];
+		out.push({
+			exit_code: typeof exit === "number" ? exit : null,
+			session_id:
+				typeof session === "number" || typeof session === "string"
+					? String(session)
+					: null,
+			test_failures: hasTestFailures(str(chunk["output"]) ?? ""),
+		});
+	}
+	return out;
 }
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
@@ -166,19 +202,24 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 
 	const mergeOutput = (
 		callId: string,
-		output: string,
+		rawOutput: unknown,
 		when: string,
 		status?: unknown,
 	): void => {
 		const step = toolSteps.get(callId);
 		if (!step) return;
+		const output = outputText(rawOutput);
 		step.ended_at = when;
 		if (status === "incomplete" || status === "failed") step.status = "error";
+		// The legacy shell header is authoritative; only header-less exec-cell
+		// output is read as per-command JSON chunks.
 		const m = EXIT_RE.exec(output);
-		const nonZeroJson = [...output.matchAll(EXIT_JSON_RE)].some(
-			(x) => x[1] !== "0",
+		const results = m ? [] : execResults(rawOutput);
+		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
+		const failedChunk = results.some(
+			(r) => r.exit_code !== null && r.exit_code !== 0,
 		);
-		if ((m && m[1] !== "0") || nonZeroJson) {
+		if ((m && m[1] !== "0") || failedChunk) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
@@ -285,7 +326,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "function_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", outputText(p["output"]), ts);
+				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
 			} else if (ptype === "local_shell_call") {
 				// Current Codex rollouts use a nested action and persist the output
 				// with the item's `id` (the call_id is optional in older records).
@@ -305,7 +346,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			} else if (ptype === "local_shell_call_output") {
 				mergeOutput(
 					str(p["call_id"]) ?? str(p["id"]) ?? "",
-					outputText(p["output"]),
+					p["output"],
 					ts,
 					p["status"],
 				);
@@ -323,7 +364,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				steps.push(step);
 				toolSteps.set(callId, step);
 			} else if (ptype === "custom_tool_call_output") {
-				mergeOutput(str(p["call_id"]) ?? "", outputText(p["output"]), ts);
+				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
 			} else if (ptype === "web_search_call") {
 				const action = asObj(p["action"]);
 				const step = toolStep(
