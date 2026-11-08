@@ -684,3 +684,91 @@ test("fit keeps the table under the cap and trims the long run first", () => {
 	const [e, f] = fit([1], Array.from({ length: 5000 }, (_, i) => i), 1000);
 	assert.ok((e.length + 1) * (f.length + 1) <= 1000);
 });
+
+// ---- review regressions, round 3 -------------------------------------------
+
+test("a passing summary never overrides a known failing exit", () => {
+	const t = classifyCommand("pnpm test", null);
+	assert.deepEqual(resolveStatuses(t, "single", "error", false, true), ["error"]);
+	assert.deepEqual(resolveStatuses(t, "single", "interrupted", false, true), ["interrupted"]);
+	// It still fills in a missing one (a piped run).
+	const piped = classifyCommand("pnpm test | tail", null);
+	assert.deepEqual(resolveStatuses(piped, "single", "ok", false, true), ["ok"]);
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [
+			{ name: "Bash", command: "pnpm test", error: "Tests  10 passed (10)\nERROR: Coverage for lines (60%) does not meet threshold (80%)" },
+		]),
+	);
+	assert.equal(diffRuns(trace, trace).left.verdict, "failed");
+});
+
+test("a call whose result never arrived is unknown, in both harnesses", () => {
+	const cc = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command: "npm test" }]).slice(0, 2));
+	assert.deepEqual(normalizeTrace(cc).map((s) => `${s.action}:${s.status}`), ["test:unknown"]);
+	assert.equal(diffRuns(cc, cc).left.verdict, "unclear");
+	const codex = parseCodexEvents(
+		codexEvents(PROMPT, [{ kind: "shell", command: "npm test" }]).slice(0, 4),
+	);
+	assert.deepEqual(normalizeTrace(codex).map((s) => `${s.action}:${s.status}`), ["test:unknown"]);
+	assert.equal(diffRuns(codex, codex).left.verdict, "unclear");
+});
+
+test("every line of a script counts, heredoc bodies never do", () => {
+	assert.deepEqual(sig("npm test\nprintf done"), ["test:npm test"]);
+	const trailing = classifyCommand("npm test\nprintf done", null);
+	// printf decides the exit status, so the test's own result is unknown.
+	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", false), ["unknown"]);
+	assert.deepEqual(sig("# setup\nnpm ci\n\nnpm test"), ["run:npm ci", "test:npm test"]);
+	assert.deepEqual(
+		sig("python3 - <<'PY'\nimport os\nos.system('npm test')\nPY\ngit status"),
+		["run:python3", "read:git status"],
+	);
+	assert.deepEqual(sig("cat a.ts \\\n  b.ts && npm test"), ["read:a.ts", "read:b.ts", "test:npm test"]);
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "npm test\nprintf done" }]),
+	);
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("shell control flow never hands its exit status to one stage", () => {
+	assert.deepEqual(sig("for f in a b; do npm test; done"), ["test:npm test"]);
+	assert.deepEqual(sig("if npm test; then echo ok; fi"), ["test:npm test"]);
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "if npm test; then echo ok; fi" }]),
+	);
+	assert.deepEqual(normalizeTrace(trace).map((s) => s.status), ["unknown"]);
+});
+
+test("JSON a cell prints as data is not a failed command", () => {
+	const trace = rawCell(
+		'const r = JSON.parse(await tools.exec_command({cmd:"cat report.json"})); text(JSON.stringify(r));',
+		parts("Script completed\n", JSON.stringify({ exit_code: 1, note: "fixture data" })),
+	);
+	assert.equal(trace.steps[0]?.status, "ok");
+});
+
+test("test evidence from an intermediate poll survives the final one", () => {
+	const steps = normalizeTrace(
+		parseCodexEvents(
+			cellEvents([
+				{ input: execCall("npm test | cat"), chunks: [{ session_id: 7 }] },
+				{ input: pollCall(7), chunks: [{ session_id: 7, output: "ℹ tests 3\nℹ pass 2\nℹ fail 1" }] },
+				{ input: pollCall(7), chunks: [{ exit_code: 0 }] },
+			]),
+		),
+	);
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}`), ["test:error"]);
+});
+
+test("a one-sided call with no recorded result cannot headline the diff", () => {
+	const tools = [
+		{ name: "Edit", file: "src/a.ts" },
+		{ name: "Bash", command: "npm test" },
+	] as const;
+	const left = parseClaudeCodeEvents(ccEvents(PROMPT, [...tools]));
+	// The right run also issued a test call whose result never came back.
+	const events = ccEvents(PROMPT, [{ name: "Bash", command: "npm run lint" }, ...tools]);
+	const right = parseClaudeCodeEvents(events.filter((e) => e["uuid"] !== "r0"));
+	const diff = diffRuns(left, right);
+	assert.equal(diff.flagged?.cosmetic, true);
+});

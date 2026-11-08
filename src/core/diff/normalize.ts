@@ -201,50 +201,90 @@ function classifyStage(
 	return [{ action: "run", target }];
 }
 
+/** Shell keywords that start or end control flow; stripped from a stage's head. */
+const CONTROL_RE = /^(?:(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|!|\{|\}|\(|\))(?:\s+|$))+/;
+
 /** How a compound command's stages were chained. */
 type Chain = "single" | "seq" | "and" | "mixed";
 
 /**
- * Split on `;`, `&&` and `||` outside quotes (`node -e "a; b"` stays whole),
- * keeping the separators.
+ * Split a shell script into stages on `;`, `&&`, `||` and newlines outside
+ * quotes (`node -e "a; b"` stays whole), keeping the separators. A newline
+ * separates like `;`. Heredoc bodies are skipped, line continuations joined,
+ * and comment lines dropped.
  */
-function splitWithSeps(line: string): { stages: string[]; seps: string[] } {
+function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
+	const text = script.replace(/\\\r?\n/g, " ");
 	const stages: string[] = [];
 	const seps: string[] = [];
 	let quote: string | null = null;
 	let cur = "";
+	let line = "";
 	const flush = (sep: string | null) => {
 		const t = cur.trim();
-		if (t) {
+		if (t && !t.startsWith("#")) {
 			stages.push(t);
 			if (sep) seps.push(sep);
+		} else if (sep && seps.length === stages.length && stages.length > 0) {
+			// An empty or comment stage: keep the stronger separator before it.
+			seps[seps.length - 1] = seps[seps.length - 1] === ";" ? sep : (seps[seps.length - 1] as string);
 		}
 		cur = "";
 	};
-	for (let i = 0; i < line.length; i++) {
-		const ch = line[i] as string;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i] as string;
 		if (quote) {
 			if (ch === "\\" && quote === '"') {
-				cur += ch + (line[i + 1] ?? "");
+				cur += ch + (text[i + 1] ?? "");
+				line += ch + (text[i + 1] ?? "");
 				i++;
 				continue;
 			}
 			if (ch === quote) quote = null;
 			cur += ch;
+			line += ch;
+			continue;
+		}
+		if (ch === "\n") {
+			const heredoc = /<<-?\s*(['"]?)([A-Za-z_][\w]*)\1/.exec(line);
+			flush(";");
+			line = "";
+			if (heredoc) {
+				// Skip the body up to the delimiter line.
+				const delim = heredoc[2] as string;
+				let j = i + 1;
+				while (j < text.length) {
+					const nl = text.indexOf("\n", j);
+					const end = nl < 0 ? text.length : nl;
+					const bodyLine = text.slice(j, end);
+					j = end + 1;
+					if (bodyLine.trim() === delim) break;
+				}
+				i = j - 1;
+			}
+			continue;
+		}
+		if (ch === "#" && cur.trim() === "") {
+			// A comment runs to the end of the line.
+			const nl = text.indexOf("\n", i);
+			i = (nl < 0 ? text.length : nl) - 1;
 			continue;
 		}
 		if (ch === '"' || ch === "'") {
 			quote = ch;
 			cur += ch;
+			line += ch;
 			continue;
 		}
-		const two = line.slice(i, i + 2);
+		const two = text.slice(i, i + 2);
 		if (ch === ";" || two === "&&" || two === "||") {
 			flush(ch === ";" ? ";" : two);
+			line += ch === ";" ? ch : two;
 			if (ch !== ";") i++;
 			continue;
 		}
 		cur += ch;
+		line += ch;
 	}
 	flush(null);
 	return { stages, seps: seps.slice(0, Math.max(0, stages.length - 1)) };
@@ -269,11 +309,16 @@ interface CommandParts {
 /**
  * Classify a shell command into one step per meaningful stage:
  * `cat package.json; rg --files; npm test` is a read, a search and a test.
- * Only the first line counts, so heredoc bodies are never parsed as commands.
+ * Every line counts; heredoc bodies are data, never commands.
  */
 function commandParts(cmd: string, cwd: string | null | undefined): CommandParts {
 	const core = coreCommand(cmd);
-	const { stages, seps } = splitWithSeps(core.split("\n")[0] ?? "");
+	const { stages: raw, seps } = splitWithSeps(core);
+	// Shell control flow (`if npm test; then …`) decides what ran by itself, so
+	// such scripts never hand their exit status to one stage.
+	const control = raw.some((x) => CONTROL_RE.test(x));
+	// Loop and case headers (`for f in a b`) are not commands themselves.
+	const stages = raw.map((x) => (/^(?:for|case|select)\s/.test(x) ? "" : x.replace(CONTROL_RE, "").trim()));
 	const parts: Classified[] = [];
 	stages.forEach((stage, i) => {
 		const last = i === stages.length - 1;
@@ -283,7 +328,7 @@ function commandParts(cmd: string, cwd: string | null | undefined): CommandParts
 	// `|| true` in `false && npm test || true` decides what the exit status means.
 	return {
 		parts: parts.slice(0, MAX_STAGES),
-		chain: parts.length > 1 || stages.length > 1 ? chainOf(seps) : "single",
+		chain: control ? "mixed" : parts.length > 1 || stages.length > 1 ? chainOf(seps) : "single",
 	};
 }
 
@@ -482,8 +527,12 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 }
 
 function stepResult(step: Step): { result: DiffStatus; testFailures: boolean; testPasses: boolean } {
+	// Parsers start a call as ok and settle it when its result arrives; a call
+	// whose result never arrived (a run cut off mid-command) proves nothing.
+	const awaited = step.kind === "tool_call" || step.kind === "agent";
+	const settled = Boolean(step.ended_at) || (step.status ?? "ok") !== "ok";
 	return {
-		result: step.status ?? "ok",
+		result: awaited && !settled ? "unknown" : (step.status ?? "ok"),
 		testFailures: step.attributes[ATTR.TEST_FAILURES] === true,
 		testPasses: step.attributes[ATTR.TEST_PASSES] === true,
 	};
@@ -628,7 +677,9 @@ export function resolveStatuses(
 			out[t] = failedResult ? (result as DiffStatus) : "error";
 			// After a failed stage of an `&&` chain nothing else ran.
 			if (chain === "and") for (let i = t + 1; i < n; i++) out[i] = "unknown";
-		} else if (testPasses) {
+		} else if (testPasses && out[t] === "unknown") {
+			// A passing summary fills in a missing exit status; it never overrides
+			// a known failure (coverage gates, a later `&& tsc`, a crashed crate).
 			out[t] = "ok";
 		}
 	}
@@ -686,14 +737,18 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 		for (const unit of stepUnits(step, cwd)) {
 			if (unit.pollOf !== undefined) {
 				const waiting = pending.get(unit.pollOf);
-				if (!waiting || unit.result === "pending") continue;
+				if (!waiting) continue;
+				// Test summaries can arrive in any poll; keep them all.
+				waiting.unit.testFailures ||= unit.testFailures;
+				waiting.unit.testPasses ||= unit.testPasses;
+				if (unit.result === "pending") continue;
 				const { unit: orig, steps } = waiting;
 				const statuses = resolveStatuses(
 					orig.parts,
 					orig.chain,
 					unit.result,
-					orig.testFailures || unit.testFailures,
-					unit.testPasses,
+					orig.testFailures,
+					orig.testPasses,
 				);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";

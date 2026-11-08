@@ -22,6 +22,15 @@ import {
 } from "./types.ts";
 
 const WEIGHT = ACTION_WEIGHT;
+
+/**
+ * How much a step can matter. A step with no recorded result shows no effect,
+ * so it counts like a read: it cannot headline a diff on its own.
+ */
+function stepWeight(s: DiffStep): number {
+	const w = WEIGHT[s.action];
+	return s.status === "unknown" ? Math.min(w, 1) : w;
+}
 /** Matching rows after a fork that count as the runs lining back up. */
 const RECONVERGE = 2;
 const COSMETIC_FACTOR = 0.2;
@@ -63,10 +72,7 @@ function spans(rows: DiffRow[]): Array<[number, number]> {
 }
 
 function rowWeight(r: DiffRow): number {
-	return Math.max(
-		r.left ? WEIGHT[r.left.action] : 0,
-		r.right ? WEIGHT[r.right.action] : 0,
-	);
+	return Math.max(r.left ? stepWeight(r.left) : 0, r.right ? stepWeight(r.right) : 0);
 }
 
 /** The earliest of the most consequential rows in a fork: its likely cause. */
@@ -100,8 +106,8 @@ export function rankDivergences(
 				weights.push(WEIGHT[(r.left as DiffStep).action]);
 				continue;
 			}
-			if (r.left) weights.push(WEIGHT[r.left.action]);
-			if (r.right) weights.push(WEIGHT[r.right.action]);
+			if (r.left) weights.push(stepWeight(r.left));
+			if (r.right) weights.push(stepWeight(r.right));
 		}
 		const maxW = Math.max(0, ...weights);
 		const sumW = weights.reduce((a, b) => a + b, 0);
@@ -276,14 +282,14 @@ export function explainDivergence(
 
 	let second: string;
 	if (block.cosmetic && left.verdict !== right.verdict) {
-		second = `The runs differ only in reads, searches and lookups, so these steps do not explain why ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
+		second = `The runs differ only in steps with no visible effect, so these steps do not explain why ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
 	} else if (left.verdict !== right.verdict) {
 		const opener = block.reasons.includes("the runs do not re-converge")
 			? "The runs never line back up after this, and"
 			: "After this fork,";
 		second = `${opener} ${left.label} ended ${VERDICT_PHRASE[left.verdict]} while ${right.label} ended ${VERDICT_PHRASE[right.verdict]}.`;
 	} else if (block.cosmetic) {
-		second = `Every difference between the runs is a read, search, lookup or plan update, and both ended ${VERDICT_PHRASE[left.verdict]}, so they took effectively the same path.`;
+		second = `Every difference between the runs is a read, search or other step with no visible effect, and both ended ${VERDICT_PHRASE[left.verdict]}, so they took effectively the same path.`;
 	} else {
 		second = `Both runs still ended ${VERDICT_PHRASE[left.verdict]}, so this is the biggest change in approach rather than an outcome change.`;
 	}

@@ -118,7 +118,7 @@ export interface DivergenceBlock {
 	/** The earliest most consequential row in the fork: its likely cause. */
 	pivotRow: number;
 	score: number;
-	/** True when the fork only differs in reads, searches, lookups or plan updates. */
+	/** True when the fork only differs in steps with no visible effect (reads, searches, calls with no result). */
 	cosmetic: boolean;
 	/** Short reasons the ranker used, highest weight first. */
 	reasons: string[];
