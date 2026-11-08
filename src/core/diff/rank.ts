@@ -13,6 +13,7 @@
 
 import {
 	ACTION_WEIGHT,
+	clipForDisplay,
 	isFailure,
 	type DiffRow,
 	type DiffStep,
@@ -213,8 +214,9 @@ export function rankDivergences(
 
 // ---- explanation ---------------------------------------------------------
 
+/** Targets are full-length for matching; explanations show a readable clip. */
 function code(t: string | null): string {
-	return t ? `\`${t}\`` : "";
+	return t ? `\`${clipForDisplay(t)}\`` : "";
 }
 
 /** Past-tense phrase for one step: "edited `src/a.ts`", "ran `pnpm test`, which failed". */
@@ -251,7 +253,7 @@ export function describeStep(s: DiffStep): string {
 			phrase = "compacted its context";
 			break;
 		case "blocked":
-			phrase = `was blocked (${s.target ?? "guard"})`;
+			phrase = `was blocked (${s.target ? clipForDisplay(s.target) : "guard"})`;
 			break;
 		default:
 			phrase = `called ${t}`;

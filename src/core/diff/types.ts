@@ -15,6 +15,17 @@ import type { StepStatus } from "../types.ts";
  */
 export type DiffStatus = StepStatus | "unknown";
 
+/** Longest target shown in labels, explanations and verdict reasons. */
+export const DISPLAY_MAX = 80;
+
+/**
+ * Clip a target for display only. Signatures and file matching always use the
+ * full target, so two long paths that share a prefix stay distinct.
+ */
+export function clipForDisplay(t: string): string {
+	return t.length > DISPLAY_MAX ? `${t.slice(0, DISPLAY_MAX - 1)}…` : t;
+}
+
 /** True for a known failure; `unknown` is not a failure. */
 export function isFailure(s: DiffStatus): boolean {
 	return s === "error" || s === "interrupted";

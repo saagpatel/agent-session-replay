@@ -13,6 +13,7 @@
 
 import { ATTR, type ExecPart, type ExecResult, type Step, type Trace } from "../types.ts";
 import {
+	clipForDisplay,
 	type DiffAction,
 	type DiffStatus,
 	type DiffStep,
@@ -22,7 +23,6 @@ import {
 type Json = Record<string, unknown>;
 
 const ERROR_MAX = 240;
-const TARGET_MAX = 80;
 
 function asObj(v: unknown): Json {
 	return typeof v === "object" && v !== null && !Array.isArray(v)
@@ -62,6 +62,73 @@ const NOISE_CMDS = new Set([
 	"which",
 	"date",
 ]);
+/** A bare output redirect or heredoc operator; the next word is its operand. */
+const BARE_OPERAND_OP = /^(?:\d+|&)?(?:>>?|>\||>&)$|^<<<?-?$/;
+
+/**
+ * The words that make up the command itself: env assignments stay for the
+ * caller to strip, while unquoted redirects go, together with the operand of a
+ * spaced output redirect or heredoc (`npm run build > build.log` is
+ * `npm run build`). A spaced input redirect's file is kept only when asked
+ * (`cat < src/a.ts` reads src/a.ts); otherwise it is dropped too.
+ */
+function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput = false): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < toks.length; i++) {
+		const t = toks[i] as { text: string; quoted: boolean };
+		if (!t.quoted && BARE_OPERAND_OP.test(t.text)) {
+			// A here-string's text is the program's input: keep it when asked, so
+			// `python3 <<< 'print(1)'` and `<<< 'print(2)'` stay different.
+			if (keepInput && t.text === "<<<" && toks[i + 1]) out.push("<<<", (toks[i + 1] as { text: string }).text);
+			i++;
+			continue;
+		}
+		if (!t.quoted && /^\d*<$/.test(t.text)) {
+			// Keep `< file` as written when asked, so two different inputs differ.
+			if (keepInput && toks[i + 1]) out.push("<", (toks[i + 1] as { text: string }).text);
+			i++;
+			continue;
+		}
+		// Glued input redirects and here-strings (`<in.txt`, `<<<x`) are input
+		// too; a glued heredoc opener (`<<EOF`) only names its delimiter.
+		const gluedHeredoc = /^<<-?['"]?[A-Za-z_]\w*['"]?$/.test(t.text);
+		if (keepInput && !t.quoted && !gluedHeredoc && /^\d*</.test(t.text)) {
+			out.push(t.text);
+			continue;
+		}
+		if (!t.quoted && /^(?:\d*|&)[<>]/.test(t.text)) continue;
+		out.push(t.text);
+	}
+	return out;
+}
+
+/** Tokens after any leading `NAME=value` env assignments. */
+function withoutLeadingEnv(toks: Array<{ text: string; quoted: boolean }>): Array<{ text: string; quoted: boolean }> {
+	let i = 0;
+	while (i < toks.length - 1 && !toks[i]?.quoted && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i]?.text ?? "")) i++;
+	return toks.slice(i);
+}
+
+/** A sed range-print script: `12p`, `1,20p`, `5,$p` or `$p`. */
+const SED_RANGE_PRINT = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/;
+
+/**
+ * The files of a plain `sed` read, or null. Only the exact form
+ * `sed -n '<range>p' file…` counts: no other options, no redirects, no script
+ * file. Anything else (`-i`, `-I`, `-f`, `--file`, `-e`, input redirects, other
+ * scripts) is left as an unparsed command, never read as a read.
+ */
+function plainSedRead(toks: Array<{ text: string; quoted: boolean }>): string[] | null {
+	const [cmd, flag, script, ...files] = toks;
+	if (cmd?.text.replace(/^.*\//, "") !== "sed" || flag?.quoted || flag?.text !== "-n") return null;
+	if (!script || !SED_RANGE_PRINT.test(script.text) || files.length === 0) return null;
+	// The shell strips quotes and GNU sed reads options anywhere, so a quoted
+	// `'--in-place'` or `'-i'` is still an option: any word starting with `-`
+	// makes this not a plain read.
+	if (files.some((f) => f.text.startsWith("-") || (!f.quoted && /^(?:\d+|&)?[<>|]/.test(f.text)))) return null;
+	return files.map((f) => f.text);
+}
+
 /** The file an unquoted `>`/`>>` redirect writes to, if any. */
 function redirectTarget(toks: Array<{ text: string; quoted: boolean }>): string | undefined {
 	for (let i = 0; i < toks.length; i++) {
@@ -262,7 +329,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	const cmds = pipeline(stage);
 	const first = cmds[0] ?? "";
 	const toks = tokens(first);
-	const ws = toks.filter((t) => t.quoted || !/^\d*[<>]/.test(t.text)).map((t) => t.text);
+	const ws = commandWords(toks);
 	while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
 	const test = TEST_RE.exec(ws.join(" ").replace(RUNNER_PREFIX, ""));
 	if (test) {
@@ -277,8 +344,13 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
 	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
-	if (READ_CMDS.has(head) && !/\s-i\b/.test(first)) {
-		const files = fileArgs(ws);
+	// sed fails closed: only `sed -n '<range>p' file…` is a read.
+	const sedRead = head === "sed" ? plainSedRead(withoutLeadingEnv(toks)) : null;
+	if (READ_CMDS.has(head) && (head !== "sed" || sedRead !== null)) {
+		// A read also reads the file on its stdin (`cat < src/a.ts`).
+		const readWords = commandWords(toks, true);
+		while (readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
+		const files = sedRead ?? fileArgs(readWords);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
@@ -292,7 +364,8 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	// Scripts and tools are not parsed further: the full command (env and
 	// redirects aside) is the target, so `npm run build` and `npm run lint`
 	// never share a signature.
-	return [{ action: "run", target: ws.join(" ").replace(/\s+/g, " ").trim() }];
+	const full = commandWords(withoutLeadingEnv(toks), true);
+	return [{ action: "run", target: full.join(" ").replace(/\s+/g, " ").trim() }];
 }
 
 /** Shell keywords that start or end control flow; stripped from a stage's head. */
@@ -814,14 +887,17 @@ function make(
 	status: DiffStatus,
 	error: string | undefined,
 ): DiffStep {
-	const target = c.target ? clip(c.target, TARGET_MAX) : null;
+	// The full target identifies the step; only the label is clipped, so two
+	// long paths that share a prefix never collapse into one signature.
+	const target = c.target;
+	const shown = target ? clipForDisplay(target) : null;
 	const out: DiffStep = {
 		index,
 		stepId: step.step_id,
 		action: c.action,
 		target,
-		label: target
-			? `${VERB[c.action]} ${target}`
+		label: shown
+			? `${VERB[c.action]} ${shown}`
 			: c.note
 				? `${VERB[c.action]} (${c.note})`
 				: VERB[c.action],
