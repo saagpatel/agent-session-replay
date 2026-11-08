@@ -117,8 +117,15 @@ export const ATTR = {
 	 * yielded command has a session_id and no exit_code yet.
 	 */
 	EXEC_RESULTS: "codex.exec.results",
-	/** The exec cell's script ran to completion (its non-command calls succeeded). */
+	/** The exec cell's script ran to completion. */
 	EXEC_COMPLETED: "codex.exec.completed",
+	/**
+	 * Every printed part of an exec cell's output after its header, in order
+	 * (`ExecPart[]`), so a straight-line cell can match each part to its call.
+	 */
+	EXEC_PARTS: "codex.exec.parts",
+	/** An `apply_patch` call's own output confirmed the patch applied. */
+	PATCH_CONFIRMED: "codex.patch.confirmed",
 	// subagent overlay
 	AGENT_TYPE: "agent.type",
 	AGENT_NAME: "agent.name",
@@ -150,3 +157,15 @@ export interface ExecResult {
 	test_failures: boolean;
 	test_passes: boolean;
 }
+
+/**
+ * One printed part of an exec cell's output: a command's result chunk, an
+ * `apply_patch` result (`{}` when it applied), or any other printed text.
+ */
+export interface ExecPart {
+	kind: "chunk" | "empty-object" | "other";
+	result?: ExecResult;
+	/** For `other`: the text reads like an error (`Script error: …`). */
+	error?: boolean;
+}
+

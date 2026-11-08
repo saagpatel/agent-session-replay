@@ -12,28 +12,28 @@
  */
 
 const FAIL_PATTERNS: readonly RegExp[] = [
-	/^\s*ℹ fail [1-9]/m, // node --test
+	/^[ \t]*ℹ fail [1-9]/m, // node --test
 	/^# fail [1-9]/m, // node --test (TAP)
-	/^=+ .*\b[1-9]\d* (?:failed|errors?)\b.*=+\s*$/m, // pytest
-	/^\s*Tests?\s+.*\b[1-9]\d* failed\b/m, // vitest
-	/^Tests:\s+[1-9]\d* failed/m, // jest
-	/^\s*[1-9]\d* failing\s*$/m, // mocha
+	/^=+ .*\b[1-9]\d* (?:failed|errors?)\b.*=+[ \t]*$/m, // pytest
+	/^[ \t]*Tests?[ \t]+.*\b[1-9]\d* failed\b/m, // vitest
+	/^Tests:[ \t]+[1-9]\d* failed/m, // jest
+	/^[ \t]*[1-9]\d* failing[ \t]*$/m, // mocha
 	/^test result: FAILED/m, // cargo
 	/^not ok\b/m, // TAP
 	/^--- FAIL:/m, // go
-	/^FAIL\s/m, // go package / jest file summary
+	/^FAIL(?:[ \t]|$)/m, // go package / jest file summary
 ];
 
 const PASS_PATTERNS: readonly RegExp[] = [
-	/^\s*ℹ fail 0\s*$/m, // node --test
-	/^# fail 0\s*$/m, // node --test (TAP)
-	/^=+ .*\b\d+ passed\b.*=+\s*$/m, // pytest
-	/^\s*Tests?\s+\d+ passed\b/m, // vitest
-	/^Tests:\s+\d+ passed, \d+ total/m, // jest
-	/^\s*\d+ passing\b/m, // mocha
+	/^[ \t]*ℹ fail 0[ \t]*$/m, // node --test
+	/^# fail 0[ \t]*$/m, // node --test (TAP)
+	/^=+ .*\b\d+ passed\b.*=+[ \t]*$/m, // pytest
+	/^[ \t]*Tests?[ \t]+\d+ passed\b/m, // vitest
+	/^Tests:[ \t]+\d+ passed, \d+ total/m, // jest
+	/^[ \t]*\d+ passing\b/m, // mocha
 	/^test result: ok\./m, // cargo
-	/^ok\s+\S+\s+(?:[\d.]+s|\(cached\))\s*$/m, // go: `ok  pkg 0.01s`, never TAP's `ok 1 - name`
-	/^PASS\s*$/m, // go
+	/^ok[ \t]+\S+[ \t]+(?:[\d.]+s|\(cached\))[ \t]*$/m, // go: `ok  pkg 0.01s`, never TAP's `ok 1 - name`
+	/^PASS[ \t]*$/m, // go
 ];
 
 /** Codex exec cells nest output as JSON strings, leaving newlines escaped. */

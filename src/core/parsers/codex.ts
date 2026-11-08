@@ -25,6 +25,7 @@ import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
 	ATTR,
+	type ExecPart,
 	type ExecResult,
 	type Run,
 	type Step,
@@ -147,6 +148,39 @@ function execResults(v: unknown): { results: ExecResult[]; aggregateExits: numbe
 	}
 	return { results, aggregateExits };
 }
+
+/** The header an exec cell's output starts with. */
+const CELL_HEADER_RE = /^Script (?:completed|failed)\b/;
+const ERROR_TEXT_RE = /\b(?:error|failed|rejected|invalid)\b/i;
+
+/**
+ * An exec cell's printed parts after its header, in order. Each is kept as
+ * evidence for exactly one call; the normalizer decides whether the cell is
+ * simple enough to match parts to calls.
+ */
+function execParts(v: unknown): ExecPart[] {
+	const out: ExecPart[] = [];
+	(Array.isArray(v) ? v : []).forEach((part, i) => {
+		const text = (str(asObj(part)["text"]) ?? "").trim();
+		if (i === 0 && CELL_HEADER_RE.test(text)) return;
+		if (text === "{}") {
+			out.push({ kind: "empty-object" });
+			return;
+		}
+		if (text.startsWith("{") && text.includes('"chunk_id"')) {
+			const [result] = execResults([part]).results;
+			if (result) {
+				out.push({ kind: "chunk", result });
+				return;
+			}
+		}
+		out.push({ kind: "other", error: ERROR_TEXT_RE.test(text) });
+	});
+	return out;
+}
+
+/** A legacy `apply_patch` output that says it applied. */
+const PATCH_OK_RE = /^(?:Success\b|Done!)|"exit_code"\s*:\s*0\b/;
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
 function messageText(payload: Json): string | undefined {
@@ -272,11 +306,17 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			];
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
+		if (Array.isArray(rawOutput) && step.attributes[ATTR.TOOL_NAME] === "exec")
+			step.attributes[ATTR.EXEC_PARTS] = execParts(rawOutput);
+		if (step.attributes[ATTR.TOOL_NAME] === "apply_patch" && PATCH_OK_RE.test(output.trim()))
+			step.attributes[ATTR.PATCH_CONFIRMED] = true;
 		const failedInner = [
 			...results.map((r) => r.exit_code),
 			...aggregateExits,
 		].some((code) => code !== null && code !== 0);
-		if ((m && m[1] !== "0") || failedInner) {
+		// A cell whose script threw (`Script failed … Script error: …`) failed.
+		const scriptFailed = !m && /^Script failed\b/.test(output.trimStart());
+		if ((m && m[1] !== "0") || failedInner || scriptFailed) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
