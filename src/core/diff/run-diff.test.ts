@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { parseTranscript } from "../parse.ts";
 import { parseClaudeCodeEvents } from "../parsers/claude-code.ts";
 import { parseCodexEvents } from "../parsers/codex.ts";
-import { alignSteps } from "./align.ts";
+import { alignSteps, fit } from "./align.ts";
 import {
 	ccEvents,
 	codexEvents,
@@ -13,6 +13,7 @@ import {
 	WORKSPACE_CODEX,
 } from "./fixtures.ts";
 import { classifyCommand, normalizeTrace, relPath, resolveStatuses } from "./normalize.ts";
+import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import { describeStep } from "./rank.ts";
 import { diffRuns } from "./run-diff.ts";
 import type { DiffAction, DiffStep } from "./types.ts";
@@ -435,7 +436,7 @@ test("reading a test config after a failing test does not flip the verdict", () 
 test("a failed && chain without per-stage evidence leaves its commands unknown", () => {
 	const parts = classifyCommand("npm test && npm run test:integration", null);
 	assert.deepEqual(resolveStatuses(parts, "and", "error", false), ["unknown", "unknown"]);
-	// With failure output, the first suite failed and the second never ran.
+	// Both stages are test runs, so failure output cannot say which one failed.
 	assert.deepEqual(resolveStatuses(parts, "and", "error", true), ["unknown", "unknown"]);
 	const one = classifyCommand("npm test && git status", null);
 	assert.deepEqual(resolveStatuses(one, "and", "error", true), ["error", "unknown"]);
@@ -541,4 +542,145 @@ test("cosmetic-only forks never claim to explain different outcomes", () => {
 	assert.equal(diff.flagged?.cosmetic, true);
 	assert.match(diff.explanation, /do not explain why Codex A ended reporting the task complete while Codex B ended without finishing/);
 	assert.doesNotMatch(diff.explanation, /After this fork/);
+});
+
+// ---- review regressions, round 2 -------------------------------------------
+
+test("a successful compound command only vouches for the stages it proves ran", () => {
+	const mixed = classifyCommand("false && npm test || true", null);
+	assert.deepEqual(resolveStatuses(mixed, "mixed", "ok", false), mixed.map(() => "unknown"));
+	const seq = classifyCommand("npm test; git status", null);
+	assert.deepEqual(resolveStatuses(seq, "seq", "ok", false), ["unknown", "ok"]);
+	assert.deepEqual(resolveStatuses(seq, "seq", "ok", false, true), ["ok", "ok"]);
+	// The exit status of `npm test; echo done` is echo's, even though echo is dropped.
+	const trailing = classifyCommand("npm test; echo done", null);
+	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", false), ["unknown"]);
+	assert.deepEqual(resolveStatuses(trailing, "seq", "ok", true), ["error"]);
+	const and = classifyCommand("npm test && npm run build", null);
+	assert.deepEqual(resolveStatuses(and, "and", "ok", false), ["ok", "ok"]);
+	const piped = classifyCommand("npm test 2>&1 | tail -5", null);
+	assert.equal(piped[0]?.piped, true);
+	assert.deepEqual(resolveStatuses(piped, "single", "ok", false), ["unknown"]);
+	assert.deepEqual(resolveStatuses(piped, "single", "ok", false, true), ["ok"]);
+});
+
+test("a mixed chain that exits 0 does not make the verdict passed", () => {
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "false && npm test || true" }]),
+	);
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("test names are suites: run is optional, script names are kept", () => {
+	assert.deepEqual(sig("pnpm run test"), ["test:pnpm test"]);
+	assert.deepEqual(sig("npm run test:unit"), ["test:npm test:unit"]);
+	assert.deepEqual(sig("npm run test-integration -- --ci"), ["test:npm test-integration"]);
+});
+
+/** One exec cell with a free-form output list. */
+function rawCell(input: string, output: unknown, status = "completed") {
+	return parseCodexEvents([
+		{ timestamp: "2026-10-01T12:00:00.000Z", type: "session_meta", payload: { id: "raw", cwd: WORKSPACE_CODEX } },
+		{
+			timestamp: "2026-10-01T12:00:01.000Z",
+			type: "response_item",
+			payload: { type: "custom_tool_call", name: "exec", call_id: "z1", status, input },
+		},
+		{
+			timestamp: "2026-10-01T12:00:02.000Z",
+			type: "response_item",
+			payload: { type: "custom_tool_call_output", call_id: "z1", output },
+		},
+	]);
+}
+const parts = (...texts: string[]) => texts.map((text) => ({ type: "input_text", text }));
+const statusesOf = (trace: ReturnType<typeof rawCell>) =>
+	normalizeTrace(trace).map((s) => `${s.action}:${s.status}`);
+
+test("a cell that finished without printing a command's result leaves it unknown", () => {
+	const trace = rawCell('await tools.exec_command({cmd:"npm test"});', parts("Script completed\nOutput:\n"));
+	assert.deepEqual(statusesOf(trace), ["test:unknown"]);
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("an aggregate printed by the cell is evidence of failure, not of which command", () => {
+	const input =
+		'text(await Promise.allSettled([tools.exec_command({cmd:"npm test"}), tools.exec_command({cmd:"git status"})]));';
+	const trace = rawCell(
+		input,
+		parts("Script completed\nOutput:\n", JSON.stringify([{ status: "fulfilled", value: { exit_code: 1 } }, { status: "fulfilled", value: { exit_code: 0 } }])),
+	);
+	assert.equal(trace.steps[0]?.status, "error");
+	assert.deepEqual(statusesOf(trace), ["test:unknown", "read:unknown"]);
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("chunks are not matched by position when the cell prints out of call order", () => {
+	const input =
+		'const a = await tools.exec_command({cmd:"npm test"});\nconst b = await tools.exec_command({cmd:"git status"});\ntext(b);\ntext(a);';
+	const trace = rawCell(
+		input,
+		parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 }), JSON.stringify({ chunk_id: "2", exit_code: 1 })),
+	);
+	assert.deepEqual(statusesOf(trace), ["test:unknown", "read:unknown"]);
+	// Printed right after each await, the same calls map by position.
+	const inOrder = rawCell(
+		'const a = await tools.exec_command({cmd:"npm test"});\ntext(a);\nconst b = await tools.exec_command({cmd:"git status"});\ntext(b);',
+		parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 1 }), JSON.stringify({ chunk_id: "2", exit_code: 0 })),
+	);
+	assert.deepEqual(statusesOf(inOrder), ["test:error", "read:ok"]);
+});
+
+test("single-quoted and static template commands are read; dynamic ones stay visible", () => {
+	const chunk = (code: number) => parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: code }));
+	const single = rawCell("text(await tools.exec_command({cmd:'npm test'}));", chunk(1));
+	assert.deepEqual(statusesOf(single), ["test:error"]);
+	assert.equal(diffRuns(single, single).left.verdict, "failed");
+	const template = rawCell("text(await tools.exec_command({cmd:`npm test`}));", chunk(0));
+	assert.deepEqual(statusesOf(template), ["test:ok"]);
+	const dynamic = rawCell("text(await tools.exec_command({cmd:`npm test ${x}`}));", chunk(1));
+	const steps = normalizeTrace(dynamic);
+	assert.equal(steps[0]?.action, "run");
+	assert.equal(steps[0]?.note, "unparsed command");
+	assert.equal(steps[0]?.status, "error");
+});
+
+test("a failed cell whose only call is a patch records a failed edit", () => {
+	const trace = rawCell(
+		`text(await tools.apply_patch(${JSON.stringify(`*** Begin Patch\n*** Update File: ${WORKSPACE_CODEX}/src/a.ts\n*** End Patch`)}));`,
+		parts("Script failed\nError: patch rejected"),
+		"failed",
+	);
+	assert.deepEqual(statusesOf(trace), ["edit:error"]);
+});
+
+test("a chunk's exit code wins even when its output quotes a legacy exit header", () => {
+	const trace = rawCell(
+		'text(await tools.exec_command({cmd:"npm test"}));',
+		parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 1, output: "Process exited with code 0" })),
+	);
+	assert.equal(trace.steps[0]?.status, "error");
+	assert.deepEqual(statusesOf(trace), ["test:error"]);
+});
+
+test("test summaries are read from summary lines, not from test names or logs", () => {
+	const passing = "✔ marks 2 failed uploads as retryable (1ms)\nretry: 1 failed attempt\nℹ tests 4\nℹ pass 4\nℹ fail 0";
+	assert.equal(hasTestFailures(passing), false);
+	assert.equal(hasTestPasses(passing), true);
+	assert.equal(hasTestFailures("ℹ tests 4\nℹ pass 3\nℹ fail 1"), true);
+	assert.equal(hasTestFailures("===== 1 failed, 3 passed in 0.2s ====="), true);
+	assert.equal(hasTestPasses("===== 4 passed in 0.2s ====="), true);
+	assert.equal(hasTestFailures(" Tests  1 failed | 3 passed (4)"), true);
+});
+
+test("fit keeps the table under the cap and trims the long run first", () => {
+	const short = Array.from({ length: 3 }, (_, i) => i);
+	const long = Array.from({ length: 1000 }, (_, i) => i);
+	const [a, b] = fit(short, long, 400);
+	assert.equal(a.length, 3);
+	assert.ok((a.length + 1) * (b.length + 1) <= 400);
+	const [c, d] = fit(long, long, 400);
+	assert.ok((c.length + 1) * (d.length + 1) <= 400);
+	const [e, f] = fit([1], Array.from({ length: 5000 }, (_, i) => i), 1000);
+	assert.ok((e.length + 1) * (f.length + 1) <= 1000);
 });

@@ -65,7 +65,9 @@ function LaneHead({ side, fileName }: { side: RunSide; fileName: string }) {
 function Cell({ step, side }: { step: DiffStep | null; side: "left" | "right" }) {
 	if (!step) return <div className={`rd-cell rd-cell--${side} rd-cell--empty`} aria-hidden="true" />;
 	const failed = isFailure(step.status);
-	const unknown = step.status === "unknown";
+	// Missing results only matter for commands and tests, not reads.
+	const unknown =
+		step.status === "unknown" && (step.action === "test" || step.action === "run");
 	return (
 		<div
 			className={`rd-cell rd-cell--${side}${failed ? " rd-cell--err" : ""}`}

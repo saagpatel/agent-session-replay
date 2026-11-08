@@ -39,18 +39,26 @@ export interface Alignment {
 	truncated: { left: number; right: number };
 }
 
-/** Trim both sequences proportionally so the DP table fits under MAX_CELLS. */
-function fit(
-	left: DiffStep[],
-	right: DiffStep[],
-): [DiffStep[], DiffStep[]] {
+/**
+ * Trim the sequences so the DP table fits under `cap` cells. The long run is
+ * trimmed first; the short one only when trimming the long one alone cannot fit.
+ */
+export function fit<T>(left: T[], right: T[], cap = MAX_CELLS): [T[], T[]] {
 	const cells = (left.length + 1) * (right.length + 1);
-	if (cells <= MAX_CELLS) return [left, right];
-	const k = Math.sqrt(MAX_CELLS / cells);
-	return [
-		left.slice(0, Math.max(1, Math.floor(left.length * k) - 1)),
-		right.slice(0, Math.max(1, Math.floor(right.length * k) - 1)),
-	];
+	if (cells <= cap) return [left, right];
+	const leftLonger = left.length >= right.length;
+	const short = leftLonger ? right : left;
+	const long = leftLonger ? left : right;
+	let keepShort = short.length;
+	let keepLong = Math.floor(cap / (keepShort + 1)) - 1;
+	if (keepLong < keepShort) {
+		// Both must shrink: a square table of side sqrt(cap).
+		keepShort = Math.max(0, Math.floor(Math.sqrt(cap)) - 1);
+		keepLong = keepShort;
+	}
+	const a = long.slice(0, Math.max(0, keepLong));
+	const b = short.slice(0, keepShort);
+	return leftLonger ? [a, b] : [b, a];
 }
 
 export function alignSteps(

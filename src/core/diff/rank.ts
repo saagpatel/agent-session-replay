@@ -231,7 +231,8 @@ export function describeStep(s: DiffStep): string {
 			phrase = `called ${t}`;
 	}
 	phrase = phrase.trim();
-	if (s.status === "unknown") return `${phrase}, with no clear result`;
+	if (s.status === "unknown")
+		return s.action === "test" || s.action === "run" ? `${phrase}, with no clear result` : phrase;
 	if (isFailure(s.status)) return `${phrase}, which failed`;
 	if (s.action === "test") return `${phrase}, which passed`;
 	return phrase;

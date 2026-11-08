@@ -44,7 +44,7 @@ function clip(s: string, n: number): string {
  * runs of the same suite.
  */
 const TEST_RE =
-	/^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test\b|node\s+--test\b|python3?\s+-m\s+(?:pytest|unittest)\b|pytest\b|cargo\s+(?:test|nextest)\b|go\s+test\b|vitest\b|jest\b|swift\s+test\b|make\s+test\b|xcodebuild\b.*\btest\b)/;
+	/^(?:(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test(?:[:\w-]*\b)?|node\s+--test\b|python3?\s+-m\s+(?:pytest|unittest)\b|pytest\b|cargo\s+(?:test|nextest)\b|go\s+test\b|vitest\b|jest\b|swift\s+test\b|make\s+test\b|xcodebuild\b.*\btest\b)/;
 /** Wrappers that run the real command: stripped before the test check. */
 const RUNNER_PREFIX =
 	/^(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+exec|uv\s+run|poetry\s+run|timeout\s+\S+|time)\s+)+/;
@@ -158,6 +158,10 @@ interface Classified {
 	target: string | null;
 	/** Shown in the label but not part of the alignment signature. */
 	note?: string;
+	/** A test piped into another command: its exit status is that command's. */
+	piped?: boolean;
+	/** False for a shell stage before the last one (dropped stages included). */
+	last?: boolean;
 }
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
@@ -169,7 +173,12 @@ function classifyStage(
 	const ws = words(first).filter((w) => !/^\d*[<>]/.test(w));
 	while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
 	const test = TEST_RE.exec(ws.join(" ").replace(RUNNER_PREFIX, ""));
-	if (test) return [{ action: "test", target: test[0].replace(/\s+/g, " ") }];
+	if (test) {
+		// `pnpm run test` and `pnpm test` are one suite; `test:unit` is another.
+		const target = test[0].replace(/\s+run\s+/, " ").replace(/\s+/g, " ");
+		const piped = /\|(?!\|)/.test(stage.replace(/\|\|/g, ""));
+		return [piped ? { action: "test", target, piped } : { action: "test", target }];
+	}
 	const head = (ws[0] ?? "").replace(/^.*\//, "");
 	if (!head || NOISE_CMDS.has(head)) return [];
 	if (READ_CMDS.has(head) && !/\s-i\b/.test(first)) {
@@ -266,17 +275,16 @@ function commandParts(cmd: string, cwd: string | null | undefined): CommandParts
 	const core = coreCommand(cmd);
 	const { stages, seps } = splitWithSeps(core.split("\n")[0] ?? "");
 	const parts: Classified[] = [];
-	const kept: string[] = [];
-	let lastKept = -1;
 	stages.forEach((stage, i) => {
-		const got = classifyStage(stage, cwd);
-		if (got.length === 0) return;
-		// The separator that decides whether this stage ran after the previous kept one.
-		if (lastKept >= 0) kept.push(seps[i - 1] ?? ";");
-		parts.push(...got);
-		lastKept = i;
+		const last = i === stages.length - 1;
+		for (const c of classifyStage(stage, cwd)) parts.push(last ? c : { ...c, last });
 	});
-	return { parts: parts.slice(0, MAX_STAGES), chain: parts.length > 1 ? chainOf(kept) : "single" };
+	// Every separator counts, including those around dropped stages: the
+	// `|| true` in `false && npm test || true` decides what the exit status means.
+	return {
+		parts: parts.slice(0, MAX_STAGES),
+		chain: parts.length > 1 || stages.length > 1 ? chainOf(seps) : "single",
+	};
 }
 
 export function classifyCommand(
@@ -314,18 +322,69 @@ function patchTargets(
 	return out.slice(0, MAX_STAGES);
 }
 
-/** Decode a JS/JSON string literal, or undefined when it does not parse. */
+/**
+ * Decode a static JS string literal ("…", '…' or a template literal without
+ * `${}`), or undefined when it is not one. Nothing is evaluated.
+ */
 function jsString(lit: string): string | undefined {
-	try {
-		const v = JSON.parse(lit) as unknown;
-		return typeof v === "string" ? v : undefined;
-	} catch {
-		return undefined;
+	const q = lit[0];
+	if (!q || lit.at(-1) !== q || lit.length < 2) return undefined;
+	const body = lit.slice(1, -1);
+	if (q === "`" && body.includes("${")) return undefined;
+	if (q === '"') {
+		try {
+			const v = JSON.parse(lit) as unknown;
+			return typeof v === "string" ? v : undefined;
+		} catch {
+			// fall through to the generic unescape (JS allows escapes JSON does not)
+		}
 	}
+	if (q !== '"' && q !== "'" && q !== "`") return undefined;
+	const ESC: Record<string, string> = { n: "\n", t: "\t", r: "\r", "0": "\0" };
+	return body.replace(/\\(.)/gs, (_, c: string) => ESC[c] ?? c);
 }
 
 const CELL_CALL_RE = /tools\.([A-Za-z0-9_]+)\s*\(/g;
-const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"`;
+const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
+
+/** The first string-literal argument after `key:` (or the first positional one). */
+function literalArg(body: string, key: string | null): { found: boolean; value?: string } {
+	const re = key
+		? new RegExp(String.raw`\b${key}["']?\s*:\s*(${STRING_LIT})`, "s")
+		: new RegExp(String.raw`\(\s*(${STRING_LIT})`, "s");
+	const lit = re.exec(body)?.[1];
+	if (lit === undefined) return { found: false };
+	const value = jsString(lit);
+	return value === undefined ? { found: true } : { found: true, value };
+}
+
+/**
+ * Whether a cell prints each chunked call's result right where it is awaited,
+ * in call order: `text(await tools.x(…))`, or `const r = await tools.x(…);
+ * text(r)` before the next call. Only then can result chunks be matched to calls
+ * by position; concurrent or reordered printing leaves them unattributed.
+ */
+function printsInCallOrder(input: string, calls: RegExpMatchArray[]): boolean {
+	if (/\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input)) return false;
+	let printed = 0;
+	for (let i = 0; i < calls.length; i++) {
+		const call = calls[i] as RegExpMatchArray;
+		if (!CHUNKED.has(call[1] ?? "")) continue;
+		const at = call.index ?? 0;
+		const before = input.slice(Math.max(0, at - 40), at);
+		const segment = input.slice(at, calls[i + 1]?.index ?? input.length);
+		if (/text\(\s*(?:String\(\s*)?await\s+$/.test(before)) {
+			printed++;
+			continue;
+		}
+		const name = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+$/.exec(before)?.[1];
+		if (!name) return false;
+		const prints = [...segment.matchAll(/\btext\(\s*(?:String\(\s*)?([A-Za-z_$][\w$]*)/g)];
+		if (prints.length !== 1 || prints[0]?.[1] !== name) return false;
+		printed++;
+	}
+	return printed > 0;
+}
 
 /**
  * One unit of work with its own result: a shell command (possibly several
@@ -336,61 +395,74 @@ interface Unit {
 	chain: Chain;
 	result: DiffStatus | "pending";
 	testFailures: boolean;
+	testPasses: boolean;
 	/** A yielded command waiting on this session's final result. */
 	sessionId?: string;
 	/** A `write_stdin` poll of this session; carries no steps of its own. */
 	pollOf?: string;
 }
 
+type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId">;
+
 /** Calls in an exec cell that write one result chunk each. */
 const CHUNKED = new Set(["exec_command", "write_stdin"]);
 
-function chunkResult(r: ExecResult | undefined): Pick<Unit, "result" | "testFailures" | "sessionId"> {
-	if (!r) return { result: "unknown", testFailures: false };
-	const testFailures = r.test_failures;
-	if (r.exit_code !== null) return { result: r.exit_code === 0 ? "ok" : "error", testFailures };
-	if (r.session_id) return { result: "pending", testFailures, sessionId: r.session_id };
-	return { result: "unknown", testFailures };
+const UNKNOWN: UnitResult = { result: "unknown", testFailures: false, testPasses: false };
+
+function chunkResult(r: ExecResult | undefined): UnitResult {
+	if (!r) return UNKNOWN;
+	const evidence = { testFailures: r.test_failures, testPasses: r.test_passes };
+	if (r.exit_code !== null) return { result: r.exit_code === 0 ? "ok" : "error", ...evidence };
+	if (r.session_id) return { result: "pending", ...evidence, sessionId: r.session_id };
+	return { result: "unknown", ...evidence };
 }
 
 /**
  * Current Codex rollouts route tools through a JS `exec` cell, e.g.
  * `text(await tools.exec_command({cmd:"pnpm test"}))`. One cell may call several
- * tools; each call becomes its own unit, matched in order to its own result
- * chunk when the parser recorded one chunk per call.
+ * tools; each call becomes its own unit. A command's result comes only from its
+ * own result chunk, matched by position when the cell provably prints in call
+ * order. A cell that merely finished running says nothing about its commands.
  */
 function codexExecCell(step: Step, input: string, cwd: string | null | undefined): Unit[] {
 	const calls = [...input.matchAll(CELL_CALL_RE)];
 	const raw = step.attributes[ATTR.EXEC_RESULTS];
 	const results = Array.isArray(raw) ? (raw as ExecResult[]) : [];
 	const chunked = calls.filter((c) => CHUNKED.has(c[1] ?? "")).length;
-	const perCall = results.length > 0 && results.length === chunked;
-	const fallback = stepResult(step);
+	const perCall = results.length === chunked && chunked > 0 && printsInCallOrder(input, calls);
+	const cell = stepResult(step);
+	// Non-command calls (patches, plans) throw on failure, so a script that ran
+	// to completion vouches for them; otherwise a failed cell only for a lone call.
+	const completed = step.attributes[ATTR.EXEC_COMPLETED] === true;
+	const plain: UnitResult = completed
+		? { result: "ok", testFailures: false, testPasses: false }
+		: cell.result === "ok" || calls.length === 1
+			? { result: cell.result, testFailures: false, testPasses: false }
+			: UNKNOWN;
+	// Cell-wide test evidence can only speak for a lone test in the cell.
+	const cellEvidence = { testFailures: cell.testFailures, testPasses: cell.testPasses };
 	let k = 0;
 	const out: Unit[] = [];
 	calls.forEach((call, i) => {
 		const tool = call[1] ?? "";
 		const body = input.slice(call.index ?? 0, calls[i + 1]?.index ?? input.length);
-		// Without one chunk per call, the cell's own result only speaks for a
-		// lone command (or for all of them when the cell succeeded).
-		const res = CHUNKED.has(tool)
+		const res: UnitResult = CHUNKED.has(tool)
 			? perCall
 				? chunkResult(results[k++])
-				: fallback.result === "ok" || chunked === 1
-					? fallback
-					: { result: "unknown" as const, testFailures: fallback.testFailures }
-			: { result: "ok" as const, testFailures: false };
+				: { ...UNKNOWN, ...cellEvidence }
+			: plain;
 		if (tool === "exec_command") {
-			const lit = new RegExp(String.raw`\bcmd"?\s*:\s*(${STRING_LIT})`).exec(body)?.[1];
-			const cmd = lit ? jsString(lit) : undefined;
-			if (cmd !== undefined) out.push({ ...commandParts(cmd, cwd), ...res });
+			const cmd = literalArg(body, "cmd");
+			if (cmd.value !== undefined) out.push({ ...commandParts(cmd.value, cwd), ...res });
+			// A command we cannot read statically still happened: keep it, unresolved.
+			else out.push({ parts: [{ action: "run", target: null, note: "unparsed command" }], chain: "single", ...res });
 		} else if (tool === "write_stdin") {
-			const session = /\bsession_id"?\s*:\s*"?([\w-]+)/.exec(body)?.[1];
+			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
 			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
 		} else if (tool === "apply_patch") {
-			const lit = new RegExp(String.raw`\(\s*(${STRING_LIT})`).exec(body)?.[1];
-			const patch = lit ? jsString(lit) : body;
-			out.push({ parts: patchTargets(patch ?? body, cwd), chain: "single", ...res });
+			const patch = literalArg(body, null).value ?? body;
+			const parts = patchTargets(patch, cwd);
+			out.push({ parts: parts.length ? parts : [{ action: "edit", target: null }], chain: "single", ...res });
 		} else if (tool === "update_plan") {
 			out.push({ parts: [{ action: "plan", target: null }], chain: "single", ...res });
 		} else if (/^web/.test(tool)) {
@@ -399,13 +471,21 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			out.push({ parts: [{ action: "other", target: tool }], chain: "single", ...res });
 		}
 	});
+	// Cell-wide evidence only counts when the cell holds exactly one test.
+	const tests = out.flatMap((u) => u.parts.filter((c) => c.action === "test"));
+	if (!perCall && tests.length !== 1)
+		for (const u of out) {
+			u.testFailures = false;
+			u.testPasses = false;
+		}
 	return out;
 }
 
-function stepResult(step: Step): { result: DiffStatus; testFailures: boolean } {
+function stepResult(step: Step): { result: DiffStatus; testFailures: boolean; testPasses: boolean } {
 	return {
 		result: step.status ?? "ok",
 		testFailures: step.attributes[ATTR.TEST_FAILURES] === true,
+		testPasses: step.attributes[ATTR.TEST_PASSES] === true,
 	};
 }
 
@@ -505,58 +585,54 @@ const isCommand = (c: Classified): boolean =>
 	c.action === "test" || c.action === "run";
 
 /**
- * Give each part of a unit a result, inventing none. A known result covers a
- * single-part unit. In a failed compound command only the evidence decides:
- * a test whose output reports failures failed (later stages may not have run);
- * in a `;` chain the exit status is the last stage's; otherwise the failing
- * stage is unknown. Commands with no evidence of their own stay `unknown`.
+ * Give each part of a unit a result, inventing none.
+ *
+ * Exit status: a single command owns it; an `&&` chain that succeeded ran every
+ * stage successfully; a `;` chain only reports its last stage; a mixed chain
+ * (`a && b || c`) says nothing about any one stage; a piped test reports the
+ * pipe's last command, not the test. A test runner's own summary line is direct
+ * evidence and overrides all of that, but only when the unit holds one test.
+ * Everything else without evidence is `unknown`.
  */
 export function resolveStatuses(
 	parts: Classified[],
 	chain: Chain,
 	result: DiffStatus | "pending",
 	testFailures: boolean,
+	testPasses = false,
 ): DiffStatus[] {
 	const n = parts.length;
-	const out: DiffStatus[] = parts.map(() => "ok");
+	const known = result === "ok" || result === "error" || result === "interrupted";
+	const failedResult = result === "error" || result === "interrupted";
+	// Which parts the exit status speaks for directly.
+	const owns = (i: number): boolean => {
+		const c = parts[i] as Classified;
+		if (!known || c.piped) return false;
+		// An `&&` chain that succeeded ran every stage successfully.
+		if (chain === "and") return result === "ok";
+		if (chain === "mixed") return false;
+		// Otherwise the status is the last stage's (`;` chain, or one stage that
+		// expanded to several parts like `cat a b`, where a failure is the last).
+		return c.last !== false && (result === "ok" || i === n - 1);
+	};
+	const out: DiffStatus[] = parts.map((c, i) => {
+		if (owns(i)) return result as DiffStatus;
+		// Reads and searches that ran before a stage that is known to have run.
+		if (!isCommand(c) && known && !failedResult && chain !== "mixed") return "ok";
+		return "unknown";
+	});
 	const tests = parts.flatMap((c, i) => (c.action === "test" ? [i] : []));
-	const flaggedTest = testFailures && tests.length === 1 ? (tests[0] as number) : -1;
-	if (result === "pending" || result === "unknown") {
-		parts.forEach((c, i) => {
-			if (n === 1 || isCommand(c)) out[i] = "unknown";
-		});
-		if (flaggedTest >= 0) out[flaggedTest] = "error";
-		return out;
-	}
-	if (result === "ok") {
-		// A piped test can exit 0 while its output reports failures.
-		if (flaggedTest >= 0) out[flaggedTest] = "error";
-		else if (testFailures) for (const t of tests) out[t] = "unknown";
-		return out;
-	}
-	// error / interrupted
-	if (n === 1) return [result];
-	if (flaggedTest >= 0) {
-		out[flaggedTest] = result;
-		for (let i = flaggedTest + 1; i < n; i++) {
-			// After `&&` nothing ran; after `;` later stages ran with unknown results.
-			if (chain !== "seq" || isCommand(parts[i] as Classified)) out[i] = "unknown";
+	if (tests.length === 1) {
+		const t = tests[0] as number;
+		if (testFailures) {
+			out[t] = failedResult ? (result as DiffStatus) : "error";
+			// After a failed stage of an `&&` chain nothing else ran.
+			if (chain === "and") for (let i = t + 1; i < n; i++) out[i] = "unknown";
+		} else if (testPasses) {
+			out[t] = "ok";
 		}
-		// A `;` chain exits with its last stage's status.
-		if (chain === "seq" && n - 1 > flaggedTest) out[n - 1] = result;
-		return out;
 	}
-	if (chain === "seq") {
-		out[n - 1] = result;
-		for (let i = 0; i < n - 1; i++) if (isCommand(parts[i] as Classified)) out[i] = "unknown";
-		return out;
-	}
-	if (!parts.some(isCommand)) {
-		out[n - 1] = result;
-		return out;
-	}
-	// Some stage of an `&&`/mixed chain failed and nothing says which.
-	return parts.map(() => "unknown");
+	return out;
 }
 
 function stepUnits(step: Step, cwd: string | null | undefined): Unit[] {
@@ -617,6 +693,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 					orig.chain,
 					unit.result,
 					orig.testFailures || unit.testFailures,
+					unit.testPasses,
 				);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
@@ -627,7 +704,13 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
-			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures);
+			const statuses = resolveStatuses(
+				parts,
+				unit.chain,
+				unit.result,
+				unit.testFailures,
+				unit.testPasses,
+			);
 			const made = parts.map((c, i) =>
 				make(
 					step,
