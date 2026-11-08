@@ -81,4 +81,40 @@ const invalidReport = renderToStaticMarkup(
 );
 assert.match(invalidReport, />invalid</);
 assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
+
+// ---- Run Diff -------------------------------------------------------------
+
+{
+	const { takeRunFiles } = await import("../src/ui/components/RunDiffLoader.tsx");
+	const { RunDiffView } = await import("../src/ui/components/RunDiffView.tsx");
+	const { diffRuns } = await import("../src/core/diff/run-diff.ts");
+	const { ccEvents, codexEvents, toJsonl } = await import("../src/core/diff/fixtures.ts");
+	const { parseTranscript } = await import("../src/core/parse.ts");
+
+	// A clean load clears a banner an earlier bad file left behind.
+	const log: string[] = [];
+	const handlers = {
+		onRun: () => log.push("run"),
+		onError: (m: string) => log.push(`error:${m.slice(0, 10)}`),
+		onClearError: () => log.push("clear"),
+	};
+	await takeRunFiles([dropped("notes.txt", "notes.txt", "hello")], handlers);
+	const cc = toJsonl(ccEvents("fix it", [{ name: "Edit", file: "src/a.ts" }, { name: "Bash", command: "npm test" }]));
+	await takeRunFiles([dropped("cc.jsonl", "cc.jsonl", cc)], handlers);
+	assert.deepEqual(log, ["error:No .jsonl ", "run", "clear"]);
+
+	// The view renders both lanes, the flagged fork and its explanation.
+	const left = parseTranscript(cc).trace;
+	const right = parseTranscript(
+		toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }, { kind: "exec-cell", command: "npm test", exit: 1 }])),
+	).trace;
+	const diff = diffRuns(left, right);
+	const html = renderToStaticMarkup(<RunDiffView diff={diff} leftFile="cc.jsonl" rightFile="codex.jsonl" />);
+	assert.match(html, /Divergence that mattered/);
+	assert.match(html, /rd-row--pivot/);
+	assert.match(html, /Claude Code/);
+	assert.match(html, /tests failed/);
+	assert.ok(html.includes("<code>src/a.ts</code>"), "explanation renders code spans");
+}
+
 console.log("UI SSR replay checks passed");

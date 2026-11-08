@@ -240,6 +240,7 @@ export function App() {
 					onCompare={compare}
 					onBack={() => setComparing(false)}
 					onError={setError}
+					onClearError={() => setError(null)}
 				/>
 			) : (
 				<DropZone

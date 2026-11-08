@@ -15,37 +15,56 @@ export interface LoadedRun {
 	trace: Trace;
 }
 
+interface SlotHandlers {
+	onRun: (run: LoadedRun) => void;
+	onError: (message: string) => void;
+	onClearError: () => void;
+}
+
+/**
+ * Parse the files dropped on one lane. A clean load clears any banner an
+ * earlier bad file left behind; a bad one reports why.
+ */
+export async function takeRunFiles(
+	files: DroppedFile[],
+	{ onRun, onError, onClearError }: SlotHandlers,
+): Promise<void> {
+	try {
+		const merged = await combine(files);
+		if (!merged) {
+			onError("No .jsonl transcript found. Drop a session folder or .jsonl files.");
+			return;
+		}
+		const { harness, trace } = parseTranscript(merged.text);
+		if (trace.steps.length === 0) {
+			onError(`No steps parsed from ${merged.name}. Is it a Claude Code or Codex transcript?`);
+			return;
+		}
+		onRun({ fileName: merged.name, harness, trace });
+		onClearError();
+	} catch (e) {
+		onError(e instanceof Error ? e.message : String(e));
+	}
+}
+
 function RunSlot({
 	title,
 	run,
 	onRun,
 	onError,
+	onClearError,
 }: {
 	title: string;
 	run: LoadedRun | null;
 	onRun: (run: LoadedRun) => void;
 	onError: (message: string) => void;
+	onClearError: () => void;
 }) {
 	const [over, setOver] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 
-	async function take(files: DroppedFile[]): Promise<void> {
-		try {
-			const merged = await combine(files);
-			if (!merged) {
-				onError("No .jsonl transcript found. Drop a session folder or .jsonl files.");
-				return;
-			}
-			const { harness, trace } = parseTranscript(merged.text);
-			if (trace.steps.length === 0) {
-				onError(`No steps parsed from ${merged.name}. Is it a Claude Code or Codex transcript?`);
-				return;
-			}
-			onRun({ fileName: merged.name, harness, trace });
-		} catch (e) {
-			onError(e instanceof Error ? e.message : String(e));
-		}
-	}
+	const take = (files: DroppedFile[]) =>
+		takeRunFiles(files, { onRun, onError, onClearError });
 
 	return (
 		<div
@@ -113,10 +132,13 @@ export function RunDiffLoader({
 	onCompare,
 	onBack,
 	onError,
+	onClearError,
 }: {
 	onCompare: (left: LoadedRun, right: LoadedRun) => void;
 	onBack: () => void;
 	onError: (message: string) => void;
+	/** A slot loaded cleanly: drop any banner left by an earlier bad file. */
+	onClearError: () => void;
 }) {
 	const [left, setLeft] = useState<LoadedRun | null>(null);
 	const [right, setRight] = useState<LoadedRun | null>(null);
@@ -131,7 +153,13 @@ export function RunDiffLoader({
 					changed the outcome gets flagged and explained.
 				</p>
 				<div className="rd-loader__slots">
-					<RunSlot title="Left run" run={left} onRun={setLeft} onError={onError} />
+					<RunSlot
+						title="Left run"
+						run={left}
+						onRun={setLeft}
+						onError={onError}
+						onClearError={onClearError}
+					/>
 					<button
 						type="button"
 						className="rd-loader__swap"
@@ -145,7 +173,13 @@ export function RunDiffLoader({
 					>
 						⇆
 					</button>
-					<RunSlot title="Right run" run={right} onRun={setRight} onError={onError} />
+					<RunSlot
+						title="Right run"
+						run={right}
+						onRun={setRight}
+						onError={onError}
+						onClearError={onClearError}
+					/>
 				</div>
 				<div className="rd-loader__actions">
 					<button type="button" className="linklike" onClick={onBack}>
