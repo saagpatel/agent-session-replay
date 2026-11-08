@@ -5,6 +5,8 @@ import type { AfrBundle } from "../core/afr/types.ts";
 import { analyzeControlBundle } from "../core/control/engine.ts";
 import type { ControlReport } from "../core/control/types.ts";
 import { detect } from "../core/detect/engine.ts";
+import { diffRuns } from "../core/diff/run-diff.ts";
+import type { RunDiff } from "../core/diff/types.ts";
 import type { Finding } from "../core/detect/types.ts";
 import { type Harness, parseTranscript } from "../core/parse.ts";
 import type { Step, Trace } from "../core/types.ts";
@@ -12,6 +14,8 @@ import { buildTimeline, type TimelineView } from "../core/view/timeline.ts";
 import { DecisionFlightDeck } from "./components/DecisionFlightDeck.tsx";
 import { DropZone, type DropPayload } from "./components/DropZone.tsx";
 import { FindingsPanel } from "./components/FindingsPanel.tsx";
+import { type LoadedRun, RunDiffLoader } from "./components/RunDiffLoader.tsx";
+import { RunDiffView } from "./components/RunDiffView.tsx";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { StepInspector } from "./components/StepInspector.tsx";
 import { Waterfall } from "./components/Waterfall.tsx";
@@ -32,13 +36,22 @@ interface LoadedControl {
 	report: ControlReport;
 }
 
-type Loaded = LoadedSession | LoadedControl;
+interface LoadedDiff {
+	mode: "diff";
+	fileName: string;
+	leftFile: string;
+	rightFile: string;
+	diff: RunDiff;
+}
+
+type Loaded = LoadedSession | LoadedControl | LoadedDiff;
 
 export function App() {
 	const [loaded, setLoaded] = useState<Loaded | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
 	const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
+	const [comparing, setComparing] = useState(false);
 	const inspectorOpenerRef = useRef<HTMLElement | null>(null);
 
 	const load = useCallback((payload: DropPayload) => {
@@ -74,6 +87,23 @@ export function App() {
 			});
 			setSelectedStepId(null);
 			setFocusedFindingId(null);
+			setError(null);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		}
+	}, []);
+
+	const compare = useCallback((left: LoadedRun, right: LoadedRun) => {
+		try {
+			const diff = diffRuns(left.trace, right.trace);
+			setLoaded({
+				mode: "diff",
+				fileName: `${left.fileName} vs ${right.fileName}`,
+				leftFile: left.fileName,
+				rightFile: right.fileName,
+				diff,
+			});
+			setComparing(false);
 			setError(null);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -123,17 +153,27 @@ export function App() {
 				{loaded ? (
 					<div className="topbar__meta">
 						<span className="chip chip--harness">
-							{loaded.mode === "session" ? loaded.harness : "AFR"}
+							{loaded.mode === "session"
+								? loaded.harness
+								: loaded.mode === "diff"
+									? "run diff"
+									: "AFR"}
 						</span>
 						{loaded.mode === "session" ? (
 							<span>{loaded.trace.run.model ?? "—"}</span>
+						) : loaded.mode === "diff" ? (
+							<span>
+								{loaded.diff.left.label} vs {loaded.diff.right.label}
+							</span>
 						) : (
 							<span>{loaded.report.summary.sourceSystems.length} source(s)</span>
 						)}
 						<span title={loaded.fileName}>
 							{loaded.mode === "session"
 								? loaded.trace.run.run_id.slice(0, 12)
-								: loaded.bundle.name}
+								: loaded.mode === "diff"
+									? `${loaded.diff.rows.length} aligned rows`
+									: loaded.bundle.name}
 						</span>
 						{loaded.mode === "session" && loaded.trace.malformed_lines ? (
 							<span
@@ -147,6 +187,7 @@ export function App() {
 							type="button"
 							className="linklike"
 							onClick={() => {
+								setComparing(loaded.mode === "diff");
 								setLoaded(null);
 								setError(null);
 							}}
@@ -188,8 +229,27 @@ export function App() {
 				</main>
 			) : loaded?.mode === "control" ? (
 				<DecisionFlightDeck bundle={loaded.bundle} report={loaded.report} />
+			) : loaded?.mode === "diff" ? (
+				<RunDiffView
+					diff={loaded.diff}
+					leftFile={loaded.leftFile}
+					rightFile={loaded.rightFile}
+				/>
+			) : comparing ? (
+				<RunDiffLoader
+					onCompare={compare}
+					onBack={() => setComparing(false)}
+					onError={setError}
+				/>
 			) : (
-				<DropZone onLoad={load} onError={setError} />
+				<DropZone
+					onLoad={load}
+					onError={setError}
+					onCompare={() => {
+						setError(null);
+						setComparing(true);
+					}}
+				/>
 			)}
 
 			{error ? (
