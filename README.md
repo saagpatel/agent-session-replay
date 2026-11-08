@@ -50,8 +50,8 @@ Run Diff is experimental. It reads results from evidence only, and anything the 
 
 - **Piped or chained tests are unclear.** A run passed only when its last test run exited cleanly *and* printed the runner's passing summary, with the test as the whole command. In `npm test | tail` or `npm test; git diff`, the exit status belongs to another command, so real agent runs often end unclear.
 - **Complex Codex cells are unknown.** An `exec` cell is read only when it is straight-line and each tool call prints its own result once. Branches, `Promise.all`, unprinted calls or extra prints make every call in that cell unknown.
+- **Piped commands and unproven writes are unknown.** In `npm run build | grep -q ERROR` the exit status belongs to `grep`, so the build's own result is unknown. In a `;` chain, anything before the last stage is unknown even when the chain exits 0, since a failed stage does not stop it. A file in a directory made unknown by a dynamic `cd` or `workdir` is not named. A command is read only from a plainly written argument object (`{cmd: "…"}`); joined strings, spreads, duplicate or computed keys, or a variable or shorthand `workdir` leave it unparsed or its directory unknown.
 - **Unconfirmed patches and missing results are unknown.** A patch counts only when its own output confirms it applied. A call whose result never arrived, such as a cut-off run or a yielded command never polled, is unknown.
-- **Some shell forms are still read too literally.** These are tracked as an open issue: commands built by joining strings, writes in `;` chains reported as succeeded, and piped non-test commands taking the last command's exit status.
 
 ## Setup and checks
 

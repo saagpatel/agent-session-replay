@@ -236,8 +236,10 @@ function pipeline(stage: string): string[] {
 /** Where a shell command runs: the workspace root and its effective directory. */
 interface Where {
 	root: string | null;
-	/** Absolute working directory, or null once a dynamic `cd` makes it unknown. */
+	/** Absolute working directory, or null when there is no workspace root. */
 	dir: string | null;
+	/** A dynamic `cd` or workdir moved the command somewhere unknown. */
+	lost?: boolean;
 }
 
 /** Join and normalize an absolute directory with a relative path (`.`, `..`). */
@@ -251,22 +253,41 @@ function joinPath(dir: string, rel: string): string {
 	return `/${parts.join("/")}`;
 }
 
+/** A `cd` argument whose target cannot be known statically. */
+function dynamicCd(arg: string | undefined): boolean {
+	return !arg || /[$`~*]/.test(arg) || arg === "-";
+}
+
 /** The directory a `cd` argument leads to, or null when it is not static. */
 function cdTo(where: Where, arg: string | undefined): string | null {
-	if (!arg || /[$`~*]/.test(arg) || arg === "-") return null;
+	if (dynamicCd(arg)) return null;
+	if (!arg) return null;
 	if (arg.startsWith("/")) return joinPath("/", arg);
 	return where.dir ? joinPath(where.dir, arg) : null;
 }
 
-/** A file argument made workspace-relative from where the command ran. */
-function resolveIn(file: string, where: Where): string {
+/**
+ * A file argument made workspace-relative from where the command ran, or null
+ * when a relative path's directory is unknown (a dynamic `cd` or workdir):
+ * the file is then never named, rather than credited to the wrong path.
+ */
+function resolveIn(file: string, where: Where): string | null {
 	const f = file.trim().replace(/^["']|["']$/g, "");
-	if (f.startsWith("/") || !where.dir) return relPath(f, where.root);
+	if (f.startsWith("/")) return relPath(f, where.root);
+	if (where.lost) return null;
+	if (!where.dir) return relPath(f, where.root);
 	return relPath(joinPath(where.dir, f), where.root);
 }
 
-function whereFor(root: string | null | undefined, workdir: string | undefined): Where {
+/** A file part whose location is unknown: no target, and never a known result. */
+function located(action: "read" | "write", target: string | null): Classified {
+	return target === null ? { action, target: null, unlocated: true } : { action, target };
+}
+
+/** `workdir` null means one was given but could not be read (it is unknown). */
+function whereFor(root: string | null | undefined, workdir: string | null | undefined): Where {
 	const base = root ?? null;
+	if (workdir === null) return { root: base, dir: null, lost: true };
 	if (!workdir) return { root: base, dir: base };
 	const dir = workdir.startsWith("/") ? joinPath("/", workdir) : base ? joinPath(base, workdir) : null;
 	return { root: base, dir };
@@ -307,20 +328,30 @@ interface Classified {
 	target: string | null;
 	/** Shown in the label but not part of the alignment signature. */
 	note?: string;
-	/** A test piped into another command: its exit status is that command's. */
+	/** A command that feeds a pipe: the pipeline's exit status is the last command's. */
 	piped?: boolean;
+	/** A file read or written in an unknown directory: no target, no known result. */
+	unlocated?: boolean;
 	/** False for a shell stage before the last one (dropped stages included). */
 	last?: boolean;
 }
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
 function classifyStage(stage: string, where: Where): Classified[] {
-	const base = classifyFirst(stage, where);
-	// `… | tee f` also writes f, after the command that feeds it.
-	const tee = pipeline(stage).slice(1).map((c) => words(c)).find((w) => w[0] === "tee");
-	const teeInto = tee?.slice(1).find((w) => !w.startsWith("-"));
-	if (teeInto && !teeInto.startsWith("/dev/"))
-		return [...base, { action: "write", target: resolveIn(teeInto, where) }];
+	const cmds = pipeline(stage);
+	// A pipeline exits with its last command's status, so the command that
+	// feeds it never owns that status (`npm run build | grep -q ERROR`).
+	const base = classifyFirst(stage, where).map((c) =>
+		cmds.length > 1 ? { ...c, piped: true } : c,
+	);
+	// `… | tee f` also writes f, after the command that feeds it; tee owns the
+	// pipeline's status only when it is the last command.
+	const teeAt = cmds.findIndex((c, i) => i > 0 && words(c)[0] === "tee");
+	const teeInto = teeAt > 0 ? words(cmds[teeAt] as string).slice(1).find((w) => !w.startsWith("-")) : undefined;
+	if (teeInto && !teeInto.startsWith("/dev/")) {
+		const write = located("write", resolveIn(teeInto, where));
+		return [...base, teeAt === cmds.length - 1 ? write : { ...write, piped: true }];
+	}
 	return base;
 }
 
@@ -342,7 +373,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
 	// Only unquoted redirects count: `echo "==> Building"` writes nothing.
 	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
-	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
+	if (into && !into.startsWith("/dev/")) return [located("write", resolveIn(into, where))];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	// sed fails closed: only `sed -n '<range>p' file…` is a read.
 	const sedRead = head === "sed" ? plainSedRead(withoutLeadingEnv(toks)) : null;
@@ -354,7 +385,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
-			.map((f) => ({ action: "read" as const, target: resolveIn(f, where) }));
+			.map((f) => located("read", resolveIn(f, where)));
 	}
 	// Read-only git inspection is a read of repo state, not a command that changes it.
 	if (head === "git" && GIT_READS.has(ws[1] ?? "") && !(ws[1] === "branch" && branchMutates(ws.slice(2))))
@@ -496,7 +527,7 @@ interface CommandParts {
 function commandParts(
 	cmd: string,
 	root: string | null | undefined,
-	workdir?: string,
+	workdir?: string | null,
 ): CommandParts {
 	const core = coreCommand(cmd);
 	const where = whereFor(root, workdir);
@@ -513,7 +544,13 @@ function commandParts(
 		// A `cd` moves where the following stages run; it stays a stage, so a
 		// failing `cd dir && npm test` never runs (or fails) the test.
 		const w = words(stage);
-		if (w[0] === "cd") where.dir = cdTo(where, w[1]);
+		if (w[0] === "cd") {
+			const to = cdTo(where, w[1]);
+			// A dynamic target (`cd $DIR`, `cd -`, `cd ~x`) loses the directory;
+			// without a workspace root, a static relative cd just stays relative.
+			if (dynamicCd(w[1])) where.lost = true;
+			where.dir = to;
+		}
 		else if (stage) printing++;
 		for (const c of classifyStage(stage, where)) parts.push(last ? c : { ...c, last });
 	});
@@ -572,7 +609,8 @@ function jsString(lit: string): string | undefined {
 	const q = lit[0];
 	if (!q || lit.at(-1) !== q || lit.length < 2) return undefined;
 	const body = lit.slice(1, -1);
-	if (q === "`" && body.includes("${")) return undefined;
+	// Only an unescaped `${` makes a template dynamic; `\${` is literal text.
+	if (q === "`" && /(?:^|[^\\])(?:\\\\)*\$\{/.test(body)) return undefined;
 	if (q === '"') {
 		try {
 			const v = JSON.parse(lit) as unknown;
@@ -589,17 +627,109 @@ function jsString(lit: string): string | undefined {
 const CELL_CALL_RE = /tools\.([A-Za-z0-9_]+)\s*\(/g;
 const STRING_LIT = String.raw`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\`(?:[^\`\\]|\\.)*\``;
 
-/** The first string-literal argument after `key:` (or the first positional one). */
-function literalArg(body: string, key: string | null): { found: boolean; value?: string } {
-	const re = key
-		? new RegExp(String.raw`\b${key}["']?\s*:\s*(${STRING_LIT})`, "s")
-		: new RegExp(String.raw`\(\s*(${STRING_LIT})`, "s");
-	const lit = re.exec(body)?.[1];
-	if (lit === undefined) return { found: false };
-	const value = jsString(lit);
-	return value === undefined ? { found: true } : { found: true, value };
+/** The argument text of the call that opens `body` (between its matching parens). */
+function callArgs(body: string, masked: string): { text: string; masked: string } | null {
+	const open = masked.indexOf("(");
+	if (open < 0) return null;
+	let depth = 0;
+	for (let i = open; i < masked.length; i++) {
+		const ch = masked[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") {
+			depth--;
+			if (depth === 0) return { text: body.slice(open + 1, i), masked: masked.slice(open + 1, i) };
+		}
+	}
+	return null;
 }
 
+/** Split masked text on commas at nesting depth 0, as [start, end) ranges. */
+function topLevelRanges(masked: string): Array<[number, number]> {
+	const out: Array<[number, number]> = [];
+	let depth = 0;
+	let start = 0;
+	for (let i = 0; i < masked.length; i++) {
+		const ch = masked[i];
+		if (ch === "(" || ch === "{" || ch === "[") depth++;
+		else if (ch === ")" || ch === "}" || ch === "]") depth--;
+		else if (ch === "," && depth === 0) {
+			out.push([start, i]);
+			start = i + 1;
+		}
+	}
+	out.push([start, masked.length]);
+	return out.filter(([x, y]) => masked.slice(x, y).trim() !== "");
+}
+
+/** Exactly one static string literal and nothing else, or undefined. */
+function soleLiteral(text: string): string | undefined {
+	const t = text.trim();
+	const lit = new RegExp(String.raw`^(?:${STRING_LIT})$`, "s").exec(t)?.[0];
+	return lit === undefined ? undefined : jsString(lit);
+}
+
+/**
+ * A call argument read exactly, or reported as present-but-unknown.
+ *
+ * With a `key`, the call's only argument must be one object literal whose
+ * top-level properties all have plain names. The key must appear exactly once,
+ * as `key: "literal"`. A spread, a computed key or method, a duplicate, a
+ * shorthand (`{workdir}`) or a non-literal value all leave the call's argument
+ * unknown (`found` without a value), since any of them can change what runs.
+ * Without a key, the only argument must be one string literal (a patch).
+ */
+function exactLiteralArg(body: string, key: string | null): { found: boolean; value?: string } {
+	const masked = maskCode(body);
+	const args = callArgs(body, masked);
+	if (!args) return { found: true };
+	const ranges = topLevelRanges(args.masked);
+	if (key === null) {
+		if (ranges.length !== 1) return { found: true };
+		const value = soleLiteral(args.text);
+		return value === undefined ? { found: true } : { found: true, value };
+	}
+	const obj = args.masked.trim();
+	if (ranges.length !== 1 || !obj.startsWith("{") || !obj.endsWith("}")) return { found: true };
+	const lead = args.masked.indexOf("{");
+	const close = args.masked.lastIndexOf("}");
+	const innerMasked = args.masked.slice(lead + 1, close);
+	const innerText = args.text.slice(lead + 1, close);
+	let value: string | undefined;
+	let hits = 0;
+	for (const [x, y] of topLevelRanges(innerMasked)) {
+		const m = innerMasked.slice(x, y);
+		const t = innerText.slice(x, y);
+		const named = /^\s*([A-Za-z_$][\w$]*)\s*(:)?/.exec(m);
+		const quoted = /^\s*(["'])\s*\1\s*:/.exec(m);
+		let name: string | undefined;
+		let colonAt = -1;
+		if (named && named[1] && !["get", "set", "async"].includes(named[1])) {
+			name = named[1];
+			if (!named[2]) {
+				// `{workdir}`: a shorthand names the key but hides its value.
+				if (m.trim() !== name) return { found: true };
+				if (name === key) return { found: true };
+				continue;
+			}
+			colonAt = named[0].length;
+		} else if (quoted) {
+			const keyText = /^\s*(["'])(.*?)\1\s*:/s.exec(t);
+			// An escaped key (`"\u0063md"`) can spell any name: never guess it.
+			if (!keyText || (keyText[2] ?? "").includes("\\")) return { found: true };
+			name = keyText[2];
+			colonAt = keyText[0].length;
+		} else {
+			// Spread, computed key, method or anything else: cannot be read exactly.
+			return { found: true };
+		}
+		if (name !== key) continue;
+		hits++;
+		value = soleLiteral(t.slice(colonAt));
+	}
+	if (hits === 0) return { found: false };
+	if (hits > 1 || value === undefined) return { found: true };
+	return { found: true, value };
+}
 
 /**
  * One unit of work with its own result: a shell command (possibly several
@@ -751,8 +881,10 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 					? partResult(tool, printed[i], completed)
 					: UNKNOWN;
 		if (tool === "exec_command") {
-			const cmd = literalArg(body, "cmd");
-			const workdir = literalArg(body, "workdir").value;
+			const cmd = exactLiteralArg(body, "cmd");
+			// A workdir that is present but not one static literal is unknown.
+			const wd = exactLiteralArg(body, "workdir");
+			const workdir = wd.found ? (wd.value ?? null) : undefined;
 			const unit = cmd.value !== undefined
 				? { ...commandParts(cmd.value, cwd, workdir), ...res }
 				: // A command we cannot read statically still happened: keep it, unresolved.
@@ -762,7 +894,7 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
 			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
 		} else if (tool === "apply_patch") {
-			const patch = literalArg(body, null).value ?? body;
+			const patch = exactLiteralArg(body, null).value ?? "";
 			const parts = patchTargets(patch, cwd);
 			out.push({ parts: parts.length ? parts : [{ action: "edit", target: null }], chain: "single", ...res });
 		} else if (tool === "update_plan") {
@@ -856,8 +988,11 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			}
 			const cmd = commandOf(args);
 			if (cmd !== undefined) {
-				const workdir =
-					str(args["workdir"]) ?? str(args["working_directory"]) ?? str(args["cwd"]);
+				// The first workdir field actually given; an empty string is not one.
+				const raw = [args["workdir"], args["working_directory"], args["cwd"]].find(
+					(v) => v !== undefined && v !== null && v !== "",
+				);
+				const workdir = raw === undefined ? undefined : (str(raw) ?? null);
 				return [{ ...commandParts(cmd, cwd, workdir), ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
@@ -910,9 +1045,6 @@ function make(
 	return out;
 }
 
-const isCommand = (c: Classified): boolean =>
-	c.action === "test" || c.action === "run";
-
 /**
  * Give each part of a unit a result, inventing none.
  *
@@ -945,9 +1077,10 @@ export function resolveStatuses(
 		return c.last !== false && (result === "ok" || i === n - 1);
 	};
 	const out: DiffStatus[] = parts.map((c, i) => {
+		if (c.unlocated) return "unknown";
 		if (owns(i)) return result as DiffStatus;
-		// Reads and searches that ran before a stage that is known to have run.
-		if (!isCommand(c) && known && !failedResult && chain !== "mixed") return "ok";
+		// No other part is vouched for: a `;` chain keeps going after a failed
+		// stage (`cat missing.ts; true`, `echo x > missing/f; true`).
 		return "unknown";
 	});
 	// A failing summary speaks for the test only when nothing else could have

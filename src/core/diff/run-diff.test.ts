@@ -957,7 +957,8 @@ test("a summary speaks for a test only when the test is the whole command", () =
 		ccEvents(PROMPT, [{ name: "Bash", command: "cat old-test.log; npm test", output: stale }]),
 	);
 	const steps = normalizeTrace(trace);
-	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}:${s.summary ?? "-"}`), ["read:ok:-", "test:ok:-"]);
+	// The read is not vouched for: a `;` chain keeps going after a failed cat.
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.status}:${s.summary ?? "-"}`), ["read:unknown:-", "test:ok:-"]);
 	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
 	const codex = plainCalls([
 		{ name: "exec_command", args: { cmd: "cat old-test.log && npm test" }, output: `Process exited with code 0\nOutput:\n${stale}` },
@@ -1152,4 +1153,141 @@ test("unparsed commands keep their here-string text", () => {
 test("a blocked step's explanation is clipped for display", () => {
 	const long = `guard: ${"x".repeat(200)}`;
 	assert.ok(describeStep({ ...step("blocked", long) }).length < 120);
+});
+
+// ---- #112: result attribution ----------------------------------------------
+
+test("a command counts only when it is one static literal in real code (#112 item 1)", () => {
+	const chunk = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 1, output: "ℹ tests 1\nℹ pass 0\nℹ fail 1" }));
+	const of = (input: string) => normalizeTrace(rawCell(input, chunk)).map((s) => `${s.action}:${s.target ?? s.note}:${s.status}`);
+	// Joined strings are not read as their first piece: the command is unparsed,
+	// and only its own result chunk (exit 1 here) speaks for it.
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test" + " && cat old.log"}));'), ["run:unparsed command:error"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test".concat(" -- --ci")}));'), ["run:unparsed command:error"]);
+	// The old log's failing summary is never credited to a test.
+	const joined = rawCell('text(await tools.exec_command({cmd:"npm test" + " && cat old.log"}));', chunk);
+	assert.ok(normalizeTrace(joined).every((s) => s.action !== "test"));
+	assert.notEqual(diffRuns(joined, joined).left.verdict, "failed");
+	// A cmd property inside a comment or a string is not the command.
+	assert.deepEqual(
+		of('text(await tools.exec_command({/* cmd:"npm test", */ cmd:"git status"}));'),
+		["read:git status:error"],
+	);
+	assert.deepEqual(
+		of('text(await tools.exec_command({note:"cmd: \\"npm test\\"", cmd:"git log"}));'),
+		["read:git log:error"],
+	);
+	// A plain literal, quoted key or not, is still read.
+	assert.deepEqual(of('text(await tools.exec_command({"cmd":"npm test", "max_output_tokens":100}));'), ["test:npm test:error"]);
+	assert.deepEqual(of("text(await tools.exec_command({cmd:'npm test'}));"), ["test:npm test:error"]);
+});
+
+test("nothing before the last stage of a ; chain is vouched for (#112 item 3)", () => {
+	const write = classifyCommand("echo x > missing/out.txt; true", null);
+	assert.deepEqual(write.map((c) => c.action), ["write"]);
+	assert.deepEqual(resolveStatuses(write, "seq", "ok", false), ["unknown"]);
+	const both = classifyCommand("cat a.ts; echo x > out.txt; npm run build", null);
+	// `cat missing.ts; …` keeps going too, so the read is unknown as well.
+	assert.deepEqual(resolveStatuses(both, "seq", "ok", false), ["unknown", "unknown", "ok"]);
+	// A successful && chain ran every stage, writes included.
+	const and = classifyCommand("echo x > out.txt && npm run build", null);
+	assert.deepEqual(resolveStatuses(and, "and", "ok", false), ["ok", "ok"]);
+});
+
+test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
+	const grep = classifyCommand("npm run build | grep -q ERROR", null);
+	assert.equal(grep[0]?.piped, true);
+	assert.deepEqual(resolveStatuses(grep, "single", "error", false), ["unknown"]);
+	assert.deepEqual(resolveStatuses(grep, "single", "ok", false), ["unknown"]);
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "npm run build 2>&1 | tail -20", error: "Exit code 1" }]),
+	);
+	assert.deepEqual(normalizeTrace(trace).map((s) => s.status), ["unknown"]);
+	// tee owns the status only when it ends the pipeline.
+	const tee = classifyCommand("npm run build | tee build.log", null);
+	assert.deepEqual(resolveStatuses(tee, "single", "ok", false), ["unknown", "ok"]);
+	const teeMid = classifyCommand("npm run build | tee build.log | grep x", null);
+	assert.deepEqual(resolveStatuses(teeMid, "single", "ok", false), ["unknown", "unknown"]);
+	// An unpiped command still owns its exit.
+	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
+});
+
+test("a file in an unknown directory is never named or vouched for", () => {
+	const root = WORKSPACE_CODEX;
+	const cellAt = (args: string) =>
+		normalizeTrace(
+			rawCell(
+				`text(await tools.exec_command({cmd:"echo x > out.txt", ${args}}));`,
+				parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 })),
+			),
+		).map((s) => `${s.action}:${s.target}:${s.status}`);
+	// A workdir built by joining strings is unknown: the write is not credited to out.txt.
+	assert.deepEqual(cellAt(`workdir:"${root}/packages/api" + ""`), ["write:null:unknown"]);
+	assert.deepEqual(cellAt(`workdir:"${root}/packages/api"`), ["write:packages/api/out.txt:ok"]);
+	assert.deepEqual(cellAt(""), ["write:out.txt:ok"]);
+	// A dynamic cd loses the directory too.
+	const cd = (cmd: string) =>
+		normalizeTrace(plainCalls([{ name: "exec_command", args: { cmd }, output: "Process exited with code 0\nOutput:\nx" }])).map(
+			(s) => `${s.action}:${s.target}:${s.status}`,
+		);
+	assert.deepEqual(cd("cd $PKG && cat a.ts"), ["read:null:unknown"]);
+	assert.deepEqual(cd("cd packages/api && cat a.ts"), ["read:packages/api/a.ts:ok"]);
+	assert.deepEqual(cd("cat /work/b/fixture-repo/a.ts"), ["read:a.ts:ok"]);
+});
+
+test("a template literal with an escaped ${ is still static", () => {
+	const patch = "`*** Begin Patch\n*** Update File: src/tpl.ts\n@@\n-const a = \\${x};\n+const a = \\${y};\n*** End Patch`";
+	const trace = rawCell(`text(await tools.apply_patch(${patch}));`, parts("Script completed\n", "{}"));
+	assert.deepEqual(statusesOf(trace), ["edit:ok"]);
+	assert.equal(normalizeTrace(trace)[0]?.target, "src/tpl.ts");
+	// An unescaped ${…} is dynamic: the patch's file stays unknown.
+	const dynamic = rawCell("text(await tools.apply_patch(`*** Update File: ${f}`));", parts("Script completed\n", "{}"));
+	assert.equal(normalizeTrace(dynamic)[0]?.target, null);
+});
+
+test("only a plainly written argument object is read; anything that could change it is unknown", () => {
+	const passing = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0, output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" }));
+	const of = (input: string) => normalizeTrace(rawCell(input, passing)).map((s) => `${s.action}:${s.target ?? s.note}`);
+	// A spread or a second cmd can replace the command: never report it as `npm test`.
+	for (const input of [
+		'const opts={cmd:"cat old.log"}; text(await tools.exec_command({cmd:"npm test",...opts}));',
+		'text(await tools.exec_command({cmd:"npm test", cmd:"cat old.log"}));',
+		'text(await tools.exec_command({["cmd"]:"npm test"}));',
+		"text(await tools.exec_command(opts));",
+		String.raw`text(await tools.exec_command({cmd:"npm test", "\u0063md":"cat old.log"}));`,
+		String.raw`text(await tools.exec_command({cmd:'npm test', '\x63md':'cat old.log'}));`,
+	]) {
+		assert.deepEqual(of(input), ["run:unparsed command"], input);
+		const trace = rawCell(input, passing);
+		assert.notEqual(diffRuns(trace, trace).left.verdict, "passed", input);
+	}
+	// Other plain properties are fine.
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"npm test", max_output_tokens:500, env:{CI:"1"}}));'), ["test:npm test"]);
+});
+
+test("a shorthand or variable workdir is unknown, never the workspace root", () => {
+	const ok = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 }));
+	const of = (input: string) => normalizeTrace(rawCell(input, ok)).map((s) => `${s.action}:${s.target}:${s.status}`);
+	assert.deepEqual(of('const workdir="/tmp"; text(await tools.exec_command({cmd:"echo x > out.txt",workdir}));'), ["write:null:unknown"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"echo x > out.txt", workdir: dir}));'), ["write:null:unknown"]);
+	assert.deepEqual(of('text(await tools.exec_command({cmd:"echo x > out.txt", "workdir": "packages/api"}));'), ["write:packages/api/out.txt:ok"]);
+});
+
+test("an empty workdir field falls through to the next one", () => {
+	const at = (args: Record<string, unknown>) =>
+		normalizeTrace(plainCalls([{ name: "exec_command", args: { cmd: "cat a.ts", ...args }, output: "Process exited with code 0\nOutput:\nx" }])).map(
+			(s) => `${s.target}:${s.status}`,
+		);
+	assert.deepEqual(at({ workdir: "", cwd: `${WORKSPACE_CODEX}/pkg` }), ["pkg/a.ts:ok"]);
+	assert.deepEqual(at({ workdir: "" }), ["a.ts:ok"]);
+	assert.deepEqual(at({ workdir: 42 }), ["null:unknown"]);
+});
+
+test("an escaped key leaves the call unparsed, never a file at the workspace root", () => {
+	const ok = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 }));
+	const input = String.raw`text(await tools.exec_command({cmd:"echo x > out.txt", "work\u0064ir":"/tmp"}));`;
+	// Any escaped key makes the whole call unparsed: no file is named at all.
+	const steps = normalizeTrace(rawCell(input, ok));
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.note}`), ["run:unparsed command"]);
+	assert.ok(steps.every((s) => s.action !== "write"));
 });

@@ -31,8 +31,8 @@ const ACTION_VAR: Record<DiffAction, string> = {
 const KNOWN_LIMITS = [
 	"A run passed only when its last test run exited cleanly and printed the runner's passing summary. Piped or chained tests (`npm test | tail`, `npm test; git diff`) are unclear: the exit status belongs to another command.",
 	"Codex `exec` cells are read only when they are straight-line, with each tool call printing its own result once. Branches, `Promise.all`, unprinted calls or extra prints make every call in the cell unknown.",
+	"A piped command's own result is unknown (`npm run build | grep x` exits with grep's status), as is anything before the end of a `;` chain or in a directory a dynamic `cd` hides. Commands built by joining strings show as unparsed.",
 	"A patch counts as applied only when its own output confirms it. A tool call whose result never arrived, such as a cut-off run or a yielded command never polled, is unknown.",
-	"Some shell forms are still read too literally (string-built commands, writes in `;` chains, piped non-test commands). They are tracked as an open issue.",
 ];
 
 const VERDICT_TEXT: Record<RunVerdict, string> = {
