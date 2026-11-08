@@ -253,7 +253,7 @@ export function describeStep(s: DiffStep): string {
 			phrase = "compacted its context";
 			break;
 		case "blocked":
-			phrase = `was blocked (${s.target ?? "guard"})`;
+			phrase = `was blocked (${s.target ? clipForDisplay(s.target) : "guard"})`;
 			break;
 		default:
 			phrase = `called ${t}`;

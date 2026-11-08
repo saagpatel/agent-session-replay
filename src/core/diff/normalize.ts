@@ -77,6 +77,9 @@ function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput 
 	for (let i = 0; i < toks.length; i++) {
 		const t = toks[i] as { text: string; quoted: boolean };
 		if (!t.quoted && BARE_OPERAND_OP.test(t.text)) {
+			// A here-string's text is the program's input: keep it when asked, so
+			// `python3 <<< 'print(1)'` and `<<< 'print(2)'` stay different.
+			if (keepInput && t.text === "<<<" && toks[i + 1]) out.push("<<<", (toks[i + 1] as { text: string }).text);
 			i++;
 			continue;
 		}
@@ -84,6 +87,13 @@ function commandWords(toks: Array<{ text: string; quoted: boolean }>, keepInput 
 			// Keep `< file` as written when asked, so two different inputs differ.
 			if (keepInput && toks[i + 1]) out.push("<", (toks[i + 1] as { text: string }).text);
 			i++;
+			continue;
+		}
+		// Glued input redirects and here-strings (`<in.txt`, `<<<x`) are input
+		// too; a glued heredoc opener (`<<EOF`) only names its delimiter.
+		const gluedHeredoc = /^<<-?['"]?[A-Za-z_]\w*['"]?$/.test(t.text);
+		if (keepInput && !t.quoted && !gluedHeredoc && /^\d*</.test(t.text)) {
+			out.push(t.text);
 			continue;
 		}
 		if (!t.quoted && /^(?:\d*|&)[<>]/.test(t.text)) continue;
@@ -112,7 +122,10 @@ function plainSedRead(toks: Array<{ text: string; quoted: boolean }>): string[] 
 	const [cmd, flag, script, ...files] = toks;
 	if (cmd?.text.replace(/^.*\//, "") !== "sed" || flag?.quoted || flag?.text !== "-n") return null;
 	if (!script || !SED_RANGE_PRINT.test(script.text) || files.length === 0) return null;
-	if (files.some((f) => !f.quoted && (/^-/.test(f.text) || /^(?:\d+|&)?[<>|]/.test(f.text)))) return null;
+	// The shell strips quotes and GNU sed reads options anywhere, so a quoted
+	// `'--in-place'` or `'-i'` is still an option: any word starting with `-`
+	// makes this not a plain read.
+	if (files.some((f) => f.text.startsWith("-") || (!f.quoted && /^(?:\d+|&)?[<>|]/.test(f.text)))) return null;
 	return files.map((f) => f.text);
 }
 

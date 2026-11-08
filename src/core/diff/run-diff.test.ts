@@ -1133,3 +1133,23 @@ test("a spaced redirect's target never leaks into the command (#112 item 6)", ()
 	// A quoted ">" is data, not a redirect.
 	assert.deepEqual(sig('node -e "1 > 0" x.js'), ["run:node -e 1 > 0 x.js"]);
 });
+
+test("quoted options still make sed a command, never a read", () => {
+	for (const cmd of ["sed -n 1p '--in-place' src/a.ts", "sed -n 1p '-i' src/a.ts", 'sed -n 1,5p "-i.bak" src/a.ts', "sed -n 1p -- src/a.ts"])
+		assert.equal(sig(cmd)[0]?.startsWith("run:sed"), true, cmd);
+});
+
+test("unparsed commands keep their here-string text", () => {
+	assert.notDeepEqual(sig("python3 <<< 'print(1)'"), sig("python3 <<< 'print(2)'"));
+	assert.deepEqual(sig("python3 <<< 'print(1)'"), ["run:python3 <<< print(1)"]);
+	assert.deepEqual(sig("bc <<<1+2"), ["run:bc <<<1+2"]);
+	assert.deepEqual(sig("sort <in.txt"), ["run:sort <in.txt"]);
+	// A heredoc's delimiter is not its program; output redirects stay out.
+	assert.deepEqual(sig("python3 - <<'PY'\nprint(1)\nPY"), ["run:python3 -"]);
+	assert.deepEqual(sig("npm run build > build.log"), ["run:npm run build"]);
+});
+
+test("a blocked step's explanation is clipped for display", () => {
+	const long = `guard: ${"x".repeat(200)}`;
+	assert.ok(describeStep({ ...step("blocked", long) }).length < 120);
+});
