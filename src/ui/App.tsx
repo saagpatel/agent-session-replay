@@ -52,6 +52,7 @@ export function App() {
 	const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
 	const [focusedFindingId, setFocusedFindingId] = useState<string | null>(null);
 	const [comparing, setComparing] = useState(false);
+	const [lastPair, setLastPair] = useState<{ left: LoadedRun; right: LoadedRun } | null>(null);
 	const inspectorOpenerRef = useRef<HTMLElement | null>(null);
 
 	const load = useCallback((payload: DropPayload) => {
@@ -96,6 +97,7 @@ export function App() {
 	const compare = useCallback((left: LoadedRun, right: LoadedRun) => {
 		try {
 			const diff = diffRuns(left.trace, right.trace);
+			setLastPair({ left, right });
 			setLoaded({
 				mode: "diff",
 				fileName: `${left.fileName} vs ${right.fileName}`,
@@ -237,6 +239,7 @@ export function App() {
 				/>
 			) : comparing ? (
 				<RunDiffLoader
+					initial={lastPair}
 					onCompare={compare}
 					onBack={() => setComparing(false)}
 					onError={setError}

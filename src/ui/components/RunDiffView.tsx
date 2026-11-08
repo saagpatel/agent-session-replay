@@ -9,6 +9,7 @@ import type {
 	RunVerdict,
 } from "../../core/diff/types.ts";
 import { foldRows } from "../../core/diff/fold.ts";
+import { provenlyDifferent } from "../../core/diff/rank.ts";
 import { isFailure } from "../../core/diff/types.ts";
 
 const ACTION_VAR: Record<DiffAction, string> = {
@@ -113,10 +114,7 @@ export function RunDiffView({
 	const markRow = flagged ? (flagged.cosmetic ? flagged.startRow : flagged.pivotRow) : -1;
 	const firstDiff = diff.firstDifferenceRow;
 	// Only call a fork "the divergence that mattered" when the outcomes provably differ.
-	const provenOutcome =
-		diff.left.verdict !== diff.right.verdict &&
-		diff.left.verdict !== "unclear" &&
-		diff.right.verdict !== "unclear";
+	const provenOutcome = provenlyDifferent(diff.left, diff.right);
 	const firstIsElsewhere =
 		firstDiff !== null && flagged !== null && (firstDiff < flagged.startRow || firstDiff > flagged.endRow);
 	const counts = useMemo(() => {

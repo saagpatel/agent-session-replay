@@ -129,19 +129,22 @@ function RunSlot({
 }
 
 export function RunDiffLoader({
+	initial,
 	onCompare,
 	onBack,
 	onError,
 	onClearError,
 }: {
+	/** The pair compared last, so replacing one lane keeps the other. */
+	initial?: { left: LoadedRun; right: LoadedRun } | null;
 	onCompare: (left: LoadedRun, right: LoadedRun) => void;
 	onBack: () => void;
 	onError: (message: string) => void;
 	/** A slot loaded cleanly: drop any banner left by an earlier bad file. */
 	onClearError: () => void;
 }) {
-	const [left, setLeft] = useState<LoadedRun | null>(null);
-	const [right, setRight] = useState<LoadedRun | null>(null);
+	const [left, setLeft] = useState<LoadedRun | null>(initial?.left ?? null);
+	const [right, setRight] = useState<LoadedRun | null>(initial?.right ?? null);
 
 	return (
 		<main className="drop rd-loader">

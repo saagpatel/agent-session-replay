@@ -115,6 +115,24 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(html, /Claude Code/);
 	assert.match(html, /tests failed/);
 	assert.ok(html.includes("<code>src/a.ts</code>"), "explanation renders code spans");
+
+	// "load another" reopens the loader with the last pair still loaded.
+	const { RunDiffLoader } = await import("../src/ui/components/RunDiffLoader.tsx");
+	const noop = () => {};
+	const loader = renderToStaticMarkup(
+		<RunDiffLoader
+			initial={{
+				left: { fileName: "cc.jsonl", harness: "claude-code", trace: left },
+				right: { fileName: "codex.jsonl", harness: "codex", trace: right },
+			}}
+			onCompare={noop}
+			onBack={noop}
+			onError={noop}
+			onClearError={noop}
+		/>,
+	);
+	assert.match(loader, /cc\.jsonl/);
+	assert.match(loader, /codex\.jsonl/);
 }
 
 console.log("UI SSR replay checks passed");
