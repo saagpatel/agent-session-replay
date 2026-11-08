@@ -253,12 +253,12 @@ function joinPath(dir: string, rel: string): string {
 	return `/${parts.join("/")}`;
 }
 
-/** The directory a `cd` argument leads to, or null when it is not static. */
 /** A `cd` argument whose target cannot be known statically. */
 function dynamicCd(arg: string | undefined): boolean {
 	return !arg || /[$`~*]/.test(arg) || arg === "-";
 }
 
+/** The directory a `cd` argument leads to, or null when it is not static. */
 function cdTo(where: Where, arg: string | undefined): string | null {
 	if (dynamicCd(arg)) return null;
 	if (!arg) return null;
@@ -548,7 +548,7 @@ function commandParts(
 			const to = cdTo(where, w[1]);
 			// A dynamic target (`cd $DIR`, `cd -`, `cd ~x`) loses the directory;
 			// without a workspace root, a static relative cd just stays relative.
-			if (dynamicCd(w[1]) || (to === null && where.dir !== null)) where.lost = true;
+			if (dynamicCd(w[1])) where.lost = true;
 			where.dir = to;
 		}
 		else if (stage) printing++;
@@ -714,7 +714,8 @@ function exactLiteralArg(body: string, key: string | null): { found: boolean; va
 			colonAt = named[0].length;
 		} else if (quoted) {
 			const keyText = /^\s*(["'])(.*?)\1\s*:/s.exec(t);
-			if (!keyText) return { found: true };
+			// An escaped key (`"\u0063md"`) can spell any name: never guess it.
+			if (!keyText || (keyText[2] ?? "").includes("\\")) return { found: true };
 			name = keyText[2];
 			colonAt = keyText[0].length;
 		} else {

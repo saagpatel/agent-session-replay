@@ -1254,6 +1254,8 @@ test("only a plainly written argument object is read; anything that could change
 		'text(await tools.exec_command({cmd:"npm test", cmd:"cat old.log"}));',
 		'text(await tools.exec_command({["cmd"]:"npm test"}));',
 		"text(await tools.exec_command(opts));",
+		String.raw`text(await tools.exec_command({cmd:"npm test", "\u0063md":"cat old.log"}));`,
+		String.raw`text(await tools.exec_command({cmd:'npm test', '\x63md':'cat old.log'}));`,
 	]) {
 		assert.deepEqual(of(input), ["run:unparsed command"], input);
 		const trace = rawCell(input, passing);
@@ -1279,4 +1281,13 @@ test("an empty workdir field falls through to the next one", () => {
 	assert.deepEqual(at({ workdir: "", cwd: `${WORKSPACE_CODEX}/pkg` }), ["pkg/a.ts:ok"]);
 	assert.deepEqual(at({ workdir: "" }), ["a.ts:ok"]);
 	assert.deepEqual(at({ workdir: 42 }), ["null:unknown"]);
+});
+
+test("an escaped key leaves the call unparsed, never a file at the workspace root", () => {
+	const ok = parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 }));
+	const input = String.raw`text(await tools.exec_command({cmd:"echo x > out.txt", "work\u0064ir":"/tmp"}));`;
+	// Any escaped key makes the whole call unparsed: no file is named at all.
+	const steps = normalizeTrace(rawCell(input, ok));
+	assert.deepEqual(steps.map((s) => `${s.action}:${s.note}`), ["run:unparsed command"]);
+	assert.ok(steps.every((s) => s.action !== "write"));
 });
