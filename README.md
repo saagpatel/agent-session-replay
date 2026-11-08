@@ -33,7 +33,7 @@ Run `pnpm check` before changing parser, detector, or action-rail behavior. Use 
 - Use the archive candidate helper to list existing local metadata archives without collecting or modifying them.
 - Compare two runs of the same task with Run Diff, for example one by Claude Code and one by Codex (see below).
 
-## Run Diff
+## Run Diff (experimental)
 
 On the drop screen, choose **Compare two runs of the same task**, load one transcript per lane, and press **Compare runs**. The two runs line up step by step like a code diff, and the fork that changed the outcome is highlighted with a one- or two-sentence explanation.
 
@@ -43,6 +43,15 @@ On the drop screen, choose **Compare two runs of the same task**, load one trans
 - **Verdict** (`run-diff.ts`): a run's end state comes from its last test run, from evidence only. It **passed** when that run exited cleanly *and* printed the test runner's passing summary, and a summary only counts when the test was the whole command (a leading `cd` aside). It **failed** when it exited with a failure or its summary reported failing tests. Anything in between (piped output, a missing result, no summary) is **unclear**. Runs without tests fall back to the harness completion signal; a test verdict and a completion verdict are never treated as different outcomes.
 
 Like the rest of the app, Run Diff parses in the browser and uploads nothing.
+
+### Known limits
+
+Run Diff is experimental. It reads results from evidence only, and anything the transcript does not prove is shown as unknown (a step) or unclear (a run's verdict), never guessed:
+
+- **Piped or chained tests are unclear.** A run passed only when its last test run exited cleanly *and* printed the runner's passing summary, with the test as the whole command. In `npm test | tail` or `npm test; git diff`, the exit status belongs to another command, so real agent runs often end unclear.
+- **Complex Codex cells are unknown.** An `exec` cell is read only when it is straight-line and each tool call prints its own result once. Branches, `Promise.all`, unprinted calls or extra prints make every call in that cell unknown.
+- **Unconfirmed patches and missing results are unknown.** A patch counts only when its own output confirms it applied. A call whose result never arrived, such as a cut-off run or a yielded command never polled, is unknown.
+- **Some shell forms are still read too literally.** These are tracked as an open issue: commands built by joining strings, targets clipped at 80 characters, writes in `;` chains reported as succeeded, piped non-test commands taking the last command's exit status, `sed --in-place`, and spaced redirect targets.
 
 ## Setup and checks
 

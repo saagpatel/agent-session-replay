@@ -2169,3 +2169,47 @@ body {
 .rd-callout--calm .rd-callout__head .label {
 	color: var(--accent);
 }
+
+/* Run Diff is experimental: say so wherever it appears. */
+.rd-experimental {
+	display: inline-block;
+	vertical-align: middle;
+	margin-left: 6px;
+	padding: 0 7px;
+	border: 1px solid color-mix(in srgb, var(--sev-warning) 55%, var(--line));
+	border-radius: 999px;
+	color: var(--sev-warning);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+.rd-limits {
+	margin: 0 0 10px;
+	font-size: 12px;
+	color: var(--muted);
+}
+.rd-limits summary {
+	cursor: pointer;
+	color: var(--faint);
+}
+.rd-limits summary:hover,
+.rd-limits summary:focus-visible {
+	color: var(--text);
+	outline: none;
+}
+.rd-limits summary .rd-experimental {
+	margin: 0 6px 0 0;
+}
+.rd-limits ul {
+	margin: 6px 0 0;
+	padding-left: 18px;
+	max-width: 110ch;
+}
+.rd-limits li {
+	margin: 2px 0;
+}
+.rd-limits code {
+	color: var(--accent);
+}
+

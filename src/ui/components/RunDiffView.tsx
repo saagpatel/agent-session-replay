@@ -27,6 +27,14 @@ const ACTION_VAR: Record<DiffAction, string> = {
 	other: "--faint",
 };
 
+/** What Run Diff marks unknown and why; mirrored in the README. */
+const KNOWN_LIMITS = [
+	"A run passed only when its last test run exited cleanly and printed the runner's passing summary. Piped or chained tests (`npm test | tail`, `npm test; git diff`) are unclear: the exit status belongs to another command.",
+	"Codex `exec` cells are read only when they are straight-line, with each tool call printing its own result once. Branches, `Promise.all`, unprinted calls or extra prints make every call in the cell unknown.",
+	"A patch counts as applied only when its own output confirms it. A tool call whose result never arrived, such as a cut-off run or a yielded command never polled, is unknown.",
+	"Some shell forms are still read too literally (string-built commands, long targets, piped non-test commands). They are tracked as an open issue.",
+];
+
 const VERDICT_TEXT: Record<RunVerdict, string> = {
 	passed: "tests passed",
 	failed: "tests failed",
@@ -164,6 +172,16 @@ export function RunDiffView({
 					) : null}
 				</div>
 				<p className="rd-callout__text">{withCode(diff.explanation)}</p>
+				<details className="rd-limits">
+					<summary>
+						<span className="rd-experimental">experimental</span> known limits
+					</summary>
+					<ul>
+						{KNOWN_LIMITS.map((l) => (
+							<li key={l}>{withCode(l)}</li>
+						))}
+					</ul>
+				</details>
 				<div className="rd-callout__foot">
 					{(flagged && !flagged.cosmetic ? flagged.reasons : []).map((r) => (
 						<span key={r} className="rd-reason">

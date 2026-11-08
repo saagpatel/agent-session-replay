@@ -132,6 +132,10 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(loader, /cc\.jsonl/);
+	// Run Diff is labelled experimental, with its known limits, on both screens.
+	assert.match(loader, /rd-experimental/);
+	assert.match(html, /rd-experimental/);
+	assert.match(html, /known limits/);
 
 	// Steps without a recorded result say so, reads included.
 	const unknownRead = diffRuns(

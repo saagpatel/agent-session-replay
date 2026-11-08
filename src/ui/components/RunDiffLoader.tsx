@@ -149,11 +149,17 @@ export function RunDiffLoader({
 	return (
 		<main className="drop rd-loader">
 			<div className="rd-loader__box">
-				<h2 className="drop__title">Run Diff</h2>
+				<h2 className="drop__title">
+					Run Diff <span className="rd-experimental">experimental</span>
+				</h2>
 				<p className="drop__desc">
 					Load two runs of the same task, say one by Claude Code and one by
 					Codex. They line up step by step like a code diff, and the fork that
 					changed the outcome gets flagged and explained.
+				</p>
+				<p className="drop__hint">
+					Results are read from evidence only. Steps whose result the
+					transcript does not prove show as <b>unclear</b>, never guessed.
 				</p>
 				<div className="rd-loader__slots">
 					<RunSlot
