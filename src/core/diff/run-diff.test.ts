@@ -871,3 +871,62 @@ test("an all-cosmetic diff points at where its first difference starts", () => {
 	assert.equal(diff.flagged?.cosmetic, true);
 	assert.match(diff.explanation, /^At row 1 Claude Code B read `README\.md`/);
 });
+
+// ---- review regressions, round 5 -------------------------------------------
+
+test("an edit with no recorded result cannot headline over a completed fork", () => {
+	const left = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [
+			{ name: "Bash", command: "npm run build" },
+			{ name: "Edit", file: "src/a.ts" },
+		]).filter((e) => e["uuid"] !== "r1"),
+	);
+	const right = parseClaudeCodeEvents(ccEvents(PROMPT, []));
+	const diff = diffRuns(left, right);
+	const pivot = diff.rows[diff.flagged?.pivotRow ?? -1];
+	assert.equal(pivot?.left?.signature, "run:npm run");
+	assert.ok(!diff.flagged?.reasons.includes("touches a file the other run never edits"));
+	assert.equal(
+		describeStep({ ...step("edit", "src/a.ts"), status: "unknown" }),
+		"tried to edit `src/a.ts` (no result recorded)",
+	);
+});
+
+test("file targets resolve against the command's working directory", () => {
+	const root = WORKSPACE_CODEX;
+	const at = (cmd: string, workdir?: string) =>
+		normalizeTrace(
+			plainCalls([{ name: "exec_command", args: { cmd, ...(workdir ? { workdir } : {}) }, output: "Process exited with code 0\nOutput:\nx" }]),
+		).map((s) => s.signature);
+	assert.deepEqual(at("cat src/a.ts", `${root}/packages/api`), ["read:packages/api/src/a.ts"]);
+	assert.deepEqual(at("cat src/a.ts", "packages/api"), ["read:packages/api/src/a.ts"]);
+	assert.deepEqual(at("cd packages/api && cat src/a.ts"), ["read:packages/api/src/a.ts"]);
+	assert.deepEqual(at("cat src/a.ts; cd packages/web; cat src/a.ts"), ["read:src/a.ts", "read:packages/web/src/a.ts"]);
+	assert.deepEqual(at("cd packages/api && cat ../web/src/a.ts > ../web/out.txt"), ["write:packages/web/out.txt"]);
+	assert.deepEqual(at("cat src/a.ts"), ["read:src/a.ts"]);
+	// An exec cell's static workdir argument counts too.
+	const cell = rawCell(
+		`text(await tools.exec_command({cmd:"cat src/a.ts", workdir:"${root}/packages/api"}));`,
+		parts("Script completed\n", JSON.stringify({ chunk_id: "1", exit_code: 0 })),
+	);
+	assert.deepEqual(normalizeTrace(cell).map((s) => s.signature), ["read:packages/api/src/a.ts"]);
+});
+
+test("git branch is a read only when it lists", () => {
+	assert.deepEqual(sig("git branch"), ["read:git branch"]);
+	assert.deepEqual(sig("git branch -a"), ["read:git branch"]);
+	assert.deepEqual(sig("git branch --show-current"), ["read:git branch"]);
+	assert.deepEqual(sig("git branch -D feature"), ["run:git branch"]);
+	assert.deepEqual(sig("git branch -m renamed"), ["run:git branch"]);
+	assert.deepEqual(sig("git branch new-work"), ["run:git branch"]);
+});
+
+test("only unquoted redirects write files", () => {
+	assert.deepEqual(sig('echo "==> Building"'), []);
+	assert.deepEqual(sig("printf 'a > b'"), []);
+	assert.deepEqual(sig('echo "x" > out.txt'), ["write:out.txt"]);
+	assert.deepEqual(sig("echo x >>log.txt"), ["write:log.txt"]);
+	assert.deepEqual(sig('echo "a | tee b"'), []);
+	assert.deepEqual(sig("npm run build | tee build.log"), ["run:npm run", "write:build.log"]);
+	assert.deepEqual(sig("npm test 2>&1 | tee test.log"), ["test:npm test", "write:test.log"]);
+});

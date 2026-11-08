@@ -143,17 +143,15 @@ export function rankDivergences(
 		}
 
 		// 3. Files only one run ever touches.
-		const exclusive = slice.some(
-			(r) =>
-				(r.left &&
-					(r.left.action === "edit" || r.left.action === "write") &&
-					r.left.target &&
-					!rightFiles.has(r.left.target)) ||
-				(r.right &&
-					(r.right.action === "edit" || r.right.action === "write") &&
-					r.right.target &&
-					!leftFiles.has(r.right.target)),
-		);
+		// Only edits with a recorded result count: an attempt with no result
+		// proves nothing was changed.
+		const changed = (x: DiffStep | null, other: Set<string>): boolean =>
+			x !== null &&
+			(x.action === "edit" || x.action === "write") &&
+			x.status !== "unknown" &&
+			x.target !== null &&
+			!other.has(x.target);
+		const exclusive = slice.some((r) => changed(r.left, rightFiles) || changed(r.right, leftFiles));
 		if (exclusive) {
 			score += 3;
 			reasons.push([3, "touches a file the other run never edits"]);
@@ -248,8 +246,11 @@ export function describeStep(s: DiffStep): string {
 			phrase = `called ${t}`;
 	}
 	phrase = phrase.trim();
-	if (s.status === "unknown")
+	if (s.status === "unknown") {
+		if (s.action === "edit" || s.action === "write")
+			return `tried to ${s.action === "write" ? "create" : "edit"} ${t} (no result recorded)`.replace(/\s+\(/, " (");
 		return s.action === "test" || s.action === "run" ? `${phrase}, with no clear result` : phrase;
+	}
 	if (isFailure(s.status)) return `${phrase}, which failed`;
 	if (s.action === "test") return `${phrase}, which passed`;
 	return phrase;

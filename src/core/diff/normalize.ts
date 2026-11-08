@@ -62,6 +62,40 @@ const NOISE_CMDS = new Set([
 	"which",
 	"date",
 ]);
+/** The file an unquoted `>`/`>>` redirect writes to, if any. */
+function redirectTarget(toks: Array<{ text: string; quoted: boolean }>): string | undefined {
+	for (let i = 0; i < toks.length; i++) {
+		const t = toks[i] as { text: string; quoted: boolean };
+		if (t.quoted) continue;
+		if (t.text === ">" || t.text === ">>") return toks[i + 1]?.text;
+		const glued = /^>>?([^&>].*)$/.exec(t.text);
+		if (glued) return glued[1];
+	}
+	return undefined;
+}
+
+/** `git branch` lists with no args or listing flags; anything else changes branches. */
+const BRANCH_LIST_FLAGS = new Set([
+	"-a",
+	"-r",
+	"-l",
+	"-v",
+	"-vv",
+	"--all",
+	"--remotes",
+	"--list",
+	"--show-current",
+	"--contains",
+	"--no-contains",
+	"--merged",
+	"--no-merged",
+	"--points-at",
+]);
+function branchMutates(args: string[]): boolean {
+	const first = args[0];
+	return first !== undefined && !BRANCH_LIST_FLAGS.has(first) && !first.startsWith("--sort") && !first.startsWith("--format");
+}
+
 /** Commands that write a file when their output is redirected into it. */
 const WRITE_CMDS = new Set(["cat", "printf", "echo"]);
 const GIT_READS = new Set([
@@ -113,21 +147,90 @@ export function relPath(path: string, cwd: string | null | undefined): string {
 
 /** Split a shell command into words, honoring simple quotes. Good enough for heads. */
 function words(cmd: string): string[] {
-	const out: string[] = [];
+	return tokens(cmd).map((t) => t.text);
+}
+
+/** Shell words, remembering which were quoted (and so are data, not syntax). */
+function tokens(cmd: string): Array<{ text: string; quoted: boolean }> {
+	const out: Array<{ text: string; quoted: boolean }> = [];
 	const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
 	let m: RegExpExecArray | null;
-	while ((m = re.exec(cmd)) !== null) out.push(m[1] ?? m[2] ?? m[3] ?? "");
+	while ((m = re.exec(cmd)) !== null)
+		out.push({ text: m[1] ?? m[2] ?? m[3] ?? "", quoted: m[3] === undefined });
 	return out;
 }
 
+/** Split a stage into pipeline commands on `|` outside quotes. */
+function pipeline(stage: string): string[] {
+	const out: string[] = [];
+	let quote: string | null = null;
+	let cur = "";
+	for (const ch of stage) {
+		if (quote) {
+			if (ch === quote) quote = null;
+		} else if (ch === '"' || ch === "'") {
+			quote = ch;
+		} else if (ch === "|") {
+			out.push(cur.trim());
+			cur = "";
+			continue;
+		}
+		cur += ch;
+	}
+	out.push(cur.trim());
+	return out;
+}
+
+/** Where a shell command runs: the workspace root and its effective directory. */
+interface Where {
+	root: string | null;
+	/** Absolute working directory, or null once a dynamic `cd` makes it unknown. */
+	dir: string | null;
+}
+
+/** Join and normalize an absolute directory with a relative path (`.`, `..`). */
+function joinPath(dir: string, rel: string): string {
+	const parts = dir.split("/").filter(Boolean);
+	for (const seg of rel.split("/")) {
+		if (!seg || seg === ".") continue;
+		if (seg === "..") parts.pop();
+		else parts.push(seg);
+	}
+	return `/${parts.join("/")}`;
+}
+
+/** The directory a `cd` argument leads to, or null when it is not static. */
+function cdTo(where: Where, arg: string | undefined): string | null {
+	if (!arg || /[$`~*]/.test(arg) || arg === "-") return null;
+	if (arg.startsWith("/")) return joinPath("/", arg);
+	return where.dir ? joinPath(where.dir, arg) : null;
+}
+
+/** A file argument made workspace-relative from where the command ran. */
+function resolveIn(file: string, where: Where): string {
+	const f = file.trim().replace(/^["']|["']$/g, "");
+	if (f.startsWith("/") || !where.dir) return relPath(f, where.root);
+	return relPath(joinPath(where.dir, f), where.root);
+}
+
+function whereFor(root: string | null | undefined, workdir: string | undefined): Where {
+	const base = root ?? null;
+	if (!workdir) return { root: base, dir: base };
+	const dir = workdir.startsWith("/") ? joinPath("/", workdir) : base ? joinPath(base, workdir) : null;
+	return { root: base, dir };
+}
+
 /** Drop `cd x &&`, env assignments and `bash -lc` wrappers to reach the real command. */
-function coreCommand(cmd: string): string {
+function coreCommand(cmd: string): { core: string; cds: string[] } {
 	let c = cmd.trim();
+	const cds: string[] = [];
 	const wrapped = /^(?:\/bin\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(c);
 	if (wrapped?.[2]) c = wrapped[2].trim();
 	for (;;) {
-		const cd = /^cd\s+\S+\s*(&&|;)\s*/.exec(c);
+		// A leading `cd dir &&` only sets where the rest runs.
+		const cd = /^cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*/.exec(c);
 		if (cd) {
+			cds.push((cd[1] as string).replace(/^["']|["']$/g, ""));
 			c = c.slice(cd[0].length);
 			continue;
 		}
@@ -138,7 +241,7 @@ function coreCommand(cmd: string): string {
 		}
 		break;
 	}
-	return c;
+	return { core: c, cds };
 }
 
 /** Path-looking arguments of a read command (`sed -n 1,80p src/a.ts` -> [src/a.ts]). */
@@ -167,37 +270,45 @@ interface Classified {
 }
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
-function classifyStage(
-	stage: string,
-	cwd: string | null | undefined,
-): Classified[] {
-	const first = (stage.split(/\s*\|\s*/)[0] ?? "").trim();
-	const ws = words(first).filter((w) => !/^\d*[<>]/.test(w));
+function classifyStage(stage: string, where: Where): Classified[] {
+	const base = classifyFirst(stage, where);
+	// `… | tee f` also writes f, after the command that feeds it.
+	const tee = pipeline(stage).slice(1).map((c) => words(c)).find((w) => w[0] === "tee");
+	const teeInto = tee?.slice(1).find((w) => !w.startsWith("-"));
+	if (teeInto && !teeInto.startsWith("/dev/"))
+		return [...base, { action: "write", target: resolveIn(teeInto, where) }];
+	return base;
+}
+
+/** Classify a stage by the first command of its pipeline. */
+function classifyFirst(stage: string, where: Where): Classified[] {
+	const cmds = pipeline(stage);
+	const first = cmds[0] ?? "";
+	const toks = tokens(first);
+	const ws = toks.filter((t) => t.quoted || !/^\d*[<>]/.test(t.text)).map((t) => t.text);
 	while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
 	const test = TEST_RE.exec(ws.join(" ").replace(RUNNER_PREFIX, ""));
 	if (test) {
 		// `pnpm run test` and `pnpm test` are one suite; `test:unit` is another.
 		const target = test[0].replace(/\s+run\s+/, " ").replace(/\s+/g, " ");
-		const piped = /\|(?!\|)/.test(stage.replace(/\|\|/g, ""));
+		const piped = cmds.length > 1;
 		return [piped ? { action: "test", target, piped } : { action: "test", target }];
 	}
 	const head = (ws[0] ?? "").replace(/^.*\//, "");
 	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
-	const into = WRITE_CMDS.has(head) ? /(?:^|[^\d&>])>>?\s*([^\s&|;<>]+)/.exec(first)?.[1] : undefined;
-	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: relPath(into, cwd) }];
-	const teeInto = /\|\s*tee\s+(?:-a\s+)?([^\s&|;<>-][^\s&|;<>]*)/.exec(stage)?.[1];
-	if (teeInto && !teeInto.startsWith("/dev/") && !TEST_RE.test(ws.join(" ")))
-		return [{ action: "write", target: relPath(teeInto, cwd) }];
+	// Only unquoted redirects count: `echo "==> Building"` writes nothing.
+	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
+	if (into && !into.startsWith("/dev/")) return [{ action: "write", target: resolveIn(into, where) }];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	if (READ_CMDS.has(head) && !/\s-i\b/.test(first)) {
 		const files = fileArgs(ws);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		return files
 			.slice(0, MAX_STAGES)
-			.map((f) => ({ action: "read" as const, target: relPath(f, cwd) }));
+			.map((f) => ({ action: "read" as const, target: resolveIn(f, where) }));
 	}
 	// Read-only git inspection is a read of repo state, not a command that changes it.
-	if (head === "git" && GIT_READS.has(ws[1] ?? ""))
+	if (head === "git" && GIT_READS.has(ws[1] ?? "") && !(ws[1] === "branch" && branchMutates(ws.slice(2))))
 		return [{ action: "read", target: `git ${ws[1]}` }];
 	// Searches align regardless of tool (rg vs Grep vs find).
 	if (SEARCH_CMDS.has(head)) return [{ action: "search", target: null, note: head }];
@@ -329,8 +440,14 @@ interface CommandParts {
  * `cat package.json; rg --files; npm test` is a read, a search and a test.
  * Every line counts; heredoc bodies are data, never commands.
  */
-function commandParts(cmd: string, cwd: string | null | undefined): CommandParts {
-	const core = coreCommand(cmd);
+function commandParts(
+	cmd: string,
+	root: string | null | undefined,
+	workdir?: string,
+): CommandParts {
+	const { core, cds } = coreCommand(cmd);
+	const where = whereFor(root, workdir);
+	for (const cd of cds) where.dir = cdTo(where, cd);
 	const { stages: raw, seps } = splitWithSeps(core);
 	// Shell control flow (`if npm test; then …`) decides what ran by itself, so
 	// such scripts never hand their exit status to one stage.
@@ -340,7 +457,10 @@ function commandParts(cmd: string, cwd: string | null | undefined): CommandParts
 	const parts: Classified[] = [];
 	stages.forEach((stage, i) => {
 		const last = i === stages.length - 1;
-		for (const c of classifyStage(stage, cwd)) parts.push(last ? c : { ...c, last });
+		// A later `cd` moves where the following stages run.
+		const w = words(stage);
+		if (w[0] === "cd") where.dir = cdTo(where, w[1]);
+		for (const c of classifyStage(stage, where)) parts.push(last ? c : { ...c, last });
 	});
 	// Every separator counts, including those around dropped stages: the
 	// `|| true` in `false && npm test || true` decides what the exit status means.
@@ -518,7 +638,8 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			: plain;
 		if (tool === "exec_command") {
 			const cmd = literalArg(body, "cmd");
-			if (cmd.value !== undefined) out.push({ ...commandParts(cmd.value, cwd), ...res });
+			const workdir = literalArg(body, "workdir").value;
+			if (cmd.value !== undefined) out.push({ ...commandParts(cmd.value, cwd, workdir), ...res });
 			// A command we cannot read statically still happened: keep it, unresolved.
 			else out.push({ parts: [{ action: "run", target: null, note: "unparsed command" }], chain: "single", ...res });
 		} else if (tool === "write_stdin") {
@@ -613,7 +734,9 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			}
 			const cmd = commandOf(args);
 			if (cmd !== undefined) {
-				const { parts, chain } = commandParts(cmd, cwd);
+				const workdir =
+					str(args["workdir"]) ?? str(args["working_directory"]) ?? str(args["cwd"]);
+				const { parts, chain } = commandParts(cmd, cwd, workdir);
 				return [{ parts, chain, ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
