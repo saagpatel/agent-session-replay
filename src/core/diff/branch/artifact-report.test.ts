@@ -19,10 +19,11 @@ test("fixture reports preserve step provenance and artifact claims fail closed",
 		const labels = JSON.parse(await readFile(join(dir, `${slug}.labels.json`), "utf8"));
 		const repo = JSON.parse(await readFile(join(dir, "repos", `${labels.repo}.json`), "utf8"));
 		const raw = await readFile(join(dir, file), "utf8");
-		const graph = buildBranchGraph(labels.harness === "codex" ? parseCodexTranscript(raw) : parseClaudeCodeTranscript(raw), repo.commits[0].files);
+		const trace = labels.harness === "codex" ? parseCodexTranscript(raw) : parseClaudeCodeTranscript(raw);
+		const graph = buildBranchGraph(trace, repo.commits[0].files);
 		const check = checkArtifacts(graph, repo);
-		const report = branchReport(graph, check);
-		const ids = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim].map((step) => step.id);
+		const report = branchReport(graph, check, trace);
+		const ids = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim, ...report.control].map((step) => step.id);
 		assert.equal(new Set(ids).size, ids.length, slug);
 		assert.deepEqual(new Set(ids), new Set(graph.nodes.map((node) => node.stepId)), slug);
 		assert.equal(check.claim.status, labels.artifact.link, `${slug}: artifact link`);
@@ -45,18 +46,20 @@ test("the dense fixture keeps control steps and all dead ends visible", async ()
 	const repo = JSON.parse(await readFile(join(dir, "repos", `${labels.repo}.json`), "utf8"));
 	const trace = parseClaudeCodeTranscript(await readFile(join(dir, `${slug}.jsonl`), "utf8"));
 	const graph = buildBranchGraph(trace, repo.commits[0].files);
-	const report = branchReport(graph, checkArtifacts(graph, repo));
+	const report = branchReport(graph, checkArtifacts(graph, repo), trace);
 	const rendered = renderBranchReport(report, { dense: true });
 	assert.ok(rendered.split("\n").every((line) => line.length < 120));
 	assert.ok(!rendered.includes("toolu_"));
 	const orderedIds = [...new Set(graph.nodes.map((node) => node.stepId))];
 	for (const step of report.retained) assert.ok(rendered.includes(`#${orderedIds.indexOf(step.id) + 1} `));
 	const dropped = rendered.split("Attempted and dropped\n")[1]!.split("\nUnknown")[0]!.split("\n");
-	assert.equal(dropped.filter((line) => line.includes("superseded edit to src/value.ts")).length, 11);
-	assert.equal(dropped.filter((line) => line.includes("backtrack on src/value.ts")).length, 12);
-	for (const branch of report.abandoned) for (const step of branch.steps)
-		assert.ok(dropped.some((line) => line.includes(`(#${orderedIds.indexOf(step.id) + 1})`)));
-	assert.ok(rendered.startsWith("Retained 29 · Dropped 23 (11 superseded, 12 backtrack) · Unknown 0 · Commit 3a6790b resolved\n"));
+	assert.deepEqual(dropped, [
+		"11 superseded edits to src/value.ts (#2–#22 (11 steps)), each replaced by the next",
+		"12 backtracks on src/value.ts (#24–#46 (12 steps)), each restored by the next edit",
+	]);
+	assert.equal(report.control.length, 27);
+	assert.ok(rendered.includes("Control steps: 27 — not work, listed in the JSON report"));
+	assert.ok(rendered.startsWith("Retained 3 · Dropped 23 (11 superseded, 12 backtrack) · Unknown 0 · Control 27 · Commit 3a6790b resolved\n"));
 });
 
 test("a partially surviving payload is partial in the artifact check, never wholly dropped", () => {
@@ -86,7 +89,7 @@ test("a partially surviving payload is partial in the artifact check, never whol
 	const check = checkArtifacts(graph, repo);
 	assert.equal(check.claim.status, "resolved");
 	assert.deepEqual(check.effects.map((effect) => effect.status), ["partial", "retained"]);
-	const report = branchReport(graph, check);
+	const report = branchReport(graph, check, trace);
 	assert.deepEqual(report.unknown.map((step) => step.id), ["first"]);
 	assert.deepEqual(report.retained.map((step) => step.id), ["second", "commit"]);
 	assert.deepEqual(report.abandoned, []);
