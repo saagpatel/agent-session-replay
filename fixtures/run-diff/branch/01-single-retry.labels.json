@@ -1,6 +1,12 @@
 {
   "repo": "single-retry",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0"

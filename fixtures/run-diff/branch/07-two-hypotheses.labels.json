@@ -1,6 +1,18 @@
 {
   "repo": "two-hypotheses",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_2",
+      "toolu_3"
+    ],
+    "abandoned": [
+      "toolu_0",
+      "toolu_1"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0",

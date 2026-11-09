@@ -1,6 +1,17 @@
 {
   "repo": "retry-nested-backtrack",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_3"
+    ],
+    "abandoned": [
+      "toolu_0",
+      "toolu_2"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0",

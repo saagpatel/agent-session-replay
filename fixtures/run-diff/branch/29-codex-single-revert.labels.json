@@ -1,6 +1,14 @@
 {
   "repo": "codex-single-revert",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [
+      "call_0"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "call_0"
