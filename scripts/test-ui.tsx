@@ -287,6 +287,21 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(branchHtml, /rd-branch-drop__count">1 step/);
 	assert.match(branchHtml, /Repeated signature after failed or unknown attempt/);
 	assert.match(branchHtml, /<details class="rd-branch-drop" open="">/);
+	const controls = {
+		...retry,
+		steps: [
+			{ ...retry.steps[0]!, step_id: "control-llm", kind: "llm" as const },
+			{ ...retry.steps[0]!, step_id: "control-decision", kind: "decision" as const },
+			...retry.steps.filter((step) => step.kind === "tool_call"),
+		],
+	};
+	const controlHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(controls, controls)} leftFile="a" rightFile="b" leftTrace={controls} rightTrace={controls} mode="preservation" />,
+	);
+	for (const controlLane of controlHtml.split('<section class="rd-branch__lane"').slice(1)) {
+		assert.match(controlLane, /<details><summary>Control steps: 2 \(llm turns, decisions, …\), not work<\/summary><ol><li>#1 other<\/li><li>#2 other<\/li><\/ol><\/details>/);
+	}
+	assert.equal(controlHtml.split('<section class="rd-branch__lane"').length - 1, 2);
 
 	const shellWrite = parseTranscript(toJsonl(ccEvents("write", [{ name: "Bash", command: "echo hello > src/a.ts" }]))).trace;
 	const shellWriteHtml = renderToStaticMarkup(
