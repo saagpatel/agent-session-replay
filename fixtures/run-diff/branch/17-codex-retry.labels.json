@@ -1,0 +1,17 @@
+{
+  "repo": "codex-retry",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [
+      "call_0"
+    ],
+    "retained": [
+      "call_1",
+      "call_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "8e2911a"
+  },
+  "notes": "Codex rollout: failing test repeated successfully."
+}

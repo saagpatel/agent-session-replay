@@ -1,0 +1,17 @@
+{
+  "repo": "stash-backtrack",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0"
+    ],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "aaf4094"
+  },
+  "notes": "Stash is a backtrack signal after an edit."
+}

@@ -1,0 +1,17 @@
+{
+  "repo": "checkout-restore",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0"
+    ],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "420816d"
+  },
+  "notes": "A checkout restores the named file."
+}
