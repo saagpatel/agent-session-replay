@@ -53,6 +53,17 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	const looksLikeStep = (id: string) => stepFamilies.some((family) =>
 		family.test(id) && trace.steps.some((step) => family.test(step.step_id)),
 	);
+	const resultEventSteps = new Map<string, Set<string>>();
+	for (const step of trace.steps) {
+		const uuids = step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS];
+		if (!Array.isArray(uuids)) continue;
+		for (const uuid of uuids) {
+			if (typeof uuid !== "string" || !uuid) continue;
+			const contributors = resultEventSteps.get(uuid) ?? new Set<string>();
+			contributors.add(step.step_id);
+			resultEventSteps.set(uuid, contributors);
+		}
+	}
 	const add = (from: string, to: string, kind: EdgeKind, evidence: string) => {
 		if (!steps.has(from) || !steps.has(to)) {
 			const external = kind === "parent" && (externalParents.has(from) || !looksLikeStep(from));
@@ -75,7 +86,14 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	};
 
 	for (const step of trace.steps) {
-		if (step.parent_step_id) add(step.parent_step_id, step.step_id, "parent", "parent_step_id");
+		if (step.parent_step_id) {
+			const contributors = !steps.has(step.parent_step_id) && resultEventSteps.get(step.parent_step_id);
+			if (contributors) {
+				for (const id of contributors) add(id, step.step_id, "parent", "result-event");
+			} else {
+				add(step.parent_step_id, step.step_id, "parent", "parent_step_id");
+			}
+		}
 		if (step.caused_by) add(step.caused_by, step.step_id, "caused-by", "caused_by");
 	}
 

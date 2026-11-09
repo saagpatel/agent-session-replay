@@ -197,6 +197,12 @@ function mergeResult(
 ): void {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
 	if (!step) return;
+	const eventUuid = str(ev["uuid"]);
+	if (eventUuid) {
+		const uuids = (step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] ?? []) as string[];
+		if (!uuids.includes(eventUuid)) uuids.push(eventUuid);
+		step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] = uuids;
+	}
 	const result = asObj(ev["toolUseResult"]);
 	let status: StepStatus = "ok";
 	if (result["interrupted"]) status = "interrupted";

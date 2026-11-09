@@ -843,7 +843,7 @@ test("unresolved barriers retain all earlier writes even across tests and overwr
 	for (const to of ["later-test", "later-read"]) assert.ok(happensBefore(graph, "unknown", to));
 });
 
-test("a normal parsed Claude user-assistant-tool exchange exports faithfully with external parents", () => {
+test("a parsed Claude result-event parent requires the tool before the response", () => {
 	const trace = parseClaudeCodeTranscript([
 		{ type: "user", uuid: "u", sessionId: "synthetic-run", cwd: "/work/project", message: { content: "Read the file." } },
 		{ type: "assistant", uuid: "a", parentUuid: "u", message: { content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "src/a.ts" } }] } },
@@ -851,13 +851,48 @@ test("a normal parsed Claude user-assistant-tool exchange exports faithfully wit
 		{ type: "assistant", uuid: "done", parentUuid: "result-event", message: { content: [{ type: "text", text: "Read completed." }] } },
 	].map((event) => JSON.stringify(event)).join("\n"));
 	assert.equal(trace.steps.length, 3);
+	assert.deepEqual(trace.steps.find((step) => step.step_id === "toolu_read")!.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["result-event"]);
+	const reversed = validateExport(oneScene(trace, ["a", "done", "toolu_read"]), trace);
+	assert.equal(reversed.ok, false);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order"));
 	const result = validateExport(oneScene(trace, trace.steps.map((step) => step.step_id)), trace);
 	assert.equal(result.ok, true);
 	assert.deepEqual(result.failures, []);
 	assert.ok(result.warnings.every((warning) => warning.reason === "external-parent"));
-	assert.equal(buildCausalGraph(trace).edges.length, 0);
+	assert.deepEqual(buildCausalGraph(trace).edges, [
+		{ from: "toolu_read", to: "done", kind: "parent", evidence: "result-event" },
+	]);
 	const toolOnly = validateExport(oneScene(trace, ["toolu_read"]), trace);
 	assert.equal(toolOnly.ok, true);
+});
+
+test("parsed Claude result events retain every contributing tool and distinct result UUID", () => {
+	const readResult = { type: "tool_result", tool_use_id: "toolu_read", content: "synthetic content" };
+	const trace = parseClaudeCodeTranscript([
+		{ type: "assistant", uuid: "a", message: { content: [
+			{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "src/a.ts" } },
+			{ type: "tool_use", id: "toolu_other", name: "Read", input: { file_path: "src/b.ts" } },
+		] } },
+		{ type: "user", uuid: "batch-result", message: { content: [readResult, readResult,
+			{ type: "tool_result", tool_use_id: "toolu_other", content: "other synthetic content" },
+		] } },
+		{ type: "assistant", uuid: "batch-done", parentUuid: "batch-result", message: { content: "Files read." } },
+		{ type: "user", uuid: "later-result", message: { content: [readResult] } },
+		{ type: "assistant", uuid: "done", parentUuid: "later-result", message: { content: "Read completed." } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.deepEqual(trace.steps.find((step) => step.step_id === "toolu_read")!.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["batch-result", "later-result"]);
+	assert.deepEqual(trace.steps.find((step) => step.step_id === "toolu_other")!.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["batch-result"]);
+	assert.deepEqual(buildCausalGraph(trace).edges, [
+		{ from: "toolu_read", to: "batch-done", kind: "parent", evidence: "result-event" },
+		{ from: "toolu_other", to: "batch-done", kind: "parent", evidence: "result-event" },
+		{ from: "toolu_read", to: "done", kind: "parent", evidence: "result-event" },
+	]);
+	assert.equal(validateExport(oneScene(trace, trace.steps.map((step) => step.step_id)), trace).ok, true);
+	for (const lateTool of ["toolu_read", "toolu_other"]) {
+		const playback = trace.steps.map((step) => step.step_id).filter((id) => id !== lateTool);
+		playback.push(lateTool);
+		assert.ok(validateExport(oneScene(trace, playback), trace).failures.some((failure) => failure.reason === "reversed-causal-order"), lateTool);
+	}
 });
 
 test("absent parents matching the trace's tool-use ID family remain dangling", () => {
