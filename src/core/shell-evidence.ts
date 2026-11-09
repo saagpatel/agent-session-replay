@@ -7,6 +7,10 @@ export type ShellEvidence = {
 	command: string;
 	paths?: string[];
 	staged?: boolean;
+	/** Defined only for literal staging forms whose coverage is known. */
+	stagePaths?: string[];
+	/** Undefined for pathspec commits or unsupported commit options. */
+	commitWorktree?: boolean;
 };
 
 /** Literal words only: no shell control, expansion, redirects or assignments. */
@@ -55,6 +59,20 @@ const path = (s: string) => s.length > 0 && !s.startsWith("-");
 // Git interprets pathspec syntax even after the shell removes quotes.
 const literalPath = (s: string) => path(s) && !s.startsWith(":") && !/[*?\[]/.test(s);
 
+function commitWorktree(args: string[]): boolean | undefined {
+	let all = false;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]!;
+		if (arg === "-a" || arg === "--all") all = true;
+		else if (["-m", "--message", "-am"].includes(arg)) {
+			if (args[++i] === undefined) return undefined;
+			if (arg === "-am") all = true;
+		} else if (arg.startsWith("--message=")) continue;
+		else if (arg !== "--allow-empty") return undefined;
+	}
+	return all;
+}
+
 export function shellEvidence(command: string): ShellEvidence | null {
 	const tokens = words(command, true);
 	if (!tokens) return null;
@@ -83,9 +101,14 @@ export function shellEvidence(command: string): ShellEvidence | null {
 			if (paths.length && paths.every(literalPath)) return result("restore", paths);
 		}
 		if ((verb === "stash" && (rest.length === 0 || (rest.length === 1 && rest[0] === "push"))) || (verb === "reset" && rest.length === 1 && rest[0] === "--hard")) return result("whole-restore");
-		if (verb === "add") return result("add");
+		if (verb === "add") {
+			const paths = rest[0] === "--" ? rest.slice(1) : rest;
+			const stagePaths = rest.length === 1 && ["-A", "--all"].includes(rest[0]!)
+				? ["."] : paths.length && paths.every(literalPath) ? paths : undefined;
+			return { ...result("add"), ...(stagePaths ? { stagePaths } : {}) };
+		}
 		if (verb === "mv" && rest.length === 2 && rest.every(literalPath)) return result("move", rest);
-		if (verb === "commit") return result("commit");
+		if (verb === "commit") return { ...result("commit"), commitWorktree: commitWorktree(rest) };
 		return null;
 	}
 	if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd ?? "")) return null;

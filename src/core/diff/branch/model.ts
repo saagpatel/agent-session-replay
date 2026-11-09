@@ -29,6 +29,8 @@ const ref = (n: NodeRef): NodeRef => ({ stepId: n.stepId, part: n.part });
 const key = (n: NodeRef): string => JSON.stringify([n.stepId, n.part]);
 interface Operation {
 	node: BranchNode;
+	started_at: string;
+	ended_at?: string | null;
 	args: Json;
 	name: string;
 	command?: string;
@@ -85,6 +87,8 @@ function operations(trace: Trace): Operation[] {
 			out.push({
 				name,
 				args,
+				started_at: step.started_at,
+				ended_at: step.ended_at,
 				directory,
 				...extra,
 				node: {
@@ -226,14 +230,69 @@ function operations(trace: Trace): Operation[] {
 	return out;
 }
 
+/** Paths whose worktree or staging provenance an operation may change. */
+function mutationPaths(op: Operation, trace: Trace): string[] | null {
+	const resolve = (path: string) => lineagePath(path, trace.run.workspace?.cwd, op.directory);
+	if (op.unparsed) return null;
+	if (op.patch !== undefined || ["Edit", "MultiEdit", "Write", "write_file"].includes(op.name)) {
+		const move = /^\*\*\* Move to: (.+)$/m.exec(op.patch ?? "")?.[1];
+		const paths = [op.node.target, ...(move ? [resolve(move)] : [])];
+		return paths.every((path): path is string => path !== null && path !== undefined) ? paths : null;
+	}
+	if (["restore", "move", "add"].includes(op.evidence?.kind ?? "")) {
+		const paths = op.evidence?.kind === "add" ? op.evidence.stagePaths : op.evidence?.paths;
+		if (!paths) return null;
+		const resolved = paths.map(resolve);
+		return resolved.every((path): path is string => path !== null) ? resolved : null;
+	}
+	if (op.evidence?.kind === "whole-restore") return null;
+	return [];
+}
+
+const covers = (parent: string, path: string) =>
+	parent === "." || path === parent || path.startsWith(`${parent}/`);
+
+/** Invalidate at the first conflicting operation, including a commit before a later-starting write. */
+function intervalConflicts(ops: Operation[], paths: string[], trace: Trace): Map<number, Set<string>> {
+	const conflicts = new Map<number, Set<string>>();
+	const histories = new Map<string, Operation[]>();
+	for (const op of ops) {
+		const mutation = mutationPaths(op, trace);
+		const commit = op.evidence?.kind === "commit";
+		const affected = commit || mutation === null ? paths : paths.filter((path) => mutation.some((p) => covers(p, path)));
+		for (const path of affected) {
+			const history = histories.get(path) ?? [];
+			for (const prior of history) {
+				// Parts of a MultiEdit, patch, literal shell chain or awaited exec cell are ordered by syntax.
+				if (prior.node.stepId === op.node.stepId || (commit && prior.evidence?.kind === "commit")) continue;
+				const start = Date.parse(op.started_at);
+				const priorEnd = Date.parse(prior.ended_at ?? "");
+				if (Number.isFinite(start) && Number.isFinite(priorEnd) &&
+					Date.parse(prior.started_at) <= priorEnd && priorEnd < start) continue;
+				const at = prior.node.index;
+				const unknown = conflicts.get(at) ?? new Set<string>();
+				unknown.add(path);
+				conflicts.set(at, unknown);
+			}
+			history.push(op);
+			histories.set(path, history);
+		}
+	}
+	return conflicts;
+}
+
 /** Track character origins, not matching substrings in the final file. */
 export function buildBranchGraph(
 	trace: Trace,
 	base: FileSnapshot,
 ): BranchGraph {
 	const ops = operations(trace);
+	const paths = [...new Set([...Object.keys(base), ...ops.flatMap((op) => mutationPaths(op, trace) ?? [])])];
+	const conflicts = intervalConflicts(ops, paths, trace);
 	const files = new Map<string, FileState>();
 	const unknown = new Set<string>();
+	// Only a proven stage after the last mutation makes the index agree with the worktree.
+	const staged = new Set<string>(Object.keys(base));
 	for (const [file, text] of Object.entries(base)) {
 		if (text === null) unknown.add(file);
 		else
@@ -489,6 +548,11 @@ export function buildBranchGraph(
 	};
 	for (const op of ops) {
 		const { node, name } = op;
+		for (const path of conflicts.get(node.index) ?? []) invalidate(path);
+		const mutation = mutationPaths(op, trace);
+		if (op.evidence?.kind !== "add")
+			for (const path of paths)
+				if (mutation === null || mutation.some((p) => covers(p, path))) staged.delete(path);
 		const file = node.target;
 		const before = file ? files.get(file)?.text : undefined;
 		const beforeOwners = file ? (files.get(file)?.owners ?? []) : [];
@@ -584,7 +648,12 @@ export function buildBranchGraph(
 					touched.add(destination);
 					indexChanged = true;
 				}
-			} else if (evidence?.kind === "add") indexChanged = true;
+			} else if (evidence?.kind === "add") {
+				indexChanged = true;
+				if (!evidence.stagePaths || node.status !== "ok") staged.clear();
+				else for (const path of paths)
+					if (mutation?.some((p) => covers(p, path))) staged.add(path);
+			}
 		} else if (!READ_TOOLS.has(name)) {
 			unparsedReasons.add(`Unparsed writer: ${name || "unknown tool"}.`);
 			invalidateTree();
@@ -611,13 +680,17 @@ export function buildBranchGraph(
 		if (typeof git["short"] === "string" && !claimedSteps.has(node.stepId) &&
 			op.evidence?.kind === "commit" && !op.unparsed && node.status === "ok" &&
 			(op.call === undefined || op.call === step?.attributes[ATTR.GIT_COMMIT_CALL])) {
+			const boundaryUnknown = new Set(unknown);
+			for (const path of new Set([...files.keys(), ...touched]))
+				if (op.evidence.commitWorktree === undefined ||
+					(!op.evidence.commitWorktree && !staged.has(path))) boundaryUnknown.add(path);
 			claim = {
 				commitShort: git["short"],
 				stepId: node.stepId,
 				part: node.part,
 				tree: Object.fromEntries([
 					...[...files].map(([path, state]) => [path, { text: state.text, owners: [...state.owners] }]),
-					...[...unknown].map((path) => [path, null]),
+					...[...boundaryUnknown].map((path) => [path, null]),
 				]),
 				files: [...touched].sort(),
 			};

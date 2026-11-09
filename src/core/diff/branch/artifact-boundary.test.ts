@@ -17,7 +17,12 @@ const edit = (id: string, old_string: string, new_string: string) => tool(id, "E
 const trace = (steps: Step[]): Trace => ({
 	plumbline_version: "0.1.0",
 	run: { run_id: "synthetic", harness: { name: "fixture" }, started_at: "2026-01-01T00:00:00Z", workspace: { cwd: "/work/fixture" } },
-	steps,
+	// These helpers describe sequential calls; concurrency tests supply explicit intervals.
+	steps: steps.map((step, index) => ({
+		...step,
+		started_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString(),
+		ended_at: step.ended_at == null ? step.ended_at : new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2 + 1)).toISOString(),
+	})),
 });
 function artifact(base: string, committed: Record<string, string>) {
 	const repo = { commits: [{ parent: null, message: "synthetic artifact", files: committed }] };

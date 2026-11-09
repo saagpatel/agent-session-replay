@@ -64,14 +64,15 @@ test("a partially surviving payload is partial in the artifact check, never whol
 	const steps: Step[] = [
 		["first", "base", "left right"],
 		["second", "left", "next"],
-	].map(([id, old_string, new_string]) => ({
+	].map(([id, old_string, new_string], index) => ({
 		step_id: id!, kind: "tool_call", status: "ok",
-		started_at: "2026-01-01T00:00:00Z", ended_at: "2026-01-01T00:00:01Z",
+		started_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString(),
+		ended_at: new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2 + 1)).toISOString(),
 		attributes: { [ATTR.TOOL_NAME]: "Edit", [ATTR.TOOL_ARGS]: { file_path: "src/value.ts", old_string, new_string } },
 	}));
 	steps.push({
 		step_id: "commit", kind: "tool_call", status: "ok",
-		started_at: "2026-01-01T00:00:02Z", ended_at: "2026-01-01T00:00:03Z",
+		started_at: "2026-01-01T00:00:04Z", ended_at: "2026-01-01T00:00:05Z",
 		attributes: { [ATTR.TOOL_NAME]: "Bash", [ATTR.TOOL_ARGS]: { command: "git commit -am partial" }, [ATTR.GIT_COMMIT]: { short: sha.slice(0, 7) } },
 	});
 	const trace: Trace = {
