@@ -756,11 +756,11 @@ export function literalExecCalls(input: string): Array<{
 	// Unsupported JS escapes must never turn executable shell syntax into data.
 	const literal = (text: string): string | undefined => {
 		const t = text.trim();
-		if (t.startsWith('"')) {
-			try { const v: unknown = JSON.parse(t); return typeof v === "string" ? v : undefined; }
-			catch { return undefined; }
+		for (let i = 0; i < t.length; i++) {
+			if (t[i] !== "\\") continue;
+			const escaped = t[++i];
+			if (escaped === undefined || !"\\'\"`ntr0$/".includes(escaped) || (escaped === "0" && /\d/.test(t[i + 1] ?? ""))) return undefined;
 		}
-		if (/\\(?![\\'"`ntr])/.test(t)) return undefined;
 		return soleLiteral(t);
 	};
 	const masked = maskCode(input);
