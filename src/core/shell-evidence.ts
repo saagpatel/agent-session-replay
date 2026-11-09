@@ -88,11 +88,11 @@ function commitWorktree(args: string[]): boolean | undefined {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i]!;
 		if (arg === "-a" || arg === "--all") all = true;
-		else if (["-m", "--message", "-am"].includes(arg)) {
+		else if (["-m", "-am"].includes(arg)) {
 			if (args[++i] === undefined) return undefined;
 			if (arg === "-am") all = true;
-		} else if (arg.startsWith("--message=")) continue;
-		else if (arg !== "--allow-empty") return undefined;
+		} else if (arg.startsWith("--message=") || (arg.startsWith("-m") && arg.length > 2)) continue;
+		else if (!["--allow-empty", "-q", "--quiet"].includes(arg)) return undefined;
 	}
 	return all;
 }
@@ -105,7 +105,7 @@ export function shellEvidence(command: string): ShellEvidence | null {
 		if (parsed.some((token, i) => token.kind === "op" && i !== chain) || chain < 3) return null;
 		const first = parsed.slice(0, chain).map((token) => token.text);
 		const last = parsed.slice(chain + 1).map((token) => token.text);
-		if (first[0] !== "git" || first[1] !== "add" || last[0] !== "git" || last[1] !== "commit") return null;
+		if (first[0] !== "git" || first[1] !== "add" || last[0] !== "git" || last[1] !== "commit" || commitWorktree(last.slice(2)) === undefined) return null;
 		return { kind: "commit", command, staged: true };
 	}
 	const tokens = parsed.map((token) => token.text);
@@ -133,7 +133,10 @@ export function shellEvidence(command: string): ShellEvidence | null {
 			return { ...result("add"), ...(stagePaths ? { stagePaths } : {}) };
 		}
 		if (verb === "mv" && rest.length === 2 && rest.every(literalPath)) return result("move", rest);
-		if (verb === "commit") return { ...result("commit"), commitWorktree: commitWorktree(rest) };
+		if (verb === "commit") {
+			const worktree = commitWorktree(rest);
+			return worktree === undefined ? null : { ...result("commit"), commitWorktree: worktree };
+		}
 		return null;
 	}
 	if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd ?? "")) return null;

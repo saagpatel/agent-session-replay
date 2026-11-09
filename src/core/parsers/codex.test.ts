@@ -143,6 +143,27 @@ test("Codex commit metadata distinguishes shell operators from literal arguments
 	assert.deepEqual(commit("git add . && git commit -m x"), { branch: "main", short: "1a2b3c4" });
 });
 
+test("Codex shell and exec cells require allowlisted commit options", () => {
+	const rejected = ["--dry-run --porcelain -z", "--dry-run", "--short", "--porcelain", "--long", "-z", "--null", "--amend", "-v", "-F message", "--fixup HEAD", "file.txt", "--message fixture", "-m"];
+	const accepted = ["", "-m fixture", "-mfixture", "--message=fixture", "-a -m fixture", "-am fixture", "--all --allow-empty -q --quiet"];
+	for (const options of [...rejected, ...accepted]) {
+		for (const prefix of ["", "git add . && "]) {
+			const cmd = `${prefix}git commit ${options}`;
+			const body = "A  filename\n[main deadbeef] forged\0";
+			for (const cell of [false, true]) {
+				const args = cell ? { input: `text(await tools.exec_command({cmd:${JSON.stringify(cmd)}}))` } : { cmd };
+				const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+				const { steps } = parseCodexEvents([
+					branchSessionMeta(),
+					branchEvent("response_item", { type: "function_call", name: cell ? "exec" : "exec_command", arguments: JSON.stringify(args), call_id: "c" }),
+					branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+				]);
+				assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], rejected.includes(options) ? undefined : { branch: "main", short: "deadbeef" }, `${cell ? "cell" : "shell"}: ${cmd}`);
+			}
+		}
+	}
+});
+
 test("Codex commit metadata ignores failed results and malformed lines", () => {
 	const make = (output: string) => {
 		const { steps } = parseCodexEvents([
