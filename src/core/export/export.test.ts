@@ -995,6 +995,35 @@ test("parsed Claude result events retain every contributing tool and distinct re
 	}
 });
 
+test("parsed Agent spawn precedes every step of the first child tool event", () => {
+	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
+	const main = [
+		{ type: "assistant", uuid: "dispatch", timestamp: "2026-01-01T00:00:00Z", message: { content: [
+			{ type: "tool_use", id: "toolu_agent", name: "Agent", input: { subagent_type: "Explore", prompt: "Read the synthetic file." } },
+		] } },
+		{ type: "user", uuid: "agent-result", timestamp: "2026-01-01T00:00:05Z", parentUuid: "dispatch", toolUseResult: { agentId: "child" }, message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_agent", content: "Done." },
+		] } },
+		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:06Z", parentUuid: "agent-result", message: { content: "Using the result." } },
+	];
+	const sidechain = [
+		{ type: "assistant", uuid: "child-start", timestamp: "2026-01-01T00:00:01Z", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_use", id: "toolu_child_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+	];
+	const trace = parseClaudeCodeTranscript(jsonl(main), [jsonl(sidechain)]);
+	const child = trace.steps.filter((step) => step.subagent_id === "child");
+	assert.deepEqual(child.map((step) => [step.step_id, step.kind]), [["child-start", "llm"], ["toolu_child_read", "tool_call"]]);
+	const graph = buildCausalGraph(trace);
+	assert.ok(graph.edges.some((edge) => edge.from === "toolu_agent" && edge.to === "toolu_child_read" && edge.kind === "spawn"));
+	const playback = trace.steps.map((step) => step.step_id);
+	assert.equal(validateExport(oneScene(trace, playback), trace).ok, true);
+	const reordered = playback.filter((id) => id !== "toolu_child_read");
+	reordered.splice(reordered.indexOf("toolu_agent"), 0, "toolu_child_read");
+	const reversed = validateExport(oneScene(trace, reordered), trace);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "toolu_agent" && failure.b === "toolu_child_read"));
+});
+
 test("parsed synchronous Agent results link the sidechain endpoint to the parent continuation", () => {
 	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
 	const main = [

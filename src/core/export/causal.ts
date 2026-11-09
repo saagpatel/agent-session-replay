@@ -124,7 +124,7 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			});
 			continue;
 		}
-		add(spawn.step_id, chain[0]!.step_id, "spawn", ATTR.AGENT_SPAWNS);
+		for (const step of chain) add(spawn.step_id, step.step_id, "spawn", ATTR.AGENT_SPAWNS);
 		const last = chain.at(-1)!;
 		const lastIndex = indices.get(last.step_id)!;
 		const referencesResult = (step: Step) => Boolean(step.parent_step_id &&
