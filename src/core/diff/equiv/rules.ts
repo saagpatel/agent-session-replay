@@ -8,7 +8,7 @@ export const RULES: ReadonlyArray<{
 }> = [
 	{
 		id: "read-coalesce",
-		description: "Allowlist only: structured Read/read_file with known keys, or an entire literal sed -n 'N,Mp' file, sed -n 'Np' file, head -n N file, or cat file (plain command or exact sh/bash/zsh -c/-lc argv). Union successful overlapping/adjacent ranges of one file across commuting events. Whole-file-or-unknown reads require identical evidence. Unsupported sources are global barriers and make comparison incomplete.",
+		description: "Allowlist only: structured Read/read_file with known keys, or an entire literal sed -n 'N,Mp' file, sed -n 'Np' file, head -n N file, or cat file (plain command or exact sh/bash/zsh -c/-lc argv). Union successful overlapping/adjacent ranges of one file only across other reads/searches. Whole-file-or-unknown reads require identical evidence. Unsupported sources are global barriers and make comparison incomplete.",
 		example: "read a:1-10, read b:1-5, read a:11-20 => read a:1-20, read b:1-5",
 	},
 	{
@@ -24,19 +24,11 @@ export const RULES: ReadonlyArray<{
 ];
 
 const observes = (e: CanonicalEvent) => e.action === "read" || e.action === "search";
-const fileMutation = (e: CanonicalEvent) => e.action === "edit" || e.action === "write";
-
 /**
- * The sole order guard. Observations commute; two mutators never do. A known,
- * successful file edit can commute only with a read of a distinct known file.
- * Search scope is conservatively global (a directory search can see any file).
- * Tests, runs, delegates, blocked/unknown commands and unknown-status mutations
- * are global barriers. Other actions also stay in their recorded order.
+ * The sole order guard. Only observations commute: lexical paths cannot prove
+ * that a mutation targets a different file, and search scope can be global.
+ * All other actions stay in their recorded order.
  */
 export function canCommute(a: CanonicalEvent, b: CanonicalEvent): boolean {
-	if (observes(a) && observes(b)) return true;
-	const read = observes(a) ? a : observes(b) ? b : null;
-	const mutation = read === a ? b : a;
-	return read?.action === "read" && fileMutation(mutation) && mutation.status === "ok" &&
-		read.target !== null && mutation.target !== null && read.target !== mutation.target;
+	return observes(a) && observes(b);
 }

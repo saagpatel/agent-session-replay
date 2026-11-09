@@ -225,7 +225,7 @@ test("align --order: reads and tests never cross an edit of the observed file", 
 	for (const barrier of [shell("node build.js"), shell("pnpm test"), edit("a", "b"), edit("a", "b", "b.ts", "unknown"), ["Mystery", {}] as Tool, ["Agent", { prompt: "inspect" }] as Tool]) {
 		assert.equal(normalized(trace([read(1, 10), barrier, read(11, 10)])).events.length, 3);
 	}
-	assert.equal(normalized(trace([read(1, 10), edit("a", "b", "b.ts"), read(11, 10)])).events.length, 2);
+	assert.equal(normalized(trace([read(1, 10), edit("a", "b", "b.ts"), read(11, 10)])).events.length, 3);
 	for (const barrier of [read(1, 10), shell("pnpm test"), shell("node build.js"), edit("a", "b", "b.ts")]) {
 		assert.equal(normalized(trace([edit("a", "b"), barrier, edit("b", "c")])).events.length, 3);
 	}
@@ -300,7 +300,7 @@ test("multi-file sed ranges are not independent per-file reads", () => {
 	assert.equal(alignEquivalent(trace([shell("sed -n '1,5p' a.ts")]), trace([read(1, 5)])).equivalent, true);
 });
 
-test("shell reads use full lexical file identities before commuting across edits", () => {
+test("shell reads retain lexical file identities and never commute across edits", () => {
 	for (const [command, path] of [
 		["cat /work/external/shared/a.ts", "/work/external/shared/a.ts"],
 		["cat /work/equiv/src/../a.ts", "/work/equiv/a.ts"],
@@ -316,7 +316,7 @@ test("shell reads use full lexical file identities before commuting across edits
 		assert.equal(n.incomplete, false, command);
 	}
 	const distinct = trace([shell("cat a.ts"), edit("a", "b", "b.ts"), shell("cat a.ts")]);
-	assert.equal(normalized(distinct).events.length, 2);
+	assert.equal(normalized(distinct).events.length, 3);
 	// Unsupported shell file forms have no recovered identity, so every edit
 	// remains a barrier even when Run Diff retained a plausible display target.
 	const unlocated = trace([shell("tail a.ts"), edit("a", "b"), shell("tail a.ts")]);
@@ -333,6 +333,15 @@ test("shell reads use full lexical file identities before commuting across edits
 		assert.equal(normalized(left).events[0]?.target, null);
 		assert.equal(alignEquivalent(left, right).equivalent, false, name);
 	}
+});
+
+test("possible symlink aliases keep reads on opposite sides of a mutation distinct", () => {
+	// A transcript cannot rule out alias.ts being a symlink to a.ts.
+	const interleaved = trace([read(1, 10, "alias.ts"), edit("a", "b"), read(1, 10, "alias.ts")]);
+	const before = trace([read(1, 10, "alias.ts"), read(1, 10, "alias.ts"), edit("a", "b")]);
+	const result = alignEquivalent(interleaved, before);
+	assert.equal(result.equivalent, false);
+	assert.equal(result.left.events.length, 3);
 });
 
 test("normalizer cap metadata covers all read commands and stripped prefixes", () => {
@@ -397,12 +406,7 @@ test("canCommute exhaustive action/status/target matrix is symmetric", () => {
 							const b = event(ba, bt, bs);
 							const observations = ["read", "search"];
 							const bothReadOnly = observations.includes(aa) && observations.includes(ba);
-							const distinct = at !== null && bt !== null && at !== bt;
-							const readAndKnownFileEdit = distinct && (
-								(aa === "read" && ["edit", "write"].includes(ba) && bs === "ok") ||
-								(ba === "read" && ["edit", "write"].includes(aa) && as === "ok")
-							);
-							assert.equal(canCommute(a, b), bothReadOnly || readAndKnownFileEdit, `${aa}/${as}/${at}, ${ba}/${bs}/${bt}`);
+							assert.equal(canCommute(a, b), bothReadOnly, `${aa}/${as}/${at}, ${ba}/${bs}/${bt}`);
 							assert.equal(canCommute(a, b), canCommute(b, a));
 						}
 					}
