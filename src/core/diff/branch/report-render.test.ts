@@ -123,3 +123,40 @@ test("dense long targets are clipped before the step range and explanation", () 
 	assert.ok(rendered.includes("… (#8–#9), each restored by the next edit"));
 	assert.ok(rendered.split("\n").every((line) => line.length < 120));
 });
+
+test("a twelve-step retry branch represents every step at every report width in both modes", () => {
+	const report = denseReport();
+	report.abandoned = [{
+		branchId: "retry-long", kind: "retry", fork: null, rejoin: "kept",
+		reason: "Synthetic retry.",
+		steps: Array.from({ length: 12 }, (_, index) => step(`retry-${index}`, index)),
+	}, ...report.abandoned.slice(0, 6)];
+	report.abandoned.slice(1).forEach((branch, index) => {
+		branch.steps = [step(`tail-${index}`, index + 12)];
+	});
+	report.retained = [step("kept", 18)];
+	for (const dense of [false, true]) for (const width of [20, 40, 80, 119]) {
+		const rendered = renderBranchReport(report, { dense, width });
+		assert.ok(rendered.includes("#1–#12"), `${dense}, ${width}: ${rendered}`);
+		assert.ok(rendered.split("\n").every((line) => line.length <= width));
+		// Dense file groups also keep their ranges at the minimum width.
+		if (dense) assert.ok(rendered.includes("#13–#18"));
+	}
+});
+
+test("nonconsecutive dropped steps wrap ranges without including intervening retained steps", () => {
+	const report = denseReport();
+	report.abandoned = [{
+		branchId: "retry-gaps", kind: "retry", fork: null, rejoin: null,
+		reason: "Synthetic retry.",
+		steps: Array.from({ length: 12 }, (_, index) => step(`dropped-${index}`, index * 2)),
+	}];
+	report.retained = Array.from({ length: 12 }, (_, index) => step(`kept-${index}`, index * 2 + 1));
+	for (const dense of [false, true]) {
+		const rendered = renderBranchReport(report, { dense, width: 20 });
+		const lines = rendered.split("\n");
+		const dropped = lines.slice(lines.findIndex((line) => line.startsWith("  retry")) + 1, lines.indexOf("Unknown")).join("\n");
+		assert.deepEqual([...dropped.matchAll(/#(\d+)/g)].map((match) => Number(match[1])), Array.from({ length: 12 }, (_, index) => index * 2 + 1));
+		assert.ok(rendered.split("\n").every((line) => line.length <= 20));
+	}
+});

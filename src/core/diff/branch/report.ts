@@ -77,6 +77,25 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 	add("Attempted and dropped");
 	const dense = options.dense && report.abandoned.length > 6;
 	const branchSteps = (branch: BranchReport["abandoned"][number]) => branch.steps.map((step) => numbers.get(step.id)!).filter((number, index, all) => all.indexOf(number) === index).sort((a, b) => a - b);
+	const addStepRanges = (steps: number[]) => {
+		const ranges: string[] = [];
+		for (let i = 0; i < steps.length;) {
+			const first = steps[i]!;
+			let last = first;
+			while (steps[i + 1] === last + 1) last = steps[++i]!;
+			ranges.push(first === last ? `#${first}` : `#${first}–#${last}`);
+			i++;
+		}
+		let line = "  ";
+		for (const range of ranges) {
+			if (line.length > 2 && line.length + range.length + 2 > width) {
+				lines.push(line);
+				line = "  ";
+			}
+			line += `${line.length > 2 ? ", " : ""}${range}`;
+		}
+		if (line.length > 2) lines.push(line);
+	};
 	const consecutiveSteps = (branch: BranchReport["abandoned"][number]) => {
 		const steps = branchSteps(branch);
 		return steps.length > 0 && steps.every((number, offset) => offset === 0 || number === steps[offset - 1]! + 1);
@@ -125,11 +144,22 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 			const count = branch.kind === "backtrack" ? `${steps.length} ${steps.length === 1 ? "backtrack" : "backtracks"}` : plural(steps.length, kind, "superseded edits");
 			const prefix = `${count} ${relation} `;
 			const suffix = ` (${range}), each ${verb}`;
-			add(`${prefix}${shortTarget(target, width - prefix.length - suffix.length)}${suffix}`);
+			const summary = `${prefix}${shortTarget(target, width - prefix.length - suffix.length)}${suffix}`;
+			if (summary.length <= width) add(summary);
+			else {
+				add(`${prefix}${shortTarget(target)}`);
+				addStepRanges(stepNumbers);
+				add(`  each ${verb}`);
+			}
 			index += group.length;
 		} else {
 			const labels = branch.steps.map(label).join(", ");
-			add(`  ${branch.kind} · ${plural(branch.steps.length, "step")} · ${labels}`);
+			const summary = `  ${branch.kind} · ${plural(branch.steps.length, "step")} · ${labels}`;
+			if (clean(summary).length <= width) add(summary);
+			else {
+				add(`  ${branch.kind} · ${plural(branch.steps.length, "step")}`);
+				addStepRanges(branchSteps(branch));
+			}
 			index++;
 		}
 	}
