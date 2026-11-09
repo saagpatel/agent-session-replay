@@ -713,6 +713,82 @@ test("allowlisted arguments cannot overwrite a blocked source classification", (
 	assert.ok(n.incompleteReasons.includes("unsupported-source"));
 });
 
+test("parsed Claude Agent calls are incomplete even against themselves and never use agent-type keys", () => {
+	const delegated = (prompt: string) => {
+		const t = parseClaudeCodeEvents([
+			{
+				type: "assistant", uuid: "delegate-call", timestamp: "2026-10-01T00:00:00Z", cwd: "/work/equiv",
+				message: { role: "assistant", content: [{
+					type: "tool_use", id: "delegate", name: "Agent", input: { subagent_type: "general-purpose", prompt },
+				}] },
+			},
+			{
+				type: "user", uuid: "delegate-result", timestamp: "2026-10-01T00:00:01Z", cwd: "/work/equiv",
+				message: { role: "user", content: [{ type: "tool_result", tool_use_id: "delegate", content: "ok" }] },
+			},
+		]);
+		cases.push(t);
+		return t;
+	};
+	const left = delegated("Read src/a.ts");
+	const right = delegated("Rewrite src/b.ts");
+	assert.equal(left.steps.find((step) => step.step_id === "delegate")?.kind, "agent");
+	assert.equal(normalizeTrace(left)[0]?.status, "ok");
+	assert.equal(normalizeTrace(left)[0]?.signature, "delegate:general-purpose");
+	assert.equal(normalizeTrace(right)[0]?.signature, normalizeTrace(left)[0]?.signature);
+	for (const other of [right, left]) {
+		const result = alignEquivalent(left, other);
+		assert.equal(result.incomplete, true);
+		assert.equal(result.equivalent, false);
+		assert.ok(result.incompleteReasons.includes("unsupported-delegate"));
+		assert.notEqual(result.left.events[0]?.key, result.left.steps[0]?.signature);
+		assert.equal(result.left.events[0]?.action, "other");
+	}
+	const interleaved = trace([read(1, 5), read(6, 5)]);
+	interleaved.steps.splice(1, 0, left.steps.find((step) => step.step_id === "delegate") as Step);
+	assert.deepEqual(normalized(interleaved).events.map((event) => event.members), [[0], [1], [2]]);
+});
+
+test("every retained non-tool source is unsupported and a global order barrier", () => {
+	for (const kind of ["agent", "compaction", "hook"] as const) {
+		const t = trace([read(1, 5), read(6, 5), read(11, 5)]);
+		const source = t.steps[1] as Step;
+		source.kind = kind;
+		source.attributes[ATTR.AGENT_TYPE] = "general-purpose";
+		source.attributes[ATTR.HOOK_VERDICT] = "deny";
+		const result = alignEquivalent(t, t);
+		assert.equal(result.incomplete, true, kind);
+		assert.equal(result.equivalent, false, kind);
+		assert.ok(result.incompleteReasons.includes(kind === "agent" ? "unsupported-delegate" : "unsupported-source"), kind);
+		assert.equal(result.left.events[1]?.action, "other", kind);
+		assert.deepEqual(result.left.events.map((event) => event.members), [[0], [1], [2]], kind);
+	}
+});
+
+test("retained steps without allowlist evidence cannot bypass incomplete accounting", () => {
+	const t = trace([read(1, 5), read(6, 5), read(11, 5)]);
+	const steps = normalizeTrace(t);
+	for (const kind of ["llm", "decision", "memory", "mode_change", "tool_call"] as const) {
+		const source = t.steps[1] as Step;
+		source.kind = kind;
+		source.attributes = { [ATTR.TOOL_NAME]: "write_stdin", [ATTR.TOOL_ARGS]: { session_id: 1, chars: "" } };
+		// Direct callers can supply retained steps even for normally omitted sources.
+		const n = normalizeEquivalent(steps, new Map(t.steps.map((step) => [step.step_id, step])), "/work/equiv");
+		assert.equal(n.incomplete, true, kind);
+		assert.ok(n.incompleteReasons.includes("unsupported-source"), kind);
+		assert.equal(n.events[1]?.action, "other", kind);
+		assert.notEqual(n.events[1]?.key, steps[1]?.signature, kind);
+		assert.deepEqual(n.events.map((event) => event.members), [[0], [1], [2]], kind);
+	}
+	const source = t.steps[1] as Step;
+	source.attributes = { [ATTR.TOOL_NAME]: "Read", [ATTR.TOOL_ARGS]: { file_path: "/work/equiv/a.ts", offset: 6, limit: 5 } };
+	source.subagent_id = "synthetic-sidechain";
+	const n = normalizeEquivalent(steps, new Map(t.steps.map((step) => [step.step_id, step])), "/work/equiv");
+	assert.equal(n.incomplete, true);
+	assert.equal(n.events[1]?.action, "other");
+	assert.equal(n.events.length, 3);
+});
+
 test("expand round-trips every synthetic case and every existing fixture builder variant", () => {
 	const cc = ccEvents("Inspect the synthetic module", [
 		{ name: "Read", file: "src/a.ts" }, { name: "Edit", file: "src/a.ts" }, { name: "Write", file: "src/b.ts" },

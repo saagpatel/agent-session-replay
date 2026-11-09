@@ -276,7 +276,6 @@ export function normalizeEquivalent(
 	const evidenceBySource = new Map<string, Evidence>();
 	const edits = new Map<string, Replacement[]>();
 	const reasons = new Set<string>();
-	const opaqueSources = new Set<string>();
 	const normalizedRuns = new Set<string>();
 	const segments = new Map<string, number>();
 	let segment = 0;
@@ -309,7 +308,6 @@ export function normalizeEquivalent(
 			// `run` is also the base normalizer's catch-all for arbitrary shell
 			// syntax (awk, xargs, wrappers). Keep its signature, but do not treat
 			// that classification alone as proof of supported source coverage.
-			opaqueSources.add(id);
 			reasons.add("unsupported-source");
 			if (members.length === 0) segment++;
 		}
@@ -319,14 +317,20 @@ export function normalizeEquivalent(
 		segments.get(a.memberStepIds[0] as string) === segments.get(b.memberStepIds[0] as string);
 	const events = steps.map((step, index): CanonicalEvent => {
 		const source = sources.get(step.stepId);
-		if (!source) reasons.add("missing-source");
 		const allowed = evidenceBySource.get(step.stepId);
-		const opaque = !source || opaqueSources.has(step.stepId) && !normalizedRuns.has(step.stepId);
+		const delegate = step.action === "delegate";
+		// Every retained member needs evidence, including non-tool/sidechain
+		// sources skipped above and polls that normally produce no DiffSteps.
+		if (!allowed) reasons.add(!source ? "missing-source" : delegate ? "unsupported-delegate" : "unsupported-source");
+		const opaque = !allowed && !normalizedRuns.has(step.stepId);
 		const action = opaque ? "other" : allowed?.action ?? step.action;
 		if ((action === "read" || action === "edit" || action === "write") && allowed?.target === null) reasons.add("unclassified-step");
 		if (["edit", "write", "test", "run", "delegate", "blocked"].includes(action) && step.status === "unknown") reasons.add("unknown-mutator-status");
 		const evidence: Evidence = opaque
-			? { target: null, range: null, key: key("unsupported-source", step.signature, source?.attributes, grouped.get(step.stepId)?.indexOf(step)) }
+			? { target: null, range: null, key: delegate
+				// Retain a position, never an agent-type signature as work evidence.
+				? key("unsupported-delegate", index)
+				: key("unsupported-source", step.signature, source?.attributes, grouped.get(step.stepId)?.indexOf(step)) }
 			: allowed ?? { key: step.signature };
 		const id = `event-${index}`;
 		if (evidence.edit && step.status === "ok") edits.set(id, evidence.edit);
