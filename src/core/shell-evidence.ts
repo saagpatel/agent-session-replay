@@ -13,9 +13,11 @@ export type ShellEvidence = {
 	commitWorktree?: boolean;
 };
 
-/** Literal words only: no shell control, expansion, redirects or assignments. */
-function words(command: string, allowChain = false): string[] | null {
-	const out: string[] = [];
+type Token = { kind: "word" | "op"; text: string };
+
+/** Literal words and optional && operators; no other shell control or expansion. */
+function words(command: string, allowChain = false): Token[] | null {
+	const out: Token[] = [];
 	let word = "";
 	let started = false;
 	let quote = "";
@@ -30,18 +32,18 @@ function words(command: string, allowChain = false): string[] | null {
 			}
 		} else if (c === "'" || c === '"') { quote = c; started = true; }
 		else if (/\s/.test(c)) {
-			if (started) out.push(word);
+			if (started) out.push({ kind: "word", text: word });
 			word = ""; started = false;
 		} else if (allowChain && command.slice(i, i + 2) === "&&") {
-			if (started) out.push(word);
-			out.push("&&"); word = ""; started = false; i++;
+			if (started) out.push({ kind: "word", text: word });
+			out.push({ kind: "op", text: "&&" }); word = ""; started = false; i++;
 		} else {
 			if (/[|;&<>$`\\(){}*?\[\]~#]/.test(c)) return null;
 			word += c; started = true;
 		}
 	}
 	if (quote) return null;
-	if (started) out.push(word);
+	if (started) out.push({ kind: "word", text: word });
 	return out.length ? out : null;
 }
 
@@ -96,17 +98,18 @@ function commitWorktree(args: string[]): boolean | undefined {
 }
 
 export function shellEvidence(command: string): ShellEvidence | null {
-	const tokens = words(command, true);
-	if (!tokens) return null;
-	if (tokens.length === 3 && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(tokens[0]!) && /^-l?c$/.test(tokens[1]!)) return shellEvidence(tokens[2]!);
-	const chain = tokens.indexOf("&&");
+	const parsed = words(command, true);
+	if (!parsed) return null;
+	const chain = parsed.findIndex((token) => token.kind === "op");
 	if (chain >= 0) {
-		if (tokens.lastIndexOf("&&") !== chain || chain < 3) return null;
-		const first = tokens.slice(0, chain);
-		const last = tokens.slice(chain + 1);
+		if (parsed.some((token, i) => token.kind === "op" && i !== chain) || chain < 3) return null;
+		const first = parsed.slice(0, chain).map((token) => token.text);
+		const last = parsed.slice(chain + 1).map((token) => token.text);
 		if (first[0] !== "git" || first[1] !== "add" || last[0] !== "git" || last[1] !== "commit") return null;
 		return { kind: "commit", command, staged: true };
 	}
+	const tokens = parsed.map((token) => token.text);
+	if (tokens.length === 3 && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(tokens[0]!) && /^-l?c$/.test(tokens[1]!)) return shellEvidence(tokens[2]!);
 	const [cmd, ...args] = tokens;
 	const result = (kind: ShellEvidence["kind"], paths?: string[]): ShellEvidence => ({ kind, command, ...(paths ? { paths } : {}) });
 	if (cmd === "cat" && args.length === 1 && path(args[0]!)) return result("read");

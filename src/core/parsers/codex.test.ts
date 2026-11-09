@@ -128,6 +128,21 @@ test("successful Codex shell output records only its first anchored git commit",
 	});
 });
 
+test("Codex commit metadata distinguishes shell operators from literal arguments", () => {
+	const commit = (cmd: string | string[]) => {
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd }), call_id: "c-commit" }),
+			branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output: "Process exited with code 0\nOutput:\n[main 1a2b3c4] diagnostic" }),
+		]);
+		return byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT];
+	};
+	assert.equal(commit("git add . '&&' git commit -m x"), undefined);
+	assert.equal(commit('git add . "&&" git commit -m x'), undefined);
+	assert.equal(commit(["git", "add", ".", "&&", "git", "commit", "-m", "x"]), undefined);
+	assert.deepEqual(commit("git add . && git commit -m x"), { branch: "main", short: "1a2b3c4" });
+});
+
 test("Codex commit metadata ignores failed results and malformed lines", () => {
 	const make = (output: string) => {
 		const { steps } = parseCodexEvents([
