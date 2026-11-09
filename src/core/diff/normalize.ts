@@ -742,6 +742,82 @@ function exactLiteralArg(body: string, key: string | null): { found: boolean; va
 	return { found: true, value };
 }
 
+/** Literal, straight-line calls for branch reconstruction and commit evidence.
+ * This stricter reader does not change Run Diff's normalization contract.
+ */
+export function literalExecCalls(input: string): Array<{
+	name: string;
+	command?: string;
+	workdir?: string;
+	patch?: string;
+	path?: string;
+	content?: string;
+	args?: Record<string, string | undefined>;
+}> | null {
+	// maskCode only ends line comments at LF; reject other JS line terminators.
+	if (/[\r\u2028\u2029]/.test(input)) return null;
+	// Unsupported JS escapes must never turn executable shell syntax into data.
+	const literal = (text: string): string | undefined => {
+		const t = text.trim();
+		for (let i = 0; i < t.length; i++) {
+			if (t[i] !== "\\") continue;
+			const escaped = t[++i];
+			if (escaped === undefined || !"\\'\"`ntr0$/".includes(escaped) || (escaped === "0" && /\d/.test(t[i + 1] ?? ""))) return undefined;
+		}
+		return soleLiteral(t);
+	};
+	const masked = maskCode(input);
+	const out: NonNullable<ReturnType<typeof literalExecCalls>> = [];
+	let offset = 0;
+	while (masked.slice(offset).trim()) {
+		const start = /^\s*(?:text\s*\(\s*await\s+|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+)tools\.([A-Za-z0-9_]+)\s*\(/.exec(masked.slice(offset));
+		if (!start) return null;
+		const open = offset + start[0].length - 1;
+		let end = open + 1;
+		let depth = 1;
+		for (; end < masked.length && depth; end++) {
+			if (masked[end] === "(") depth++;
+			if (masked[end] === ")") depth--;
+		}
+		if (depth) return null;
+		const tail = start[1]
+			? new RegExp(String.raw`^\s*;\s*text\s*\(\s*${start[1].replaceAll("$", "\\$")}\s*\)\s*;?`)
+			: /^\s*\)\s*;?/;
+		const finish = tail.exec(masked.slice(end));
+		if (!finish) return null;
+		const body = input.slice(open - 1, end);
+		const name = start[2]!;
+		if (name === "apply_patch") {
+			const patch = literal(callArgs(body, maskCode(body))?.text ?? "");
+			if (patch === undefined) return null;
+			out.push({ name, patch });
+		} else {
+			const args = callArgs(body, maskCode(body));
+			if (!args) return null;
+			const text = args.text.trim();
+			if (!text.startsWith("{") || !text.endsWith("}")) return null;
+			const inner = text.slice(1, -1);
+			const values = new Map<string, string | undefined>();
+			for (const [a, b] of topLevelRanges(maskCode(inner))) {
+				const prop = /^\s*(?:([A-Za-z_$][\w$]*)|(["'])([A-Za-z_$][\w$]*)\2)\s*:\s*([\s\S]*)$/.exec(inner.slice(a, b));
+				const key = prop?.[1] ?? prop?.[3];
+				if (!prop || !key || values.has(key)) return null;
+				const raw = prop[4]!.trim();
+				const value = literal(raw);
+				if (value === undefined && !/^(?:true|false|null|-?\d+(?:\.\d+)?)$/.test(raw)) return null;
+				values.set(key, value);
+			}
+			const workdir = values.get("workdir");
+			if (values.has("workdir") && workdir === undefined) return null;
+			const command = values.get("cmd");
+			if (name === "exec_command" && command === undefined) return null;
+			out.push({ name, command, workdir, path: values.get("path") ?? values.get("file_path"), content: values.get("content"), args: Object.fromEntries(values) });
+		}
+		offset = end + finish[0].length;
+	}
+	return out.length ? out : null;
+}
+
 /**
  * One unit of work with its own result: a shell command (possibly several
  * stages), a single tool call, or one call inside a Codex `exec` cell.

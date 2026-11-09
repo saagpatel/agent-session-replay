@@ -16,6 +16,7 @@
  * `tool.result.kind` taxonomy are kept compatible on purpose.
  */
 
+import { commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
@@ -221,6 +222,15 @@ function mergeResult(
 	}
 	if (result["staleReadFileStateHint"]) step.attributes[ATTR.STALE_READ] = true;
 	const output = resultText(block["content"]) ?? str(result["stdout"]);
+	const successful =
+		step.status === "ok" &&
+		(typeof result["exitCode"] !== "number" || result["exitCode"] === 0);
+	const commitMatch =
+		successful && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]), str(step.attributes[ATTR.TOOL_NAME]) ?? "")
+			? output && commitHeader(output)
+			: null;
+	if (commitMatch && !step.attributes[ATTR.GIT_COMMIT])
+		step.attributes[ATTR.GIT_COMMIT] = commitMatch;
 	if (output && hasTestFailures(output))
 		step.attributes[ATTR.TEST_FAILURES] = true;
 	else if (output && hasTestPasses(output))
