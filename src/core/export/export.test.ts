@@ -1097,7 +1097,10 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 		{ type: "user", uuid: "agent-result", timestamp: "2026-01-01T00:00:05Z", parentUuid: "dispatch", toolUseResult: { agentId: "child" }, message: { content: [
 			{ type: "tool_result", tool_use_id: "toolu_agent", content: "Synthetic inspection completed." },
 		] } },
-		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:06Z", parentUuid: "agent-result", message: { content: "Using the inspection result." } },
+		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:06Z", parentUuid: "agent-result", message: { content: [
+			{ type: "text", text: "Using the inspection result." },
+			{ type: "tool_use", id: "toolu_continue", name: "Read", input: { file_path: "/work/project/src/b.ts" } },
+		] } },
 	];
 	const sidechain = [
 		{ type: "assistant", uuid: "child-start", timestamp: "2026-01-01T00:00:01Z", isSidechain: true, agentId: "child", message: { content: "Inspecting." } },
@@ -1112,9 +1115,11 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 	const trace = parseClaudeCodeTranscript(jsonl(main), [jsonl(sidechain)]);
 	assert.deepEqual(trace.steps.find((step) => step.step_id === "toolu_agent")!.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["agent-result"]);
 	assert.equal(trace.steps.find((step) => step.step_id === "continuation")!.parent_step_id, "agent-result");
+	assert.equal(trace.steps.find((step) => step.step_id === "toolu_continue")!.parent_step_id, "agent-result");
 	const graph = buildCausalGraph(trace);
 	assert.deepEqual(graph.edges.filter((edge) => edge.kind === "consumer"), [
 		{ from: "child-done", to: "continuation", kind: "consumer", evidence: "parent references Agent result-event" },
+		{ from: "child-done", to: "toolu_continue", kind: "consumer", evidence: "parent references Agent result-event" },
 	]);
 	const playback = trace.steps.map((step) => step.step_id);
 	assert.equal(validateExport(oneScene(trace, playback), trace).ok, true);
@@ -1122,6 +1127,10 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 	reordered.splice(reordered.indexOf("child-done"), 0, "continuation");
 	const reversed = validateExport(oneScene(trace, reordered), trace);
 	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "child-done" && failure.b === "continuation"));
+	const toolBeforeChild = playback.filter((id) => id !== "toolu_continue");
+	toolBeforeChild.splice(toolBeforeChild.indexOf("child-done"), 0, "toolu_continue");
+	const reversedTool = validateExport(oneScene(trace, toolBeforeChild), trace);
+	assert.ok(reversedTool.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "child-done" && failure.b === "toolu_continue"));
 	// A launch receipt followed by a continuation before the sidechain ends
 	// does not establish consumption of the completed child result.
 	const background = structuredClone(main);

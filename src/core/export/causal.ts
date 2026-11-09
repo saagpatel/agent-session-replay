@@ -131,13 +131,14 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		const lastIndex = indices.get(last.step_id)!;
 		const referencesResult = (step: Step) => Boolean(step.parent_step_id &&
 			!steps.has(step.parent_step_id) && resultEventSteps.get(step.parent_step_id)?.has(spawn.step_id));
-		const consumer = trace.steps.find((step, index) =>
+		const candidates = trace.steps.filter((step, index) =>
 			index > lastIndex &&
 			(step.subagent_id ?? null) === (spawn.subagent_id ?? null) &&
 			(step.caused_by === last.step_id || step.parent_step_id === last.step_id || referencesResult(step)),
 		);
-		if (consumer) {
-			add(last.step_id, consumer.step_id, "consumer", referencesResult(consumer)
+		const consumers = candidates.filter((step, index) => index === 0 || referencesResult(step));
+		if (consumers.length) {
+			for (const consumer of consumers) add(last.step_id, consumer.step_id, "consumer", referencesResult(consumer)
 				? "parent references Agent result-event"
 				: "first later parent-context step explicitly referencing subagent endpoint");
 		} else {
