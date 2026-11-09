@@ -1,0 +1,104 @@
+{
+  "format": "traceglass-wait-analysis/0.1",
+  "trace_id": "wa-23-all-categories",
+  "origin": "synthetic",
+  "window_ns": [
+    0,
+    10000000
+  ],
+  "wall_clock_ns": 10000000,
+  "naive_span_sum_ns": 10000000,
+  "critical_path": [
+    {
+      "span_id": "work",
+      "bucket": "useful_execution",
+      "start_ns": 0,
+      "end_ns": 2000000
+    },
+    {
+      "span_id": "queue",
+      "bucket": "waiting_queue",
+      "start_ns": 2000000,
+      "end_ns": 4000000
+    },
+    {
+      "span_id": "tool",
+      "bucket": "waiting_tool",
+      "start_ns": 4000000,
+      "end_ns": 7000000
+    },
+    {
+      "span_id": "call",
+      "bucket": "waiting_nested",
+      "start_ns": 7000000,
+      "end_ns": 10000000
+    }
+  ],
+  "path_span_ids": [
+    "work",
+    "queue",
+    "tool",
+    "call"
+  ],
+  "totals_ns": {
+    "useful_execution": 2000000,
+    "waiting_tool": 3000000,
+    "waiting_queue": 2000000,
+    "waiting_nested": 3000000,
+    "unattributed": 0
+  },
+  "attributed_ns": 10000000,
+  "unattributed": [],
+  "declared_gap_overlaps": [],
+  "spans": [
+    {
+      "id": "work",
+      "parent_id": null,
+      "name": "work",
+      "category": "execution",
+      "start_ns": 0,
+      "end_ns": 2000000,
+      "depth": 0,
+      "on_critical_path": true,
+      "critical_ns": 2000000
+    },
+    {
+      "id": "queue",
+      "parent_id": null,
+      "name": "queue",
+      "category": "queue_wait",
+      "start_ns": 2000000,
+      "end_ns": 4000000,
+      "depth": 0,
+      "on_critical_path": true,
+      "critical_ns": 2000000
+    },
+    {
+      "id": "tool",
+      "parent_id": null,
+      "name": "tool",
+      "category": "tool_wait",
+      "start_ns": 4000000,
+      "end_ns": 7000000,
+      "depth": 0,
+      "on_critical_path": true,
+      "critical_ns": 3000000
+    },
+    {
+      "id": "call",
+      "parent_id": null,
+      "name": "call",
+      "category": "nested_call",
+      "start_ns": 7000000,
+      "end_ns": 10000000,
+      "depth": 0,
+      "on_critical_path": true,
+      "critical_ns": 3000000
+    }
+  ],
+  "limits": [
+    "Critical path follows the latest-finishing work; it does not prove causation.",
+    "Times are as recorded; the trace does not support wall-clock ordering claims beyond its own offsets."
+  ]
+}
+
