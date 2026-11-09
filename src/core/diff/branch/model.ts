@@ -569,6 +569,21 @@ export function buildBranchGraph(
 					!indexChanged
 				)
 					backtracks.push({ at: node, undone });
+			} else if (evidence?.kind === "move") {
+				const [source, destination] = (evidence.paths ?? []).map((path) => lineagePath(path, trace.run.workspace?.cwd, op.directory));
+				// Only a proven single-file move to an absent literal path preserves owners.
+				if (!source || !destination || source.startsWith("external:") || destination.startsWith("external:") ||
+					node.status !== "ok" || !endStateComplete || unknown.has(source) || unknown.has(destination) ||
+					!files.has(source) || files.has(destination) ||
+					[...files.keys(), ...unknown].some((path) => path.startsWith(`${destination}/`) || destination.startsWith(`${path}/`))) {
+					invalidateTree();
+				} else {
+					files.set(destination, files.get(source)!);
+					files.delete(source);
+					touched.add(source);
+					touched.add(destination);
+					indexChanged = true;
+				}
 			} else if (evidence?.kind === "add") indexChanged = true;
 		} else if (!READ_TOOLS.has(name)) {
 			unparsedReasons.add(`Unparsed writer: ${name || "unknown tool"}.`);

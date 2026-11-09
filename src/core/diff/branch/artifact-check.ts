@@ -25,21 +25,40 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 	const indices = new Map(graph.nodes.map((node) => [key(node), node.index]));
 	const afterClaim = (node: NodeRef) => boundary !== undefined && (indices.get(key(node)) ?? -1) > boundary.index;
 	const aligned = new Map<string, Map<string, number> | null>();
+	const ownedPaths = new Map<string, string[]>();
+	for (const [path, file] of Object.entries(graph.claim.tree ?? {})) {
+		for (const owner of new Set(file?.owners ?? [])) {
+			if (owner === null) continue;
+			const paths = ownedPaths.get(owner) ?? [];
+			paths.push(path);
+			ownedPaths.set(owner, paths);
+		}
+	}
 	const effects: ArtifactCheck["effects"] = graph.editEffects.map((effect) => {
 		const result = (status: ArtifactStatus, reason: string) => ({ node: effect.node, file: effect.file, status, reason });
 		if (afterClaim(effect.node)) return result("after-claim", "Edit made after the claimed commit.");
 		if (effect.file.startsWith("external:")) return result("unknown", "External paths cannot be attributed to repository commits.");
 		if (!commit) return result("unknown", `Commit claim ${status}.`);
-		const content = commit.files[effect.file];
-		if (content === undefined) return result("unknown", "File is absent from the commit.");
-		const file = graph.claim.tree?.[effect.file];
-		if (!boundary || !file) return result("unknown", "File lineage at the claimed commit is unknown or absent.");
+		if (!boundary || !graph.claim.tree) return result("unknown", "File lineage at the claimed commit is unknown or absent.");
 		const total = effect.introducedSpans.reduce((sum, span) => sum + span.text.length, 0);
 		if (!effect.payload || total === 0) return result("unknown", "Edit has no proven introduced spans.");
-		if (!aligned.has(effect.file)) aligned.set(effect.file, alignProvenance(file, content));
-		const origins = aligned.get(effect.file);
-		if (!origins) return result("unknown", "Committed content has ambiguous alignment or exceeds the text comparison limits.");
-		const retained = origins.get(key(effect.node)) ?? 0;
+		const owner = key(effect.node);
+		// Moves keep owners at their destination even if the original path is recreated.
+		const paths = ownedPaths.get(owner) ?? [effect.file];
+		let retained = 0;
+		for (const path of paths) {
+			if (path.startsWith("external:")) return result("unknown", "External paths cannot be attributed to repository commits.");
+			const file = graph.claim.tree[path];
+			if (!file) return result("unknown", "File lineage at the claimed commit is unknown or absent.");
+			const content = commit.files[path];
+			if (content === undefined) return result("unknown", "File is absent from the commit.");
+			if (!aligned.has(path)) aligned.set(path, alignProvenance(file, content));
+			const origins = aligned.get(path);
+			if (!origins) return result("unknown", "Committed content has ambiguous alignment or exceeds the text comparison limits.");
+			retained += origins.get(owner) ?? 0;
+		}
+		if (retained < total && Object.values(graph.claim.tree).some((file) => file === null))
+			return result("unknown", "Unknown boundary files may contain introduced spans.");
 		if (retained === 0) return result("abandoned", "No introduced spans align with the commit.");
 		if (retained < total) return result("partial", "Only part of the introduced spans aligns with the commit.");
 		return result("retained", "All introduced spans align with the commit.");

@@ -3,7 +3,7 @@ import { classifyCommand } from "./diff/normalize.ts";
 
 type Args = Record<string, unknown>;
 export type ShellEvidence = {
-	kind: "read" | "restore" | "whole-restore" | "add" | "commit";
+	kind: "read" | "restore" | "whole-restore" | "add" | "commit" | "move";
 	command: string;
 	paths?: string[];
 	staged?: boolean;
@@ -84,6 +84,7 @@ export function shellEvidence(command: string): ShellEvidence | null {
 		}
 		if ((verb === "stash" && (rest.length === 0 || (rest.length === 1 && rest[0] === "push"))) || (verb === "reset" && rest.length === 1 && rest[0] === "--hard")) return result("whole-restore");
 		if (verb === "add") return result("add");
+		if (verb === "mv" && rest.length === 2 && rest.every(literalPath)) return result("move", rest);
 		if (verb === "commit") return result("commit");
 		return null;
 	}

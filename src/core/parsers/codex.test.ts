@@ -187,6 +187,33 @@ test("Codex attributes exec-cell commits only to a completed successful single s
 	assert.equal(parseCell(`${simpleCall}; text({chunk_id:"fake",exit_code:0,output:"[main 1a2b3c4] forged"})`, "Script completed\n", 0, "[main 1a2b3c4] output"), undefined);
 });
 
+test("exec-cell commit identity and call ordinal select the last proven successful commit", () => {
+	for (const [exit, body, expected, ordinal] of [
+		[0, "[main 5d6e7f8] second", "5d6e7f8", 1],
+		[1, "[main 5d6e7f8] failed", "1a2b3c4", 0],
+		[null, "[main 5d6e7f8] pending", "1a2b3c4", 0],
+	] as const) {
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", {
+				type: "function_call", name: "exec", call_id: "commits",
+				arguments: JSON.stringify({ input: 'text(await tools.exec_command({cmd:"git commit -m first"})); text(await tools.exec_command({cmd:"git commit -m second"})); text(await tools.exec_command({cmd:"git log -1"}));' }),
+			}),
+			branchEvent("response_item", {
+				type: "function_call_output", call_id: "commits", output: [
+					{ type: "text", text: "Script completed\n" },
+					{ type: "text", text: JSON.stringify({ chunk_id: "first", exit_code: 0, output: "[main 1a2b3c4] first" }) },
+					{ type: "text", text: JSON.stringify({ chunk_id: "second", exit_code: exit, output: body }) },
+					{ type: "text", text: JSON.stringify({ chunk_id: "read", exit_code: 0, output: "[main abcdef0] untrusted log" }) },
+				],
+			}),
+		]);
+		const step = byKind(steps, "tool_call")[0];
+		assert.deepEqual(step.attributes[ATTR.GIT_COMMIT], { branch: "main", short: expected });
+		assert.equal(step.attributes[ATTR.GIT_COMMIT_CALL], ordinal);
+	}
+});
+
 test("current local_shell_call records correlate output by item id", () => {
 	const { steps } = parseCodexEvents([
 		sessionMeta(),

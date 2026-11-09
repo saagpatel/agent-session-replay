@@ -190,7 +190,8 @@ function execCellCommitOutput(input: string, rawOutput: unknown): { output: stri
 	if (!calls || !Array.isArray(rawOutput) || rawOutput.length !== calls.length + 1) return null;
 	const header = str(asObj(rawOutput[0])["text"])?.trimStart() ?? "";
 	if (!/^Script completed\b/.test(header)) return null;
-	for (const [i, call] of calls.entries()) {
+	for (let i = calls.length - 1; i >= 0; i--) {
+		const call = calls[i]!;
 		if (call.name !== "exec_command" || !isCommitCommand({ cmd: call.command })) continue;
 		try {
 			const chunk = asObj(JSON.parse(str(asObj(rawOutput[i + 1])["text"]) ?? ""));

@@ -590,3 +590,28 @@ test("confirmed patch moves track both source and destination", () => {
 	assert.equal(uncertain.editEffects[0]?.lineage, "unknown");
 	assert.equal(uncertain.endState["src/moved.ts"], null);
 });
+
+test("git moves preserve owners only for confirmed single-file literal destinations", () => {
+	for (const command of [
+		"git mv src/a.ts src/moved.ts", "git mv 'src/a.ts' 'src/moved.ts'",
+	]) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("move", command)), base);
+		assert.equal(graph.editEffects[0]?.lineage, "retained", command);
+		assert.equal(graph.endState["src/moved.ts"], "idea\n", command);
+		assert.equal(Object.hasOwn(graph.endState, "src/a.ts"), false, command);
+	}
+	for (const command of [
+		"git mv src/a.ts src/b.ts", "git mv src/a.ts src", "git mv src src/moved",
+		"git mv src/a.ts /work/outside/moved.ts", "git mv src/a.ts $DESTINATION",
+		"git mv -f src/a.ts src/moved.ts", "git mv src/a.ts src/b.ts src/moved.ts",
+	]) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("move", command)), base);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown", command);
+	}
+	for (const status of ["error", "unknown"] as const) {
+		const move = shell("move", "git mv src/a.ts src/moved.ts");
+		move.status = status === "unknown" ? "ok" : status;
+		if (status === "unknown") move.ended_at = null;
+		assert.equal(buildBranchGraph(trace(edit("change", "base", "idea"), move), base).editEffects[0]?.lineage, "unknown");
+	}
+});

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ATTR, type Step, type Trace } from "../../types.ts";
+import { parseCodexEvents } from "../../parsers/codex.ts";
 import { checkArtifacts } from "./artifact-check.ts";
 import { fixtureRepoCommitShas } from "./git-sha.ts";
 import { buildBranchGraph } from "./model.ts";
@@ -74,6 +75,86 @@ test("commit boundary identifies the exact exec operation and splits later opera
 	assert.deepEqual(check.effects.map((effect) => [effect.node.part, effect.status]), [[0, "retained"], [2, "after-claim"]]);
 	assert.deepEqual(report.retained[0]?.nodes.map((node) => node.part), [0, 1]);
 	assert.deepEqual(report.afterClaim[0]?.nodes.map((node) => node.part), [2]);
+});
+
+test("artifact attribution follows confirmed moves even after the source is recreated", () => {
+	for (const name of ["apply_patch", "Bash"]) {
+		const source = "src/a.ts";
+		const destination = "src/b.ts";
+		const move = tool("move", name, name === "apply_patch"
+			? { input: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n*** End Patch` }
+			: { command: `git mv ${source} ${destination}` });
+		move.attributes[ATTR.PATCH_CONFIRMED] = true;
+		const snapshots: Array<Record<string, string>> = [
+			{ [source]: "different\n", [destination]: "idea\n" },
+			{ [destination]: "idea\n" },
+			{ [source]: "different\n" },
+			{ [source]: "different\n", [destination]: "changed\n" },
+		];
+		for (const committed of snapshots) {
+			const { commit } = artifact("", committed);
+			const graph = buildBranchGraph(trace([
+				tool("original", "Edit", { file_path: source, old_string: "base", new_string: "idea" }),
+				move,
+				tool("recreate", "Write", { file_path: source, content: "different\n" }),
+				commit,
+			]), { [source]: "base\n" });
+			const repo = { commits: [{ parent: null, message: "synthetic artifact", files: committed }] };
+			assert.equal(graph.claim.tree?.[destination]?.text, "idea\n", name);
+			assert.equal(checkArtifacts(graph, repo).effects[0]?.status,
+				!(destination in committed) ? "unknown" : committed[destination] === "idea\n" ? "retained" : "abandoned", name);
+		}
+	}
+});
+
+test("parser-to-artifact claims the last successful commit call in an exec cell", () => {
+	const first = { parent: null, message: "first", files: { [file]: "first\n" } };
+	const commits = [first, { parent: fixtureRepoCommitShas([first])[0]!, message: "second", files: { [file]: "second\n" } }];
+	const shas = fixtureRepoCommitShas(commits);
+	const input = [
+		`text(await tools.write_file({path:"${file}",content:"first\\n"}));`,
+		'text(await tools.exec_command({cmd:"git commit -am first"}));',
+		`text(await tools.write_file({path:"${file}",content:"second\\n"}));`,
+		'text(await tools.exec_command({cmd:"git commit -am second"}));',
+	].join(" ");
+	const event = (type: string, payload: unknown) => ({ type, timestamp: "2026-01-01T00:00:00Z", payload });
+	const parsed = parseCodexEvents([
+		event("session_meta", { id: "synthetic", cwd: "/work/fixture" }),
+		event("response_item", { type: "function_call", name: "exec", call_id: "cell", arguments: JSON.stringify({ input }) }),
+		event("response_item", { type: "function_call_output", call_id: "cell", output: [
+			{ type: "text", text: "Script completed\n" },
+			{ type: "text", text: "{}" },
+			{ type: "text", text: JSON.stringify({ chunk_id: "first", exit_code: 0, output: `[main ${shas[0]!.slice(0, 7)}] first` }) },
+			{ type: "text", text: "{}" },
+			{ type: "text", text: JSON.stringify({ chunk_id: "second", exit_code: 0, output: `[main ${shas[1]!.slice(0, 7)}] second` }) },
+		] }),
+	]);
+	assert.deepEqual(parsed.steps[0]?.attributes[ATTR.GIT_COMMIT], { branch: "main", short: shas[1]!.slice(0, 7) });
+	assert.equal(parsed.steps[0]?.attributes[ATTR.GIT_COMMIT_CALL], 3);
+	const graph = buildBranchGraph(parsed, { [file]: "base\n" });
+	const check = checkArtifacts(graph, { commits });
+	assert.equal(graph.claim.part, 3);
+	assert.equal(check.claim.sha, shas[1]);
+	assert.equal(graph.claim.tree?.[file]?.text, "second\n");
+	assert.deepEqual(check.effects.map((effect) => [effect.node.part, effect.status]), [[0, "abandoned"], [2, "retained"]]);
+	assert.deepEqual(branchReport(graph, check).afterClaim, []);
+});
+
+test("uncertain move destinations cannot prove the original edit abandoned", () => {
+	const source = "src/a.ts";
+	const destination = "src/b.ts";
+	const { commit } = artifact("", { [source]: "different\n", [destination]: "idea\n" });
+	const steps = [
+		tool("original", "Edit", { file_path: source, old_string: "base", new_string: "idea" }),
+		tool("move", "Bash", { command: `git mv ${source} ${destination}` }),
+		tool("pending", "write_file", { path: destination, content: "unknown\n" }),
+		tool("recreate", "Write", { file_path: source, content: "different\n" }), commit,
+	];
+	steps[2]!.ended_at = null;
+	const graph = buildBranchGraph(trace(steps), { [source]: "base\n" });
+	const repo = { commits: [{ parent: null, message: "synthetic artifact", files: { [source]: "different\n", [destination]: "idea\n" } }] };
+	assert.equal(graph.claim.tree?.[destination], null);
+	assert.equal(checkArtifacts(graph, repo).effects[0]?.status, "unknown");
 });
 
 test("equal base text elsewhere cannot prove retention of an omitted introduced occurrence", () => {
