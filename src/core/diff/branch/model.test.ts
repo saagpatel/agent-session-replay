@@ -489,6 +489,15 @@ const unparsedCommands = [
 	"head -c 10 src/a.ts", "ls -l src", "cat src/a.ts src/b.ts", "tail src/a.ts",
 	"git add src/a.ts && git commit -m fixture && cat src/a.ts", "git status; git commit -m fixture",
 	"git restore --staged src/a.ts", "printf fixture", "npm run build", "pwd",
+	"go test -coverprofile=coverage.out ./...", "go test ./... -coverprofile coverage.out",
+	"pytest --junitxml=report.xml", "python -m pytest --junitxml report.xml",
+	"pnpm test --update-snapshots", "npm test -- -u", "yarn test -u", "pnpm vitest run --coverage",
+	"pnpm vitest run --reporter=json --outputFile=report.json", "node --test --test-reporter-destination=report.txt test.ts",
+	"cargo test --message-format=json", "go test -v ./...", "pytest --verbose", "pytest -k",
+	"pytest -k -q", "pytest -s", "python -m pytest -o cache_dir=src", "node --test",
+	"pnpm run test", "npm test test.ts", "pnpm vitest run test.ts", "cargo test test_name",
+	"go test", "python3 -m pytest", "MODE=test pytest", "env MODE=test go test ./...",
+	"pytest @options.txt", "python -m pytest -q @options.txt",
 ];
 
 function cell(input: string, parts = [{ kind: "chunk", result: { exit_code: 0, session_id: null, test_failures: false, test_passes: false } }]): Step {
@@ -516,7 +525,11 @@ test("literal reads, tests, tool reads and shell argv wrappers preserve lineage"
 	for (const command of [
 		"cat src/a.ts", "sed -n '1,20p' src/a.ts", "sed -n '1,$p' src/a.ts", "head -n 5 src/a.ts",
 		"ls", "ls src", "rg -n -i -w -l -F -r --no-heading idea src", "grep -n idea src/a.ts",
-		"git status --short", "git diff -- src/a.ts", "git log --oneline", "git show HEAD", "pnpm test", "node --test test.ts",
+		"git status --short", "git diff -- src/a.ts", "git log --oneline", "git show HEAD",
+		"pnpm test", "npm test", "npm run test", "yarn test", "pnpm vitest run",
+		"node --test test.ts", "node --test test.ts src/other.test.ts", "cargo test", "go test ./...", "go test ./pkg ./other",
+		"pytest", "pytest tests/test_example.py -q -x -k 'example and other'", "python -m pytest",
+		"python -m pytest -q tests/test_example.py -k example -x",
 	]) {
 		for (const operation of [shell("read", command), tool("argv", "shell", { command: ["bash", "-lc", command] }), cell(`text(await tools.exec_command(${JSON.stringify({ cmd: command })}))`)]) {
 			const graph = buildBranchGraph(trace(edit("change", "base", "idea"), operation), base);

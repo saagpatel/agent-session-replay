@@ -37,6 +37,49 @@ function artifact(base: string, committed: Record<string, string>) {
 	return { run, commit, short };
 }
 
+test("insertion-only patch hunks require a proven position and preserve EOF newlines", () => {
+	for (const [base, marker, expected] of [
+		["base\n", "*** End of File\n", "base\nidea\n"],
+		["base", "*** End of File\n", "base\nidea\n"],
+		["", "", "idea\n"],
+		["", "*** End of File\n", "idea\n"],
+		["base\n", "", null],
+	] as const) {
+		const patch = `*** Begin Patch\n*** Update File: ${file}\n@@\n+idea\n${marker}*** End Patch`;
+		const operation = tool("insert", "apply_patch", { input: patch });
+		operation.attributes[ATTR.PATCH_CONFIRMED] = true;
+		const cell = tool("cell", "exec", { input: `text(await tools.apply_patch(${JSON.stringify(patch)}))` });
+		cell.attributes[ATTR.EXEC_COMPLETED] = true;
+		cell.attributes[ATTR.EXEC_PARTS] = [{ kind: "empty-object" }];
+		for (const step of [operation, cell]) {
+			const { run, commit } = artifact(base, { [file]: expected ?? "base\nidea\n" });
+			const { graph, check } = run([step, commit]);
+			assert.equal(graph.endState[file], expected, patch);
+			assert.equal(graph.claim.tree?.[file]?.text ?? null, expected, patch);
+			assert.equal(graph.editEffects[0]?.lineage, expected === null ? "unknown" : "retained", patch);
+			assert.equal(check.effects[0]?.status, expected === null ? "unknown" : "retained", patch);
+		}
+	}
+});
+
+test("test output writers cannot retain artifact ownership directly or in exec cells", () => {
+	for (const command of [
+		"go test -coverprofile=coverage.out ./...", "pytest --junitxml=report.xml",
+		"pnpm test --update-snapshots", "pnpm vitest run -u", "npm test -- --coverage",
+	]) {
+		const cell = tool("cell", "exec", { input: `text(await tools.exec_command(${JSON.stringify({ cmd: command })}))` });
+		cell.attributes[ATTR.EXEC_COMPLETED] = true;
+		cell.attributes[ATTR.EXEC_PARTS] = [{ kind: "chunk", result: { exit_code: 0, session_id: null, test_failures: false, test_passes: true } }];
+		for (const operation of [tool("writer", "Bash", { command }), cell]) {
+			const { run, commit } = artifact("base\n", { [file]: "idea\n" });
+			const { graph, check } = run([edit("edit", "base", "idea"), operation, commit]);
+			assert.equal(graph.endState[file], null, command);
+			assert.equal(graph.claim.tree?.[file], null, command);
+			assert.equal(check.effects[0]?.status, "unknown", command);
+		}
+	}
+});
+
 test("commit attribution uses boundary ownership before revert and identical reintroduction", () => {
 	const { run, commit } = artifact("base\n", { [file]: "idea\n" });
 	const { graph, check, report } = run([

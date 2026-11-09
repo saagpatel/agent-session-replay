@@ -1,6 +1,4 @@
 /** Narrow, evidence-only shell policy for branch lineage and commit claims. */
-import { classifyCommand } from "./diff/normalize.ts";
-
 type Args = Record<string, unknown>;
 export type ShellEvidence = {
 	kind: "read" | "restore" | "whole-restore" | "add" | "commit" | "move";
@@ -9,6 +7,8 @@ export type ShellEvidence = {
 	staged?: boolean;
 	/** Defined only for literal staging forms whose coverage is known. */
 	stagePaths?: string[];
+	/** Pathless -A/--all covers the repository, independently of workdir. */
+	stageRepository?: true;
 	/** Undefined for pathspec commits or unsupported commit options. */
 	commitWorktree?: boolean;
 };
@@ -59,6 +59,28 @@ const path = (s: string) => s.length > 0 && !s.startsWith("-");
 // Git interprets pathspec syntax even after the shell removes quotes.
 const literalPath = (s: string) => path(s) && !s.startsWith(":") && !/[*?\[]/.test(s);
 
+/** Bare test forms only; arbitrary test flags can write reports or snapshots. */
+function literalTest(tokens: string[]): boolean {
+	const exact = (...expected: string[]) => tokens.length === expected.length && tokens.every((token, i) => token === expected[i]);
+	if (exact("pnpm", "test") || exact("npm", "test") || exact("npm", "run", "test") ||
+		exact("yarn", "test") || exact("pnpm", "vitest", "run") || exact("cargo", "test")) return true;
+	if ((tokens[0] === "node" && tokens[1] === "--test") || (tokens[0] === "go" && tokens[1] === "test"))
+		return tokens.length > 2 && tokens.slice(2).every(path);
+	const args = tokens[0] === "pytest" ? tokens.slice(1)
+		: tokens[0] === "python" && tokens[1] === "-m" && tokens[2] === "pytest" ? tokens.slice(3) : null;
+	if (!args) return false;
+	// Pytest argument files can hide options, so they are not literal path operands.
+	if (args.some((arg) => arg.startsWith("@"))) return false;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]!;
+		if (arg === "-q" || arg === "-x") continue;
+		if (arg === "-k") {
+			if (!path(args[++i] ?? "")) return false;
+		} else if (!path(arg)) return false;
+	}
+	return true;
+}
+
 function commitWorktree(args: string[]): boolean | undefined {
 	let all = false;
 	for (let i = 0; i < args.length; i++) {
@@ -103,8 +125,8 @@ export function shellEvidence(command: string): ShellEvidence | null {
 		if ((verb === "stash" && (rest.length === 0 || (rest.length === 1 && rest[0] === "push"))) || (verb === "reset" && rest.length === 1 && rest[0] === "--hard")) return result("whole-restore");
 		if (verb === "add") {
 			const paths = rest[0] === "--" ? rest.slice(1) : rest;
-			const stagePaths = rest.length === 1 && ["-A", "--all"].includes(rest[0]!)
-				? ["."] : paths.length && paths.every(literalPath) ? paths : undefined;
+			if (rest.length === 1 && ["-A", "--all"].includes(rest[0]!)) return { ...result("add"), stageRepository: true };
+			const stagePaths = paths.length && paths.every(literalPath) ? paths : undefined;
 			return { ...result("add"), ...(stagePaths ? { stagePaths } : {}) };
 		}
 		if (verb === "mv" && rest.length === 2 && rest.every(literalPath)) return result("move", rest);
@@ -112,8 +134,7 @@ export function shellEvidence(command: string): ShellEvidence | null {
 		return null;
 	}
 	if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cmd ?? "")) return null;
-	const classes = classifyCommand(command, undefined);
-	return classes.length === 1 && classes[0]?.action === "test" ? result("read") : null;
+	return literalTest(tokens) ? result("read") : null;
 }
 
 export function isCommitCommand(args: Args): boolean {

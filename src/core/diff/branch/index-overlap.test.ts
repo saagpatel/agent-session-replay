@@ -103,6 +103,19 @@ test("staging provenance is per path and resolves literal working directories", 
 	assert.deepEqual(check.effects.map((effect) => effect.status), ["retained", "abandoned"]);
 });
 
+test("pathless all staging covers the repository from a subdirectory while dot stays relative", () => {
+	for (const command of ["git add -A", "git add --all", "git add ."]) {
+		const stage = shell(command, 2);
+		(stage.attributes[ATTR.TOOL_ARGS] as Record<string, unknown>)["workdir"] = "/work/fixture/src/other";
+		const repositoryWide = command !== "git add .";
+		const { graph, check } = artifact([edit("first", "base", "one", 0, 1), stage],
+			"git commit -m fixture", repositoryWide ? "one\n" : "base\n");
+		assert.equal(graph.endState[file], "one\n", command);
+		assert.equal(graph.claim.tree?.[file]?.text, repositoryWide ? "one\n" : "base\n", command);
+		assert.equal(check.effects[0]?.status, repositoryWide ? "retained" : "abandoned", command);
+	}
+});
+
 test("overlapping writes, including sidechains and missing end times, have unknown lineage", () => {
 	for (const end of [4, null]) {
 		const first = tool("first", "Write", { file_path: file, content: "one\n" }, 0, end);

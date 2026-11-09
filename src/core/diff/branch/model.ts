@@ -240,6 +240,10 @@ function mutationPaths(op: Operation, trace: Trace): string[] | null {
 		return paths.every((path): path is string => path !== null && path !== undefined) ? paths : null;
 	}
 	if (["restore", "move", "add"].includes(op.evidence?.kind ?? "")) {
+		if (op.evidence?.stageRepository) {
+			const location = resolve(".");
+			return location && !location.startsWith("external:") ? ["."] : null;
+		}
 		const paths = op.evidence?.kind === "add" ? op.evidence.stagePaths : op.evidence?.paths;
 		if (!paths) return null;
 		const resolved = paths.map(resolve);
@@ -509,20 +513,29 @@ export function buildBranchGraph(
 			.filter((h) => h.trim());
 		let cursor = 0;
 		for (const hunk of hunks) {
-			const lines = hunk
-				.split("\n")
-				.filter((l) => l !== "" && l !== "*** End of File");
+			const bodyLines = hunk.split("\n").filter((l) => l !== "");
+			const eof = bodyLines.at(-1) === "*** End of File";
+			const lines = eof ? bodyLines.slice(0, -1) : bodyLines;
 			if (!lines.length || lines.some((l) => !/^[ +\-]/.test(l))) {
 				invalidate(file);
 				return;
 			}
-			const old =
-				lines
-					.filter((l) => l[0] !== "+")
-					.map((l) => l.slice(1))
-					.join("\n") + "\n";
+			const oldLines = lines.filter((l) => l[0] !== "+");
+			if (!oldLines.length) {
+				// No context proves no offset except in an empty file or at explicit EOF.
+				if (state.text !== "" && !eof) {
+					invalidate(file);
+					return;
+				}
+				const separator = state.text && !state.text.endsWith("\n") ? "\n" : "";
+				const text = separator + lines.map((line) => line.slice(1) + "\n").join("");
+				splice(state, state.text.length, 0, text, effect);
+				cursor = state.text.length;
+				continue;
+			}
+			const old = oldLines.map((l) => l.slice(1)).join("\n") + "\n";
 			const at = state.text.indexOf(old, cursor);
-			if (at < 0 || state.text.indexOf(old, at + 1) >= 0) {
+			if (at < 0 || state.text.indexOf(old, at + 1) >= 0 || (eof && at + old.length !== state.text.length)) {
 				invalidate(file);
 				return;
 			}
@@ -659,7 +672,7 @@ export function buildBranchGraph(
 				}
 			} else if (evidence?.kind === "add") {
 				indexChanged = true;
-				if (!evidence.stagePaths || !mutation || node.status !== "ok") {
+				if ((!evidence.stagePaths && !evidence.stageRepository) || !mutation || node.status !== "ok") {
 					staged.clear();
 					uncertainIndex = true;
 				}
