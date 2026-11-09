@@ -1,0 +1,392 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { ATTR, type Step, type Trace } from "../../types.ts";
+import { normalizeTrace } from "../normalize.ts";
+import { buildBranchGraph } from "./model.ts";
+
+const base = { "src/a.ts": "base\n", "src/b.ts": "other\n" };
+function tool(
+	id: string,
+	name: string,
+	args: Record<string, unknown>,
+	options: Partial<Step> = {},
+): Step {
+	return {
+		step_id: id,
+		kind: "tool_call",
+		started_at: "2026-01-01T00:00:00Z",
+		ended_at: "2026-01-01T00:00:01Z",
+		status: "ok",
+		attributes: { [ATTR.TOOL_NAME]: name, [ATTR.TOOL_ARGS]: args },
+		...options,
+	};
+}
+function trace(...steps: Step[]): Trace {
+	return {
+		plumbline_version: "0.1.0",
+		run: {
+			run_id: "synthetic",
+			harness: { name: "fixture" },
+			started_at: "2026-01-01T00:00:00Z",
+			workspace: { cwd: "/work/fixture" },
+		},
+		steps,
+	};
+}
+const edit = (id: string, old_string: string, new_string: string) =>
+	tool(id, "Edit", {
+		file_path: "/work/fixture/src/a.ts",
+		old_string,
+		new_string,
+	});
+const shell = (id: string, command: string, status: Step["status"] = "ok") =>
+	tool(id, "Bash", { command }, { status });
+const lineages = (graph: ReturnType<typeof buildBranchGraph>) =>
+	graph.editEffects.map((e) => e.lineage);
+
+test("a retry preserves the failed attempt and the retained main branch", () => {
+	const graph = buildBranchGraph(
+		trace(shell("failed", "pnpm test", "error"), shell("pass", "pnpm test")),
+		base,
+	);
+	assert.equal(graph.nodes.length, 2);
+	const abandoned = graph.branches.find((b) => b.kind === "retry");
+	assert.equal(abandoned?.structuralStatus, "abandoned");
+	assert.deepEqual(abandoned?.nodes, [{ stepId: "failed", part: 0 }]);
+	assert.equal(abandoned?.rejoinAtStepId, "pass");
+	assert.ok(
+		graph.branches
+			.find((b) => b.kind === "main" && b.structuralStatus === "retained")
+			?.nodes.some((n) => n.stepId === "pass"),
+	);
+});
+
+test("reverted then reintroduced identical content has distinct provenance", () => {
+	const graph = buildBranchGraph(
+		trace(
+			edit("first", "base", "idea"),
+			edit("revert", "idea", "base"),
+			edit("second", "base", "idea"),
+		),
+		base,
+	);
+	assert.deepEqual(lineages(graph), ["abandoned", "abandoned", "retained"]);
+	assert.equal(graph.endState["src/a.ts"], "idea\n");
+	assert.ok(
+		graph.branches.some(
+			(b) =>
+				b.kind === "backtrack" && b.nodes.some((n) => n.stepId === "first"),
+		),
+	);
+});
+
+test("lineage distinguishes partial survival from matching text elsewhere", () => {
+	const graph = buildBranchGraph(
+		trace(edit("insert", "base", "left right"), edit("remove", "left", "next")),
+		base,
+	);
+	assert.deepEqual(lineages(graph), ["partial", "retained"]);
+	assert.deepEqual(graph.editEffects[0]?.endState, {
+		"src/a.ts": "next right\n",
+	});
+	const duplicate = buildBranchGraph(
+		trace(edit("insert", "base", "other"), edit("remove", "other", "gone")),
+		{ ...base, "src/b.ts": "other\n" },
+	);
+	assert.equal(duplicate.editEffects[0]?.lineage, "abandoned");
+});
+
+test("MultiEdit, sidechains, and every shell stage keep unique operation identities", () => {
+	const input = trace(
+		tool(
+			"multi",
+			"MultiEdit",
+			{
+				file_path: "src/a.ts",
+				edits: [
+					{ old_string: "base", new_string: "one" },
+					{ old_string: "one", new_string: "two" },
+				],
+			},
+			{ subagent_id: "helper" },
+		),
+		shell(
+			"compound",
+			Array.from({ length: 9 }, (_, i) => `cat src/${i}.ts`).join("; "),
+		),
+	);
+	const graph = buildBranchGraph(input, base);
+	assert.deepEqual(
+		graph.nodes.filter((n) => n.stepId === "multi").map((n) => n.part),
+		[0, 1],
+	);
+	assert.equal(graph.nodes.filter((n) => n.stepId === "compound").length, 9);
+	assert.equal(
+		new Set(graph.nodes.map((n) => `${n.stepId}:${n.part}`)).size,
+		graph.nodes.length,
+	);
+	assert.equal(graph.endState["src/a.ts"], "two\n");
+	for (const step of normalizeTrace(input))
+		assert.equal(
+			graph.nodes.filter(
+				(n) =>
+					n.stepId === step.stepId &&
+					n.action === step.action &&
+					n.target === step.target,
+			).length,
+			1,
+		);
+	const members = graph.branches.flatMap((b) =>
+		b.nodes.map((n) => `${n.stepId}:${n.part}`),
+	);
+	assert.equal(new Set(members).size, graph.nodes.length);
+	assert.equal(members.length, graph.nodes.length);
+});
+
+test("uncapped patch files and multiple hunks preserve context ownership", () => {
+	const patch =
+		"*** Begin Patch\n" +
+		Array.from(
+			{ length: 8 },
+			(_, i) => `*** Add File: src/new${i}.ts\n+new${i}\n`,
+		).join("") +
+		"*** End Patch";
+	const confirmed = (id: string, input: string) =>
+		tool(
+			id,
+			"apply_patch",
+			{ input },
+			{
+				attributes: {
+					[ATTR.TOOL_NAME]: "apply_patch",
+					[ATTR.TOOL_ARGS]: { input },
+					[ATTR.PATCH_CONFIRMED]: true,
+				},
+			},
+		);
+	const graph = buildBranchGraph(trace(confirmed("patch", patch)), base);
+	assert.equal(graph.nodes.length, 8);
+	assert.equal(graph.editEffects.length, 8);
+	assert.ok(graph.editEffects.every((e) => e.lineage === "retained"));
+	const contextual = buildBranchGraph(
+		trace(
+			edit("first", "base", "context\nold\ntail"),
+			confirmed(
+				"update",
+				"*** Begin Patch\n*** Update File: src/a.ts\n@@\n context\n-old\n+new\n tail\n*** End Patch",
+			),
+		),
+		base,
+	);
+	assert.deepEqual(lineages(contextual), ["partial", "retained"]);
+	assert.equal(contextual.endState["src/a.ts"], "context\nnew\ntail\n");
+});
+
+test("mismatched edits, ambiguous old text, pending tools and unparsed writes fail closed", () => {
+	for (const operation of [
+		edit("mismatch", "absent", "new"),
+		edit("ambiguous", "a", "new"),
+		tool(
+			"pending",
+			"Write",
+			{ path: "src/a.ts", content: "new" },
+			{ ended_at: null },
+		),
+		shell("unparsed", "python3 mutate.py src/a.ts"),
+	]) {
+		const graph = buildBranchGraph(
+			trace(
+				tool("first", "Write", { path: "src/a.ts", content: "a a\n" }),
+				operation,
+				tool("last", "Write", { path: "src/a.ts", content: "known" }),
+			),
+			base,
+		);
+		assert.equal(graph.endState["src/a.ts"], null, operation.step_id);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown", operation.step_id);
+		assert.equal(
+			graph.editEffects.at(-1)?.lineage,
+			"unknown",
+			operation.step_id,
+		);
+	}
+	const patch = tool("bad-patch", "apply_patch", {
+		input:
+			"*** Begin Patch\n*** Update File: src/a.ts\n@@\n-missing\n+new\n*** End Patch",
+	});
+	patch.attributes[ATTR.PATCH_CONFIRMED] = true;
+	assert.equal(buildBranchGraph(trace(patch), base).endState["src/a.ts"], null);
+});
+
+test("restore commands abandon tracked edits and retain the restoring command", () => {
+	for (const command of [
+		"git checkout -- src/a.ts",
+		"git restore src/a.ts",
+		"git stash",
+		"git reset --hard",
+	]) {
+		const graph = buildBranchGraph(
+			trace(edit("try", "base", "idea"), shell("restore", command)),
+			base,
+		);
+		assert.equal(graph.editEffects[0]?.lineage, "abandoned", command);
+		assert.equal(graph.endState["src/a.ts"], "base\n", command);
+		assert.ok(
+			graph.branches.some(
+				(b) => b.kind === "backtrack" && b.rejoinAtStepId === "restore",
+			),
+			command,
+		);
+	}
+});
+
+test("last commit claim is provenance only and excludes later touched files", () => {
+	const first = shell("commit-one", "git commit -am first");
+	first.attributes[ATTR.GIT_COMMIT] = { branch: "main", short: "abcdef0" };
+	const second = shell("commit-two", "git commit -am second");
+	second.attributes[ATTR.GIT_COMMIT] = { branch: "main", short: "abcdef1" };
+	const graph = buildBranchGraph(
+		trace(
+			edit("change", "base", "idea"),
+			first,
+			second,
+			tool("later", "Write", { path: "src/later.ts", content: "later\n" }),
+		),
+		base,
+	);
+	assert.deepEqual(graph.claim, {
+		commitShort: "abcdef1",
+		stepId: "commit-two",
+		files: ["src/a.ts"],
+	});
+	assert.deepEqual(buildBranchGraph(trace(), base).claim, {
+		commitShort: null,
+		stepId: null,
+		files: [],
+	});
+});
+
+test("no-op edits preserve the earlier owner's lineage and superseded rejoin provenance", () => {
+	const graph = buildBranchGraph(
+		trace(edit("one", "base", "idea"), edit("noop", "idea", "idea")),
+		base,
+	);
+	assert.deepEqual(lineages(graph), ["retained", "unknown"]);
+	assert.ok(!graph.branches.some((b) => b.kind === "backtrack"));
+	const replaced = buildBranchGraph(
+		trace(edit("one", "base", "idea"), edit("two", "idea", "next")),
+		base,
+	);
+	assert.equal(
+		replaced.branches.find((b) => b.kind === "superseded")?.rejoinAtStepId,
+		"two",
+	);
+});
+
+test("retry supporting edits and nested backtracks preserve parent lineage", () => {
+	const graph = buildBranchGraph(
+		trace(
+			edit("hypothesis", "base", "wrong"),
+			shell("failed", "pnpm test", "error"),
+			edit("nested", "wrong", "try"),
+			edit("undo", "try", "wrong"),
+			edit("fix", "wrong", "right"),
+			shell("pass", "pnpm test"),
+		),
+		base,
+	);
+	const retry = graph.branches.find((b) => b.kind === "retry");
+	assert.ok(retry);
+	assert.ok(retry.nodes.some((n) => n.stepId === "failed"));
+	assert.ok(
+		graph.branches.some(
+			(b) =>
+				b.kind === "backtrack" &&
+				b.parentId === retry.id &&
+				b.nodes.some((n) => n.stepId === "nested"),
+		),
+	);
+	const first = graph.nodes.find((n) => n.stepId === "hypothesis");
+	assert.equal(first?.branchId, retry.id);
+});
+
+test("shell noise and directories preserve normalized targets without inventing edits", () => {
+	const input = trace(
+		edit("known", "base", "idea"),
+		shell("read", "pwd; cd src && cat a.ts"),
+	);
+	const graph = buildBranchGraph(input, base);
+	assert.equal(graph.editEffects[0]?.lineage, "retained");
+	assert.equal(
+		graph.nodes.filter(
+			(n) =>
+				n.stepId === "read" && n.action === "read" && n.target === "src/a.ts",
+		).length,
+		1,
+	);
+	const moved = buildBranchGraph(
+		trace(
+			edit("change", "base", "idea"),
+			shell("restore", "cd src && git restore a.ts"),
+		),
+		base,
+	);
+	assert.equal(moved.endState["src/a.ts"], "base\n");
+});
+
+test("empty file creation is distinct from an absent file", () => {
+	const patch = tool("empty-patch", "apply_patch", {
+		input: "*** Begin Patch\n*** Add File: src/empty.ts\n*** End Patch",
+	});
+	patch.attributes[ATTR.PATCH_CONFIRMED] = true;
+	const graph = buildBranchGraph(
+		trace(
+			patch,
+			tool("empty-write", "Write", { path: "src/empty-write.ts", content: "" }),
+		),
+		base,
+	);
+	assert.equal(graph.endState["src/empty.ts"], "");
+	assert.equal(graph.endState["src/empty-write.ts"], "");
+});
+
+test("restore directories are explicit and staged-only options never imply a worktree restore", () => {
+	for (const command of [
+		"git restore -- src",
+		"git checkout -- .",
+		"cd src && git stash",
+	]) {
+		const graph = buildBranchGraph(
+			trace(edit("change", "base", "idea"), shell("restore", command)),
+			base,
+		);
+		assert.equal(graph.endState["src/a.ts"], "base\n", command);
+		assert.equal(graph.editEffects[0]?.lineage, "abandoned", command);
+	}
+	const staged = buildBranchGraph(
+		trace(
+			edit("change", "base", "idea"),
+			shell("staged", "git restore --staged src/a.ts"),
+		),
+		base,
+	);
+	assert.equal(staged.endState["src/a.ts"], null);
+	assert.ok(!staged.branches.some((b) => b.kind === "backtrack"));
+});
+
+test("unparsed writers cannot imply that unnamed files remain absent", () => {
+	const graph = buildBranchGraph(
+		trace(shell("unknown", "python3 mutate.py src/new.ts")),
+		{},
+	);
+	assert.equal(graph.endStateComplete, false);
+	assert.equal(buildBranchGraph(trace(), {}).endStateComplete, true);
+});
+
+test("a failed edit is not evidence of a superseded insertion", () => {
+	const failed = edit("failed", "base", "idea");
+	failed.status = "error";
+	const graph = buildBranchGraph(trace(failed), base);
+	assert.equal(graph.endState["src/a.ts"], "base\n");
+	assert.ok(!graph.branches.some((branch) => branch.kind === "superseded"));
+});
