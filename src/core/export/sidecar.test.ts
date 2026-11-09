@@ -25,9 +25,26 @@ test("all generated sidecars retain scene and caption evidence", () => {
 		}
 		assert.ok(markdown.split("\n").every((line) => line.length < 120 && !line.trimStart().startsWith("{")));
 		assert.match(markdown, /Plays at 0:03\.5 for .*source steps #\d+–#\d+/);
-		assert.match(markdown, /✓ shows #\d+/);
-		assert.match(markdown, /✓ because #\d+ → #\d+ \(path: #\d+/);
+		assert.match(markdown, /shows #\d+[^\n]*\n✓/);
+		assert.match(markdown, /because #\d+ → #\d+ \(path: #\d+[^\n]*\n✓/);
 		assert.match(markdown, /- #\d+ Read .* · ok · worker a/);
+	}
+});
+
+test("failing captions retain kind, known step references and causal path before the verdict", () => {
+	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+	faithful.source.digest = "mismatched";
+	const sidecar = buildSidecar(faithful, trace, validateExport(faithful, trace));
+	const markdown = renderSidecarMarkdown(sidecar);
+	const captions = sidecar.scenes.flatMap((scene) => scene.captions);
+	assert.ok(captions.some((caption) => caption.kind === "shows"));
+	assert.ok(captions.some((caption) => caption.kind === "because" && caption.path.length > 0));
+	for (const caption of captions) {
+		assert.equal(caption.ok, false);
+		const refs = caption.refs.map((step) => `#${step.index + 1}`);
+		const detail = caption.kind === "shows" ? `shows ${refs.join(", ")}` :
+			`because ${refs.join(" → ")} (path: ${caption.path.map((step) => `#${step.index + 1}`).join(" → ")})`;
+		assert.ok(markdown.includes(`> “${caption.text}”\n${detail}\n✗ ${caption.reasons[0]}`), markdown);
 	}
 });
 

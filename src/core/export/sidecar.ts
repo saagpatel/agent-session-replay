@@ -113,9 +113,9 @@ export function renderSidecarMarkdown(sidecar: Sidecar): string {
 		for (const step of scene.steps) lines.push(wrap(`- ${number(step)} ${step.label} · ${step.status}${step.lane ? ` · ${step.lane.replaceAll("-", " ")}` : ""}`));
 		for (const caption of scene.captions) {
 			lines.push(wrap(`> “${caption.text}”`));
-			if (!caption.ok) for (const reason of caption.reasons) lines.push(wrap(`✗ ${reason}`));
-			else if (caption.kind === "shows") lines.push(wrap(`✓ shows ${caption.refs.map(number).join(", ")}`));
-			else lines.push(wrap(`✓ because ${number(caption.refs[0] ?? null)} → ${number(caption.refs[1] ?? null)} (path: ${caption.path.map(number).join(" → ") || "unknown"})`));
+			if (caption.kind === "shows") lines.push(wrap(`shows ${caption.refs.map(number).join(", ") || "unknown"}`));
+			else lines.push(wrap(`because ${number(caption.refs[0] ?? null)} → ${number(caption.refs[1] ?? null)} (path: ${caption.path.map(number).join(" → ") || "unknown"})`));
+			for (const reason of caption.reasons.length ? caption.reasons : [""]) lines.push(wrap(`${caption.ok ? "✓" : "✗"} ${reason}`));
 		}
 	}
 	return `${lines.join("\n")}\n`;
