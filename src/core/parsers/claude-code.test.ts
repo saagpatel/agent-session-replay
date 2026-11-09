@@ -168,6 +168,56 @@ test("tool_use + matching tool_result merge into one ok tool_call step", () => {
 	assert.equal(tc.ended_at, TS2);
 });
 
+test("successful Bash output records only the first anchored git commit identity", () => {
+	const { steps } = parseClaudeCodeEvents([
+		{
+			type: "assistant",
+			sessionId: "s",
+			uuid: "a1",
+			timestamp: TS1,
+			message: { content: [{ type: "tool_use", id: "bash1", name: "Bash", input: { command: "git commit -m fixture" } }] },
+		},
+		{
+			type: "user",
+			uuid: "u1",
+			timestamp: TS2,
+			message: { content: [{ type: "tool_result", tool_use_id: "bash1", is_error: false, content: "noise [bad sha] nope\n[main 1a2b3c4] first message\n[other 5d6e7f8] second message" }] },
+			toolUseResult: { exitCode: 0 },
+		},
+	]);
+	assert.deepEqual(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], {
+		branch: "main",
+		short: "1a2b3c4",
+	});
+});
+
+test("Claude commit metadata requires a successful Bash result and a matching line", () => {
+	const make = (isError: boolean, output: string, exitCode?: number) => {
+		const { steps } = parseClaudeCodeEvents([
+			{ type: "assistant", sessionId: "s", uuid: "a1", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash1", name: "Bash", input: { command: "git commit -m fixture" } }] } },
+			{ type: "user", uuid: "u1", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash1", is_error: isError, content: output }] }, toolUseResult: exitCode === undefined ? {} : { exitCode } },
+		]);
+		return find(steps, (s) => s.kind === "tool_call");
+	};
+	assert.equal(make(true, "[main 1a2b3c4] failed", 1).attributes[ATTR.GIT_COMMIT], undefined);
+	assert.equal(make(false, "prefix [main 1a2b3c4] not anchored", 0).attributes[ATTR.GIT_COMMIT], undefined);
+	assert.equal(make(false, "[main 1a2b3c4] success", 1).attributes[ATTR.GIT_COMMIT], undefined);
+});
+
+test("Claude commit metadata accepts detached and root commit headers", () => {
+	for (const [line, branch, short] of [
+		["[detached HEAD 1a2b3c4] detached commit", "detached HEAD", "1a2b3c4"],
+		["[main (root-commit) 5d6e7f8] initial commit", "main", "5d6e7f8"],
+		["[short 1a2b] short abbreviation", "short", "1a2b"],
+	]) {
+		const { steps } = parseClaudeCodeEvents([
+			{ type: "assistant", sessionId: "s", uuid: "a1", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash1", name: "Bash", input: { command: "git commit -m fixture" } }] } },
+			{ type: "user", uuid: "u1", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash1", is_error: false, content: line }] }, toolUseResult: { exitCode: 0 } },
+		]);
+		assert.deepEqual(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], { branch, short });
+	}
+});
+
 test("a blocked tool_result becomes an error tool_call with parsed guard name + reason", () => {
 	const events = [
 		{

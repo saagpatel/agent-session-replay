@@ -42,6 +42,18 @@ const msg = (role: string, text: string) =>
 const responseItem = (payload: Record<string, unknown>, ts?: string) =>
 	ev("response_item", payload, ts);
 const eventMsg = (payload: Record<string, unknown>) => ev("event_msg", payload);
+const branchEvent = (type: string, payload: Record<string, unknown>) => ({
+	timestamp: "2026-02-17T11:01:00.000Z",
+	type,
+	payload,
+});
+const branchSessionMeta = () =>
+	branchEvent("session_meta", {
+		id: "019c6b51-branch-test",
+		cwd: "/work/fixture",
+		originator: "Codex",
+		cli_version: "0.100.0",
+	});
 
 const byKind = (steps: Step[], kind: string) =>
 	steps.filter((s) => s.kind === kind);
@@ -102,6 +114,77 @@ test("function_call + function_call_output merge into one ok tool_call by call_i
 	assert.equal(tools[0].status, "ok");
 	assert.deepEqual(tools[0].attributes[ATTR.TOOL_ARGS], { cmd: "ls" });
 	assert.equal(tools[0].attributes[ATTR.TOOL_RESULT_KIND], "bash");
+});
+
+test("successful Codex shell output records only its first anchored git commit", () => {
+	const { steps } = parseCodexEvents([
+		branchSessionMeta(),
+		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: '{"cmd":"git commit -m fixture"}', call_id: "c-commit" }),
+		branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output: "Process exited with code 0\nOutput:\n[main 1a2b3c4] first message\n[other 5d6e7f8] second message" }),
+	]);
+	assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], {
+		branch: "main",
+		short: "1a2b3c4",
+	});
+});
+
+test("Codex commit metadata ignores failed results and malformed lines", () => {
+	const make = (output: string) => {
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: "{}", call_id: "c-commit" }),
+			branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output }),
+		]);
+		return byKind(steps, "tool_call")[0];
+	};
+	assert.equal(make("Process exited with code 1\nOutput:\n[main 1a2b3c4] failed").attributes[ATTR.GIT_COMMIT], undefined);
+	assert.equal(make("Process exited with code 0\nOutput:\nprefix [main 1a2b3c4] not anchored").attributes[ATTR.GIT_COMMIT], undefined);
+	assert.equal(make("Process exited with code 0\nOutput:\n[main zzzzzzz] malformed").attributes[ATTR.GIT_COMMIT], undefined);
+	assert.equal(make("Process running with session ID 123\nOutput:\n[main 1a2b3c4] pending").attributes[ATTR.GIT_COMMIT], undefined);
+});
+
+test("Codex preserves the first commit identity across repeated outputs and accepts git header variants", () => {
+	const root = parseCodexEvents([
+		branchSessionMeta(),
+		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: "{}", call_id: "c-root" }),
+		branchEvent("response_item", { type: "function_call_output", call_id: "c-root", output: "Process exited with code 0\nOutput:\n[main (root-commit) 1a2b3c4] first" }),
+		branchEvent("response_item", { type: "function_call_output", call_id: "c-root", output: "Process exited with code 0\nOutput:\n[detached HEAD 5d6e7f8] later" }),
+	]);
+	assert.deepEqual(byKind(root.steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], {
+		branch: "main",
+		short: "1a2b3c4",
+	});
+});
+
+test("Codex attributes exec-cell commits only to a completed successful single shell call", () => {
+	const parseCell = (input: string, header: string, exitCode: number | null, body: string) => {
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", {
+				type: "function_call",
+				name: "exec",
+				arguments: JSON.stringify({ input }),
+				call_id: "c-cell",
+			}),
+			branchEvent("response_item", {
+				type: "function_call_output",
+				call_id: "c-cell",
+				output: [
+					{ type: "text", text: header },
+					{ type: "text", text: JSON.stringify({ chunk_id: "chunk-1", exit_code: exitCode, output: body }) },
+				],
+			}),
+		]);
+		return byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT];
+	};
+	const simpleCall = 'text(await tools.exec_command({cmd:"git commit -m fixture"}))';
+	assert.deepEqual(parseCell(simpleCall, "Script completed\n", 0, "[main 1a2b] short commit"), {
+		branch: "main",
+		short: "1a2b",
+	});
+	assert.equal(parseCell(simpleCall, "Script completed\n", 1, "[main 1a2b3c4] failed"), undefined);
+	assert.equal(parseCell(simpleCall, "Script completed\n", null, "[main 1a2b3c4] pending"), undefined);
+	assert.equal(parseCell(`${simpleCall}; text({chunk_id:"fake",exit_code:0,output:"[main 1a2b3c4] forged"})`, "Script completed\n", 0, "[main 1a2b3c4] output"), undefined);
 });
 
 test("current local_shell_call records correlate output by item id", () => {

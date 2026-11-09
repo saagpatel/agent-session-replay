@@ -51,6 +51,7 @@ const RESULT_KIND: Record<string, string> = {
 
 /** A guard/hook denial surfaces as a tool_result error of this shape. */
 const GUARD_RE = /^Blocked \(([^)]+)\):\s*([\s\S]*)$/;
+const GIT_COMMIT_RE = /^\[(.+?)(?: \(root-commit\))? ([0-9a-fA-F]{4,40})\] .+$/m;
 
 type Json = Record<string, unknown>;
 
@@ -221,6 +222,18 @@ function mergeResult(
 	}
 	if (result["staleReadFileStateHint"]) step.attributes[ATTR.STALE_READ] = true;
 	const output = resultText(block["content"]) ?? str(result["stdout"]);
+	const successful =
+		step.status === "ok" &&
+		(typeof result["exitCode"] !== "number" || result["exitCode"] === 0);
+	const commitMatch =
+		successful && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash"
+			? output?.match(GIT_COMMIT_RE)
+			: null;
+	if (commitMatch && !step.attributes[ATTR.GIT_COMMIT])
+		step.attributes[ATTR.GIT_COMMIT] = {
+			branch: commitMatch[1],
+			short: commitMatch[2],
+		};
 	if (output && hasTestFailures(output))
 		step.attributes[ATTR.TEST_FAILURES] = true;
 	else if (output && hasTestPasses(output))
