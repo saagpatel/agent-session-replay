@@ -87,6 +87,8 @@ export interface Trace {
 	/** Parse metadata (not part of the plumbline data model): count of non-blank
 	 * transcript lines that failed to parse, so the UI can flag under-reporting. */
 	malformed_lines?: number;
+	/** Parser-known event IDs deliberately omitted from steps (for parent links). */
+	external_parent_ids?: string[];
 }
 
 /**
@@ -106,6 +108,14 @@ export const ATTR = {
 	TOOL_CALL_ID: "gen_ai.tool.call.id",
 	TOOL_ARGS: "tool.arguments",
 	TOOL_RESULT_KIND: "tool.result.kind",
+	/** UUIDs of Claude user events whose tool results were merged into this step. */
+	CLAUDE_RESULT_EVENT_UUIDS: "claude.result_event_uuids",
+	/** Whether an Agent result conveys completed output or only a launch receipt. */
+	CLAUDE_AGENT_RESULT_KIND: "claude.agent_result_kind",
+	/** Kind of a parser-observed parent event omitted from steps. */
+	CLAUDE_PARENT_EVENT_KIND: "claude.parent_event_kind",
+	/** The source event lacked a timestamp; started_at uses the parser fallback. */
+	CLAUDE_TIMESTAMP_INFERRED: "claude.timestamp_inferred",
 	TOOL_ERROR: "tool.error.message",
 	/** The tool output reports failing tests, whatever the exit code said. */
 	TEST_FAILURES: "tool.output.test_failures",

@@ -96,6 +96,22 @@ function resultText(content: unknown): string | undefined {
 	return parts.length ? parts.join("\n") : undefined;
 }
 
+/** Launch receipts are control messages, not the child agent's output. */
+function agentResultKind(block: Json, result: Json): "completed" | "launched" | "unknown" {
+	const text = resultText(block["content"])?.trim();
+	const status = str(result["status"]);
+	if (result["isAsync"] === true || status === "async_launched" || status === "launched" ||
+		/^(?:(?:an?|the)\s+)?(?:(?:async(?:hronous)?|background)\s+)?agent\s+(?:(?:has\s+been|was)\s+)?(?:launched|started)\b/i.test(text ?? "")) {
+		return "launched";
+	}
+	if (block["is_error"] || result["interrupted"] ||
+		(status !== undefined && status !== "completed") ||
+		(result["isAsync"] !== undefined && result["isAsync"] !== false)) return "unknown";
+	// A successful, nonempty ordinary Agent response carries synchronous output.
+	// Missing output and unrecognized structured states do not prove completion.
+	return text ? "completed" : "unknown";
+}
+
 function attribution(ev: Json): Step["attribution"] | undefined {
 	const pairs: Array<[keyof NonNullable<Step["attribution"]>, string]> = [
 		["skill", "attributionSkill"],
@@ -173,7 +189,10 @@ function toolStep(
 	let attrs: Json;
 	if (name === "Agent") {
 		kind = "agent";
-		attrs = { [ATTR.AGENT_TYPE]: str(input["subagent_type"]) ?? "unknown" };
+		attrs = {
+			[ATTR.AGENT_TYPE]: str(input["subagent_type"]) ?? "unknown",
+			[ATTR.CLAUDE_AGENT_RESULT_KIND]: "unknown",
+		};
 		if (str(input["name"])) attrs[ATTR.AGENT_NAME] = input["name"];
 		if (str(input["model"])) attrs[ATTR.AGENT_MODEL] = input["model"];
 	} else {
@@ -198,6 +217,12 @@ function mergeResult(
 ): void {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
 	if (!step) return;
+	const eventUuid = str(ev["uuid"]);
+	if (eventUuid) {
+		const uuids = (step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] ?? []) as string[];
+		if (!uuids.includes(eventUuid)) uuids.push(eventUuid);
+		step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] = uuids;
+	}
 	const result = asObj(ev["toolUseResult"]);
 	let status: StepStatus = "ok";
 	if (result["interrupted"]) status = "interrupted";
@@ -237,6 +262,11 @@ function mergeResult(
 		step.attributes[ATTR.TEST_PASSES] = true;
 
 	if (step.kind === "agent") {
+		// A single merged timestamp/kind cannot identify which of multiple result
+		// events conveyed completion. Keep those ambiguous references unresolved.
+		const uuids = step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] as string[] | undefined;
+		step.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] = (uuids?.length ?? 0) > 1
+			? "unknown" : agentResultKind(block, result);
 		if (str(result["agentId"]))
 			step.attributes[ATTR.AGENT_SPAWNS] = result["agentId"];
 		if (str(result["resolvedModel"]))
@@ -425,6 +455,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	let modeSeq = 0;
 
 	events.forEach((ev, idx) => {
+		const firstStep = steps.length;
 		const ts = str(ev["timestamp"]) ?? lastTs;
 		if (str(ev["timestamp"])) lastTs = ev["timestamp"] as string;
 		const subId = ev["isSidechain"] ? (str(ev["agentId"]) ?? null) : null;
@@ -440,10 +471,6 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 					if (str(block["id"])) toolSteps.set(block["id"] as string, step);
 				}
 			});
-		} else if (etype === "user") {
-			contentBlocks(ev).forEach((block) => {
-				if (block["type"] === "tool_result") mergeResult(toolSteps, block, ev);
-			});
 		} else if (etype === "system") {
 			const step = systemStep(ev, subId, ts, idx);
 			if (step) steps.push(step);
@@ -453,13 +480,48 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 			lastMode = to;
 			steps.push(step);
 		}
+		if (str(ev["timestamp"]) === undefined) {
+			for (let index = firstStep; index < steps.length; index++) {
+				steps[index]!.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] = true;
+			}
+		}
 	});
 
 	// Stable sort: equal timestamps keep insertion (~event) order.
 	steps.sort((a, b) =>
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
-	return { plumbline_version: PLUMBLINE_VERSION, run, steps };
+	const stepIds = new Set(steps.map((step) => step.step_id));
+	const omittedEventKinds = new Map<string, "user" | "system" | "summary" | "unmatched-tool-result">();
+	// Resolve results only after every tool call is indexed, regardless of input
+	// order. Result events are causal evidence, never ordinary user context.
+	for (const event of events) {
+		const id = str(event["uuid"]);
+		const kind = event["type"];
+		const results = kind === "user"
+			? contentBlocks(event).filter((block) => block["type"] === "tool_result")
+			: [];
+		for (const block of results) mergeResult(toolSteps, block, event);
+		if (!id || stepIds.has(id)) continue;
+		if (results.length) {
+			if (results.some((block) => !toolSteps.has(str(block["tool_use_id"]) ?? ""))) {
+				omittedEventKinds.set(id, "unmatched-tool-result");
+			}
+		} else if (kind === "user" || kind === "system" || kind === "summary") {
+			omittedEventKinds.set(id, kind);
+		}
+	}
+	for (const step of steps) {
+		const kind = step.parent_step_id ? omittedEventKinds.get(step.parent_step_id) : undefined;
+		if (kind) step.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND] = kind;
+	}
+	const externalParents = [...new Set(events.flatMap((event) => {
+		const id = str(event["uuid"]);
+		return id && !stepIds.has(id) ? [id] : [];
+	}))];
+	return { plumbline_version: PLUMBLINE_VERSION, run, steps,
+		...(externalParents.length ? { external_parent_ids: externalParents } : {}),
+	};
 }
 
 /** Parse raw transcript text (main + optional subagent sidechain texts) into a Trace. */

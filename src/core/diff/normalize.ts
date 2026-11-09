@@ -928,6 +928,93 @@ function straightLine(masked: string, calls: RegExpMatchArray[]): boolean {
 	return k === calls.length;
 }
 
+/** Decode literal data for export checks without evaluating any cell source. */
+function literalData(text: string): unknown {
+	const masked = maskCode(text).trim();
+	const value = text.trim();
+	const literal = soleLiteral(value);
+	if (literal !== undefined) return literal;
+	if (/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?)$/i.test(value)) {
+		try { return JSON.parse(value) as unknown; } catch { return undefined; }
+	}
+	const object = masked.startsWith("{") && masked.endsWith("}");
+	if (!object && !(masked.startsWith("[") && masked.endsWith("]"))) return undefined;
+	const inner = value.slice(1, -1);
+	const innerMasked = masked.slice(1, -1);
+	// Empty elements (array holes) are not literal values; a trailing comma is fine.
+	if (/^\s*,|,\s*,/.test(innerMasked)) return undefined;
+	const entries: Array<[string, unknown]> = [];
+	const values: unknown[] = [];
+	const keys = new Set<string>();
+	for (const [start, end] of topLevelRanges(innerMasked)) {
+		const item = inner.slice(start, end);
+		let key: string | undefined;
+		let data = item;
+		if (object) {
+			const named = /^\s*([A-Za-z_$][\w$]*)\s*:/.exec(item);
+			const quoted = /^\s*(["'])([^\\]*?)\1\s*:/s.exec(item);
+			const prefix = named ?? quoted;
+			key = named?.[1] ?? quoted?.[2];
+			if (!prefix || key === undefined || keys.has(key)) return undefined;
+			keys.add(key);
+			data = item.slice(prefix[0].length);
+		}
+		const decoded = literalData(data);
+		if (decoded === undefined) return undefined;
+		if (object) entries.push([key!, decoded]);
+		else values.push(decoded);
+	}
+	return object ? Object.fromEntries(entries) : values;
+}
+
+/** Literal invocation evidence only; no execution or success claim. */
+export function execLiteralCalls(input: string): Array<{
+	tool: string;
+	argument: (key: string | null) => { found: boolean; value?: string };
+	/** Complete literal object, for allowlists that must inspect every key. */
+	arguments: () => Record<string, unknown> | undefined;
+}> | undefined {
+	// maskCode ends // comments only at LF; other JS line terminators fail closed.
+	if (/[\r\u2028\u2029]/.test(input)) return undefined;
+	const masked = maskCode(input);
+	const calls = [...masked.matchAll(CELL_CALL_RE)];
+	if (!straightLine(masked, calls)) return undefined;
+	return calls.map((call, index) => {
+		const body = input.slice(call.index ?? 0, calls[index + 1]?.index ?? input.length);
+		// The shared decoder handles common escapes, not JS unicode/hex/octal
+		// escapes or line continuations. Export must flag those as unresolved,
+		// rather than manufacture a different path. Run Diff remains unchanged.
+		const maskedBody = maskCode(body);
+		let unsupportedEscape = false;
+		for (let i = 0; i < body.length && !unsupportedEscape; i++) {
+			const quote = maskedBody[i];
+			if (quote !== '"' && quote !== "'" && quote !== "`") continue;
+			for (i++; i < body.length && body[i] !== quote; i++) {
+				if (body[i] !== "\\") continue;
+				// Consume both characters, so an escaped backslash cannot start
+				// a second, overlapping escape (e.g. a patch containing /\\w+/).
+				const escaped = body[++i];
+				if (!escaped || !"\\'\"`ntr0$/".includes(escaped) ||
+					(escaped === "0" && /[0-9]/.test(body[i + 1] ?? ""))) {
+					unsupportedEscape = true;
+					break;
+				}
+			}
+		}
+		return {
+			tool: call[1]!,
+			argument: (key) => unsupportedEscape ? { found: true } : exactLiteralArg(body, key),
+			arguments: () => {
+				if (unsupportedEscape) return undefined;
+				const args = callArgs(body, maskedBody);
+				const decoded = args ? literalData(args.text) : undefined;
+				return decoded && typeof decoded === "object" && !Array.isArray(decoded)
+					? decoded as Record<string, unknown> : undefined;
+			},
+		};
+	});
+}
+
 /** The result one printed part proves for the call it belongs to. */
 function partResult(tool: string, part: ExecPart | undefined, completed: boolean): UnitResult {
 	if (!part || !completed) return UNKNOWN;
