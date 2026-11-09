@@ -6,11 +6,15 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseTranscript } from "../parse.ts";
 import { toWaitTrace } from "./export.ts";
+import { ATTR } from "../types.ts";
 
 test("synthetic session exports a contained wait trace", () => {
 	const { harness, trace } = parseTranscript(readFileSync("fixtures/wait-anatomy-session.jsonl", "utf8"));
 	assert.equal(harness, "claude-code");
 	assert.ok(trace.steps.filter((step) => step.kind === "llm").length >= 2);
+	assert.equal(trace.steps.find((step) => step.step_id === "nested-1")?.parent_step_id, "prompt");
+	assert.equal(trace.steps.find((step) => step.step_id === "nested-1")?.subagent_id, "synthetic-agent");
+	assert.equal(trace.steps.find((step) => step.step_id === "agent-1")?.attributes[ATTR.AGENT_SPAWNS], "synthetic-agent");
 	const { waitTrace } = toWaitTrace(trace);
 	const spans = new Map(waitTrace.spans.map((span) => [span.id, span]));
 	assert.equal(spans.size, waitTrace.spans.length);

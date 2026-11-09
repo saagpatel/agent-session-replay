@@ -22,8 +22,31 @@ test("exports categories, containment, times, notes and ordered keys", () => {
 	assert.deepEqual(waitTrace.window_ns, [0, 9_000_000]);
 	assert.deepEqual(waitTrace.spans.slice(0, 3).map((s) => [s.name, s.category, s.parent_id]), [["helper", "nested_call", null], ["read", "tool_wait", "agent"], ["hook", "execution", null]]);
 	assert.ok(waitTrace.spans.slice(3).every((s) => s.category === "execution" && Number.isSafeInteger(s.start_ns) && Number.isSafeInteger(s.end_ns)));
-	assert.ok(notes.some((n) => n.includes("outside parent agent")));
+	assert.ok(notes.some((n) => n.includes("outside their parent") && n.includes("outside")));
 	assert.ok(notes.some((n) => n.includes("missing") && n.includes("skipped")));
+});
+test("aggregates diagnostics and bounds notes while preserving counts", () => {
+	const steps = Array.from({ length: 312 }, (_, i) => step(`orphan-${i}`, "tool_call", 0, 1, "missing"));
+	steps.push(...Array.from({ length: 300 }, (_, i) => step(`invalid-${i}`, "llm", 0, null)));
+	const { notes } = toWaitTrace({ plumbline_version: "1", run: { run_id: "test", harness: { name: "test" }, started_at: time(0), ended_at: time(1) }, steps });
+	assert.ok(notes.length <= 256);
+	assert.ok(notes.every((note) => note.length <= 2048));
+	assert.ok(notes.some((note) => note.includes("312 steps") && note.includes("parent")));
+	assert.ok(notes.some((note) => note.includes("300 steps") && note.includes("skipped")));
+	assert.ok(!notes.some((note) => note.includes("orphan-5")));
+});
+test("prefers contained direct parents and requires containment for subagent fallback", () => {
+	const agent = step("agent", "agent", 0, 10);
+	agent.attributes[ATTR.AGENT_SPAWNS] = "sub";
+	const direct = step("direct", "hook", 2, 8);
+	const child = step("child", "tool_call", 3, 4, "direct");
+	child.subagent_id = "sub";
+	const outside = step("outside", "tool_call", 11, 12, "event");
+	outside.subagent_id = "sub";
+	const { waitTrace, notes } = toWaitTrace({ plumbline_version: "1", run: { run_id: "test", harness: { name: "test" }, started_at: time(0), ended_at: time(12) }, steps: [agent, direct, child, outside] });
+	assert.equal(waitTrace.spans.find((span) => span.id === "child")?.parent_id, "direct");
+	assert.equal(waitTrace.spans.find((span) => span.id === "outside")?.parent_id, null);
+	assert.ok(notes.some((note) => note.includes("outside") && note.includes("top level")));
 });
 test("missing run end and deep links are noted", () => {
 	const steps = Array.from({ length: 67 }, (_, i) => step(String(i), "agent", 0, 1, i ? String(i - 1) : undefined));
