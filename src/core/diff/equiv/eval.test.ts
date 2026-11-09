@@ -59,7 +59,14 @@ test("equiv-eval: labeled-class rates and baseline arithmetic", () => {
 	assert.equal(result.baseline.falseMatchRate, result.baseline.falseMatches / result.divergentLabeled);
 	assert.equal(result.baseline.missedMatchRate, result.baseline.missedMatches / result.equivalentLabeled);
 	assert.equal(result.falseMatchRate, 0);
-	assert.ok(result.missedMatchRate <= 0.15);
+	assert.equal(result.missedMatches, 4);
+	const misses = result.perPair.filter((p) => p.label === "equivalent" && p.judged === "divergent");
+	assert.deepEqual(misses.map((p) => p.slug), ["09-extra-exploratory-read", "18-distinct-file-read-around-edit", "23-extra-exploratory-reads", "26-identical-tests"]);
+	const output = execFileSync(process.execPath, ["--experimental-strip-types", "scripts/run-diff-equiv.ts", "--eval"], { encoding: "utf8" });
+	for (const miss of misses) {
+		const line = output.split("\n").find((line) => line.startsWith(`- ${miss.slug}:`));
+		assert.ok(miss.why && line?.includes(miss.why) && line.includes("Comparison: "));
+	}
 });
 
 test("every fixture event expands to its original members", () => {

@@ -53,7 +53,15 @@ async function printEval(pairs: EquivalencePair[]): Promise<void> {
 	const bad = result.perPair.filter((pair) => pair.judged !== "incomplete" && pair.judged !== pair.label);
 	if (!bad.length) { console.log("misjudged: none"); return; }
 	console.log("misjudged pairs:");
-	for (const pair of bad) console.log(`- ${pair.slug}: labeled ${pair.label}, judged ${pair.judged}; ${pair.why}`);
+	for (const pair of bad) {
+		const source = pairs.find((candidate) => candidate.slug === pair.slug) as EquivalencePair;
+		const rows = alignEquivalent(source.left, source.right).divergences;
+		const leftOnly = rows.filter((row) => row.left && !row.right).map((row) => row.left?.key);
+		const rightOnly = rows.filter((row) => row.right && !row.left).map((row) => row.right?.key);
+		const reason = leftOnly.some((key) => rightOnly.includes(key)) ? "matching evidence occurs on opposite sides of a barrier" :
+			leftOnly.length || rightOnly.length ? "one-sided evidence is retained" : "paired evidence keys or outcomes differ";
+		console.log(`- ${pair.slug}: labeled ${pair.label}, judged ${pair.judged}; ${pair.why} Comparison: ${reason}.`);
+	}
 }
 
 function eventLabel(event: CanonicalEvent): string {

@@ -336,7 +336,11 @@ function coalesceObservations(
 			}
 			continue;
 		}
-		if (event.status !== "ok" || event.range && event.target === null) continue;
+		if (event.status !== "ok") {
+			buckets.clear();
+			continue;
+		}
+		if (event.range && event.target === null) continue;
 		const bucketKey = key(event.action, event.target, event.range ? "range" : event.key);
 		let candidates = buckets.get(bucketKey);
 		if (!candidates) {
@@ -518,5 +522,5 @@ export function normalizeEquivalent(
 		events.splice(i, end - i + 1, combined);
 	}
 	if (!reasons.has("normalization-budget")) events = coalesceObservations(events, sameSegment, cwd, spend);
-	return { steps, events, incomplete: reasons.size > 0, incompleteReasons: [...reasons] };
+	return { steps, events, sourceSegments: segments, incomplete: reasons.size > 0, incompleteReasons: [...reasons] };
 }

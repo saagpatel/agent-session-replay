@@ -64,6 +64,22 @@ test("three adjacent reads equal a bulk read, also across shell/Read tools", () 
 	assert.ok(diffRuns(small, bulk).rows.some((r) => r.relation !== "same"));
 });
 
+test("only consecutive successful observations sort for comparison", () => {
+	const a = read(1, 5, "a.ts");
+	const b = read(1, 5, "b.ts");
+	const left = trace([b, a]);
+	const right = trace([a, b]);
+	const result = alignEquivalent(left, right);
+	assert.equal(result.equivalent, true);
+	assert.deepEqual(expandAll(result.left), normalizeTrace(left));
+	assert.equal(alignEquivalent(trace([b, edit("x", "y"), a]), trace([a, edit("x", "y"), b])).equivalent, false);
+	const failed = read(1, 5, "b.ts", "error");
+	const failedResult = alignEquivalent(trace([failed, a]), trace([a, failed]));
+	assert.equal(failedResult.equivalent, false);
+	assert.equal(failedResult.rows[0]?.left?.status, "error");
+	assert.equal(normalized(trace([a, failed, a])).events.length, 3);
+});
+
 test("overlaps, interleaved files, and bridging ranges keep first-member position", () => {
 	const t = trace([read(1, 5), read(1, 2, "b.ts"), read(9, 4), grep(), read(5, 5)]);
 	const n = normalized(t);

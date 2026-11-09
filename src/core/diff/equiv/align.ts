@@ -6,8 +6,25 @@ import { normalizeEquivalent } from "./normalize.ts";
 import type { CanonicalEvent, EquivalentAlignment, EquivalentNormalization } from "./types.ts";
 
 /** Adapt enriched signatures to the existing aligner without changing it. */
-function alignmentSteps(normalized: EquivalentNormalization): DiffStep[] {
-	return normalized.events.map((event, index) => ({
+function comparisonEvents(normalized: EquivalentNormalization): CanonicalEvent[] {
+	const events = [...normalized.events];
+	const observation = (event: CanonicalEvent) => event.status === "ok" && (event.action === "read" || event.action === "search");
+	for (let start = 0; start < events.length;) {
+		const first = events[start] as CanonicalEvent;
+		if (!observation(first)) { start++; continue; }
+		let end = start + 1;
+		while (end < events.length && observation(events[end] as CanonicalEvent) &&
+			normalized.sourceSegments.get(first.memberStepIds[0] as string) ===
+			normalized.sourceSegments.get((events[end] as CanonicalEvent).memberStepIds[0] as string)) end++;
+		const run = events.slice(start, end).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+		for (let i = 0; i < run.length; i++) events[start + i] = run[i] as CanonicalEvent;
+		start = end;
+	}
+	return events;
+}
+
+function alignmentSteps(normalized: EquivalentNormalization, events: CanonicalEvent[]): DiffStep[] {
+	return events.map((event, index) => ({
 		...(normalized.steps[event.members[0] as number] as DiffStep),
 		index,
 		action: event.action,
@@ -30,14 +47,16 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 	const candidateRight = normalizeEquivalent(r.steps, r.sources, r.cwd);
 	const left = normalizeEquivalent(l.steps, l.sources, l.cwd, new Set(candidateRight.events.map((e) => e.key)));
 	const right = normalizeEquivalent(r.steps, r.sources, r.cwd, new Set(candidateLeft.events.map((e) => e.key)));
-	const aligned = alignSteps(alignmentSteps(left), alignmentSteps(right));
+	const leftEvents = comparisonEvents(left);
+	const rightEvents = comparisonEvents(right);
+	const aligned = alignSteps(alignmentSteps(left, leftEvents), alignmentSteps(right, rightEvents));
 	const rows = aligned.rows.map((row) => ({
 		...row,
 		// Work Equivalence preserves each outcome, including missing evidence.
 		// Run Diff's failure-only comparison intentionally remains unchanged.
 		statusDiffers: row.left !== null && row.right !== null && row.left.status !== row.right.status,
-		left: row.left ? left.events[row.left.index] as CanonicalEvent : null,
-		right: row.right ? right.events[row.right.index] as CanonicalEvent : null,
+		left: row.left ? leftEvents[row.left.index] as CanonicalEvent : null,
+		right: row.right ? rightEvents[row.right.index] as CanonicalEvent : null,
 	}));
 	// Candidate discovery must not hide an exhausted normalization budget.
 	const reasons = new Set([...candidateLeft.incompleteReasons, ...candidateRight.incompleteReasons,
