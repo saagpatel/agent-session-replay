@@ -6,7 +6,7 @@ import { parseClaudeCodeEvents } from "./claude-code.ts";
 import { parseCodexEvents } from "./codex.ts";
 
 const timestamp = "2026-01-01T00:00:00Z";
-const header = "[main 1a2b3c4] fixture\n[other 5d6e7f8] later";
+const header = "[main 1a2b3c4] fixture";
 const event = (payload: unknown) => ({ timestamp, type: "response_item", payload });
 const claim = (steps: Step[]) => steps.find((step) => step.kind === "tool_call")?.attributes[ATTR.GIT_COMMIT];
 
@@ -52,12 +52,18 @@ test("plausible commit headers require literal commit commands in both parsers a
 });
 
 test("commit claims accept only successful literal commits and add/commit chains", () => {
-	for (const command of ["git commit -am fixture", "git add --all && git commit -m fixture", ["bash", "-lc", "git commit -m fixture"]]) {
+	for (const command of ["git commit -am fixture", "git add --all && git commit -m fixture"]) {
 		assert.deepEqual(claude(command), { branch: "main", short: "1a2b3c4" });
 		assert.deepEqual(codex(command), { branch: "main", short: "1a2b3c4" });
 		assert.equal(claude(command, header, 1), undefined);
 		assert.equal(codex(command, header, 1), undefined);
 	}
+	const argv = ["bash", "-lc", "git commit -m fixture"];
+	assert.equal(claude(argv), undefined);
+	assert.equal(codex(argv), undefined);
+	const multipleHeaders = `${header}\n[other 5d6e7f8] later`;
+	assert.equal(claude("git commit -m fixture", multipleHeaders), undefined);
+	assert.equal(codex("git commit -m fixture", multipleHeaders), undefined);
 	for (const command of ["git commit -m fixture", "git add . && git commit -m fixture"]) {
 		const input = `text(await tools.exec_command(${JSON.stringify({ cmd: command, workdir: "/work/fixture" })}))`;
 		assert.deepEqual(exec(input), { branch: "main", short: "1a2b3c4" });
