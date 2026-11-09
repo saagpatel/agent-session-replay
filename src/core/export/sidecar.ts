@@ -88,6 +88,8 @@ export function validateSidecar(value: unknown, manifest: Manifest, trace: Trace
 		const expected = manifest.scenes[index];
 		if (!expected || !sameIds(scene.steps, expected.steps)) errors.push(`Played step coverage does not match scene: ${scene.id}`);
 		if (!sameIds(scene.captions, manifest.captions.filter((caption) => caption.sceneId === scene.id).map((caption) => caption.id))) errors.push(`Caption coverage does not match scene: ${scene.id}`);
+		if (!expected || !obj(scene.range.from) || scene.range.from.id !== expected.range.from ||
+			!obj(scene.range.to) || scene.range.to.id !== expected.range.to) errors.push(`Range does not match scene: ${scene.id}`);
 		step(scene.range.from, false); step(scene.range.to, false);
 		scene.steps.forEach((s) => step(s, true));
 		for (const caption of scene.captions) {

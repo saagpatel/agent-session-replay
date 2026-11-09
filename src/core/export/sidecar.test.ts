@@ -15,6 +15,9 @@ test("sidecar validator rejects omitted coverage and incorrect counts", () => {
 		[(sidecar: typeof original) => { sidecar.scenes[0]!.steps.pop(); }, /Played step coverage/],
 		[(sidecar: typeof original) => { sidecar.scenes[0]!.steps.reverse(); }, /Played step coverage/],
 		[(sidecar: typeof original) => { sidecar.scenes[0]!.captions.pop(); }, /Caption coverage/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.range.from = sidecar.scenes.at(-1)!.range.to; }, /Range does not match/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.range.to = null; }, /Range does not match/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.range.from!.index++; }, /mismatched source step/],
 		[(sidecar: typeof original) => { sidecar.counts.sourceSteps--; }, /Counts/],
 	] as const) {
 		const sidecar = structuredClone(original);
