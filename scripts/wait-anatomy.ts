@@ -1,15 +1,25 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseTranscript } from "../src/core/parse.ts";
 import { toWaitTrace } from "../src/core/wait-anatomy/export.ts";
+
+/** Claude Code keeps subagent transcripts in `<session>/subagents/*.jsonl`; a missing directory is expected. */
+function readSidechains(sessionPath: string): string[] {
+	const subDir = join(sessionPath.replace(/\.jsonl$/, ""), "subagents");
+	if (!existsSync(subDir)) return [];
+	return readdirSync(subDir)
+		.filter((name) => name.endsWith(".jsonl"))
+		.sort()
+		.map((name) => readFileSync(join(subDir, name), "utf8"));
+}
 
 const args = process.argv.slice(2);
 if (args.length !== 3 || args[1] !== "--out" || !args[0] || !args[2]) {
 	console.error("Usage: node --experimental-strip-types scripts/wait-anatomy.ts <session.jsonl> --out <dir>");
 	process.exit(1);
 }
-const { waitTrace } = toWaitTrace(parseTranscript(readFileSync(args[0], "utf8")).trace);
+const { waitTrace } = toWaitTrace(parseTranscript(readFileSync(args[0], "utf8"), readSidechains(args[0])).trace);
 if (waitTrace.window_ns[1] <= waitTrace.window_ns[0]) {
 	console.log("No measurable time in this session (window is zero-length); nothing to analyze.");
 	process.exit(0);
