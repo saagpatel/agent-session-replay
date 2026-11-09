@@ -191,7 +191,7 @@ function execCellCommitOutput(input: string, rawOutput: unknown): { output: stri
 	if (!/^Script completed\b/.test(header)) return null;
 	for (let i = calls.length - 1; i >= 0; i--) {
 		const call = calls[i]!;
-		if (call.name !== "exec_command" || !isCommitCommand(call.args ?? {})) continue;
+		if (call.name !== "exec_command" || !isCommitCommand(call.args ?? {}, call.name)) continue;
 		try {
 			const chunk = asObj(JSON.parse(str(asObj(rawOutput[i + 1])["text"]) ?? ""));
 			if (typeof chunk["chunk_id"] === "string" && chunk["exit_code"] === 0 && typeof chunk["output"] === "string" && commitHeader(chunk["output"]))
@@ -347,7 +347,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const commitOutput =
 			toolName === "exec"
 				? cellCommit?.output
-				: step.status === "ok" && successfulShellResult && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]))
+				: step.status === "ok" && successfulShellResult && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]), toolName ?? "")
 					? output
 					: null;
 		if (commitOutput && !step.attributes[ATTR.GIT_COMMIT]) {

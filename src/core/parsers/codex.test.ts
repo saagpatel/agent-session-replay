@@ -149,7 +149,9 @@ test("Codex shell and exec cells require allowlisted argument keys for commit ev
 	for (const [extra, accepted] of cases) {
 		for (const name of ["shell", "exec_command", "local_shell", "exec"]) {
 			const cell = name === "exec";
-			const shellArgs = { cmd: "git commit -m fixture", ...extra };
+			const shellArgs = name === "shell" || name === "local_shell"
+				? { command: ["git", "commit", "-m", "fixture"], ...extra }
+				: { cmd: "git commit -m fixture", ...extra };
 			const args = cell ? { input: `text(await tools.exec_command(${JSON.stringify(shellArgs)}))` } : shellArgs;
 			const body = "[main 1a2b3c4] fixture";
 			const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
@@ -159,6 +161,27 @@ test("Codex shell and exec cells require allowlisted argument keys for commit ev
 				branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
 			]);
 			assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined, `${name}: ${JSON.stringify(extra)}`);
+		}
+	}
+});
+
+test("Codex commit evidence requires exactly the tool's command key", () => {
+	for (const name of ["exec_command", "shell", "local_shell", "exec"]) {
+		const cell = name === "exec";
+		const argv = name === "shell" || name === "local_shell";
+		const correct = argv ? { command: ["git", "commit", "-m", "fixture"] } : { cmd: "git commit -m fixture" };
+		const wrong = argv ? { cmd: "git commit -m fixture" } : { command: "git commit -m fixture" };
+		const conflict = argv ? { ...correct, cmd: "printf forged" } : { cmd: "printf forged", command: "git commit -m fixture" };
+		for (const [shellArgs, accepted] of [[correct, true], [wrong, false], [conflict, false]] as const) {
+			const args = cell ? { input: `text(await tools.exec_command(${JSON.stringify(shellArgs)}))` } : shellArgs;
+			const body = "[main 1a2b3c4] forged";
+			const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+			const { steps } = parseCodexEvents([
+				branchSessionMeta(),
+				branchEvent("response_item", { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c" }),
+				branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+			]);
+			assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined, `${name}: ${JSON.stringify(shellArgs)}`);
 		}
 	}
 });

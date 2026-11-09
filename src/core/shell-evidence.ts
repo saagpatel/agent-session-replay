@@ -143,10 +143,16 @@ export function shellEvidence(command: string): ShellEvidence | null {
 	return literalTest(tokens) ? result("read") : null;
 }
 
-export function isCommitCommand(args: Args): boolean {
+export function isCommitCommand(args: Args, tool: string): boolean {
 	const allowed = new Set(["command", "cmd", "workdir", "description", "timeout", "timeout_ms", "yield_time_ms", "max_output_tokens"]);
 	if (Object.keys(args).some((key) => !allowed.has(key))) return false;
-	const command = shellCommand(args);
+	const key = tool === "exec_command" ? "cmd" : ["Bash", "shell", "local_shell"].includes(tool) ? "command" : undefined;
+	if (!key || !Object.hasOwn(args, key) || Object.hasOwn(args, key === "cmd" ? "command" : "cmd")) return false;
+	const value = args[key];
+	if (tool === "Bash" || tool === "exec_command") {
+		if (typeof value !== "string") return false;
+	} else if (!Array.isArray(value)) return false;
+	const command = shellCommand({ [key]: value });
 	return command !== undefined && shellEvidence(command)?.kind === "commit";
 }
 

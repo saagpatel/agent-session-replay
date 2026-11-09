@@ -226,7 +226,7 @@ function mergeResult(
 		step.status === "ok" &&
 		(typeof result["exitCode"] !== "number" || result["exitCode"] === 0);
 	const commitMatch =
-		successful && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]))
+		successful && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]), str(step.attributes[ATTR.TOOL_NAME]) ?? "")
 			? output && commitHeader(output)
 			: null;
 	if (commitMatch && !step.attributes[ATTR.GIT_COMMIT])
