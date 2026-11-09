@@ -24,7 +24,7 @@ type Case = {
 	artifactOnly?: string[];
 	claim?: "missing" | "none";
 	/** Expected artifact effect statuses, by zero-based tool ordinal. */
-	artifact: { retained: number[]; abandoned: number[]; unknown: number[] };
+	artifact: { retained: number[]; abandoned: number[]; unknown: number[]; partial?: number[] };
 	notes: string;
 };
 
@@ -142,7 +142,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "08-retry-nested-backtrack",
-		artifact: { retained: [3], abandoned: [2], unknown: [0] },
+		artifact: { retained: [3], abandoned: [0, 2], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			test(true),
@@ -358,7 +358,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "26-partial-lineage",
-		artifact: { retained: [1], abandoned: [], unknown: [0] },
+		artifact: { retained: [1], abandoned: [], partial: [0], unknown: [] },
 		tools: [edit("const value = 0;", "const value = 10;"), edit("10;", "1;")],
 		partial: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -367,7 +367,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "27-identical-edit-reintroduced",
-		artifact: { retained: [2], abandoned: [1], unknown: [0] },
+		artifact: { retained: [2], abandoned: [0, 1], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			edit("const value = 1;", "const value = 0;"),
@@ -752,6 +752,7 @@ async function generate(outRoot = root): Promise<void> {
 				retained: c.artifact.retained.map((n) => `${prefix}${n}`),
 				abandoned: c.artifact.abandoned.map((n) => `${prefix}${n}`),
 				unknown: c.artifact.unknown.map((n) => `${prefix}${n}`),
+				...(c.artifact.partial ? { partial: c.artifact.partial.map((n) => `${prefix}${n}`) } : {}),
 			},
 			expected: {
 				abandoned: c.abandoned ?? [],

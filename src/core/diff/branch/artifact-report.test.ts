@@ -22,14 +22,14 @@ test("fixture reports preserve step provenance and artifact claims fail closed",
 		const graph = buildBranchGraph(labels.harness === "codex" ? parseCodexTranscript(raw) : parseClaudeCodeTranscript(raw), repo.commits[0].files);
 		const check = checkArtifacts(graph, repo);
 		const report = branchReport(graph, check);
-		const ids = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown].map((step) => step.id);
+		const ids = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim].map((step) => step.id);
 		assert.equal(new Set(ids).size, ids.length, slug);
 		assert.deepEqual(new Set(ids), new Set(graph.nodes.map((node) => node.stepId)), slug);
 		assert.equal(check.claim.status, labels.artifact.link, `${slug}: artifact link`);
-		for (const status of ["retained", "abandoned", "unknown"] as const) {
+		for (const status of ["retained", "abandoned", "partial", "unknown", "after-claim"] as const) {
 			assert.deepEqual(
 				[...new Set(check.effects.filter((effect) => effect.status === status).map((effect) => effect.node.stepId))].sort(),
-				[...labels.artifact[status]].sort(),
+				[...(labels.artifact[status] ?? [])].sort(),
 				`${slug}: artifact ${status} effects`,
 			);
 		}
@@ -58,7 +58,7 @@ test("the dense fixture groups all dead ends and keeps every retained step visib
 	assert.ok(rendered.startsWith("Retained 3 · Dropped 23 (11 superseded, 12 backtrack) · Unknown 0 · Commit 3a6790b resolved\n"));
 });
 
-test("a partially surviving payload is unknown in the artifact report, never wholly dropped", () => {
+test("a partially surviving payload is partial in the artifact check, never wholly dropped", () => {
 	const repo = { commits: [{ parent: null, message: "partial edit", files: { "src/value.ts": "next right\n" } }] };
 	const sha = fixtureRepoCommitShas(repo.commits)[0]!;
 	const steps: Step[] = [
@@ -83,7 +83,7 @@ test("a partially surviving payload is unknown in the artifact report, never who
 	assert.equal(graph.editEffects[0]?.lineage, "partial");
 	const check = checkArtifacts(graph, repo);
 	assert.equal(check.claim.status, "resolved");
-	assert.deepEqual(check.effects.map((effect) => effect.status), ["unknown", "retained"]);
+	assert.deepEqual(check.effects.map((effect) => effect.status), ["partial", "retained"]);
 	const report = branchReport(graph, check);
 	assert.deepEqual(report.unknown.map((step) => step.id), ["first"]);
 	assert.deepEqual(report.retained.map((step) => step.id), ["second", "commit"]);

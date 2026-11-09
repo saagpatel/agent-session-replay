@@ -41,6 +41,12 @@ export interface EditEffect {
 	/** Only this file at run end; an absent key means deletion. */
 	endState: FileSnapshot;
 }
+/** Character origins at one operation boundary; null origins belong to the base. */
+export interface ProvenanceFile {
+	text: string;
+	/** Each non-null owner is JSON.stringify([stepId, part]). */
+	owners: Array<string | null>;
+}
 export interface BranchGraph {
 	nodes: BranchNode[];
 	branches: Branch[];
@@ -51,6 +57,9 @@ export interface BranchGraph {
 	claim: {
 		commitShort: string | null;
 		stepId: string | null;
+		part: number | null;
+		/** Independent tree and provenance snapshot at the claimed commit operation. */
+		tree: Record<string, ProvenanceFile | null> | null;
 		/** Candidate paths touched by the claim step; commit membership is not proven. */
 		files: string[];
 	};

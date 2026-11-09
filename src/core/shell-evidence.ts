@@ -52,6 +52,8 @@ export function shellCommand(args: Args): string | undefined {
 
 const SEARCH_FLAGS = new Set(["-n", "-i", "-w", "-l", "-F", "-r", "--no-heading"]);
 const path = (s: string) => s.length > 0 && !s.startsWith("-");
+// Git interprets pathspec syntax even after the shell removes quotes.
+const literalPath = (s: string) => path(s) && !s.startsWith(":") && !/[*?\[]/.test(s);
 
 export function shellEvidence(command: string): ShellEvidence | null {
 	const tokens = words(command, true);
@@ -75,10 +77,10 @@ export function shellEvidence(command: string): ShellEvidence | null {
 	if (cmd === "git") {
 		const [verb, ...rest] = args;
 		if (["status", "diff", "log", "show"].includes(verb ?? "") && !rest.some((a) => /^(?:--output(?:=|$)|-o|--ext-diff$|--textconv$)/.test(a))) return result("read");
-		if (verb === "checkout" && rest[0] === "--" && rest.length > 1 && rest.slice(1).every(path)) return result("restore", rest.slice(1));
+		if (verb === "checkout" && rest[0] === "--" && rest.length > 1 && rest.slice(1).every(literalPath)) return result("restore", rest.slice(1));
 		if (verb === "restore") {
 			const paths = rest[0] === "--" ? rest.slice(1) : rest;
-			if (paths.length && paths.every(path)) return result("restore", paths);
+			if (paths.length && paths.every(literalPath)) return result("restore", paths);
 		}
 		if ((verb === "stash" && (rest.length === 0 || (rest.length === 1 && rest[0] === "push"))) || (verb === "reset" && rest.length === 1 && rest[0] === "--hard")) return result("whole-restore");
 		if (verb === "add") return result("add");

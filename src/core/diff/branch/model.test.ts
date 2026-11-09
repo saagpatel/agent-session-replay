@@ -258,13 +258,35 @@ test("last commit claim is provenance only and excludes later touched files", ()
 	assert.deepEqual(graph.claim, {
 		commitShort: "abcdef1",
 		stepId: "commit-two",
+		part: 0,
+		tree: {
+			"src/a.ts": { text: "idea\n", owners: [...Array<string>(4).fill(JSON.stringify(["change", 0])), null] },
+			"src/b.ts": { text: "other\n", owners: Array<null>(6).fill(null) },
+		},
 		files: ["src/a.ts"],
 	});
 	assert.deepEqual(buildBranchGraph(trace(), base).claim, {
 		commitShort: null,
 		stepId: null,
+		part: null,
+		tree: null,
 		files: [],
 	});
+});
+
+test("quoted Git wildcard and magic pathspecs invalidate the whole tree", () => {
+	for (const verb of ["restore", "checkout --"])
+		for (const pathspec of ["'*.ts'", '"src/?.ts"', "'src/[ab].ts'", "':(glob)**/*.ts'", "':src/a.ts'", "':(literal)src/a.ts'"]) {
+			const command = `git ${verb} ${pathspec}`;
+			for (const operation of [shell("restore", command), cell(`text(await tools.exec_command(${JSON.stringify({ cmd: command })}))`)]) {
+				const graph = buildBranchGraph(trace(edit("change", "base", "idea"), operation), base);
+				assert.equal(graph.endStateComplete, false, command);
+				assert.equal(graph.endState["src/a.ts"], null, command);
+				assert.equal(graph.endState["src/b.ts"], null, command);
+				assert.deepEqual(lineages(graph), ["unknown"], command);
+				assert.ok(!Object.hasOwn(graph.endState, "*.ts"), command);
+			}
+		}
 });
 
 test("no-op edits preserve the earlier owner's lineage and superseded rejoin provenance", () => {

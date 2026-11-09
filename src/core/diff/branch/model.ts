@@ -251,6 +251,8 @@ export function buildBranchGraph(
 	let claim: BranchGraph["claim"] = {
 		commitShort: null,
 		stepId: null,
+		part: null,
+		tree: null,
 		files: [],
 	};
 	const touched = new Set<string>();
@@ -581,6 +583,11 @@ export function buildBranchGraph(
 			claim = {
 				commitShort: git["short"],
 				stepId: node.stepId,
+				part: node.part,
+				tree: Object.fromEntries([
+					...[...files].map(([path, state]) => [path, { text: state.text, owners: [...state.owners] }]),
+					...[...unknown].map((path) => [path, null]),
+				]),
 				files: [...touched].sort(),
 			};
 			headChanged = true;

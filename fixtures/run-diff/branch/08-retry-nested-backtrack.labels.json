@@ -7,11 +7,10 @@
       "toolu_3"
     ],
     "abandoned": [
+      "toolu_0",
       "toolu_2"
     ],
-    "unknown": [
-      "toolu_0"
-    ]
+    "unknown": []
   },
   "expected": {
     "abandoned": [

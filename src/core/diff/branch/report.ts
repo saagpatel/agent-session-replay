@@ -7,15 +7,20 @@ export interface BranchReport {
 	retained: ReportStep[];
 	abandoned: Array<{ branchId: string; kind: string; fork: string | null; rejoin: string | null; reason: string; steps: ReportStep[] }>;
 	unknown: ReportStep[];
+	afterClaim: ReportStep[];
 	claimedButUnchanged: string[];
 }
 
 export function branchReport(graph: BranchGraph, check: ArtifactCheck): BranchReport {
-	const result: BranchReport = { claim: check.claim, retained: [], abandoned: [], unknown: [], claimedButUnchanged: check.claimedButUnchanged };
+	const result: BranchReport = { claim: check.claim, retained: [], abandoned: [], unknown: [], afterClaim: [], claimedButUnchanged: check.claimedButUnchanged };
 	const ids = [...new Set(graph.nodes.map((node) => node.stepId))];
 	for (const id of ids) {
-		const nodes = graph.nodes.filter((node) => node.stepId === id);
-		const entries = check.steps.filter((entry) => entry.node.stepId === id);
+		const own = check.steps.filter((entry) => entry.node.stepId === id);
+		const later = own.filter((entry) => entry.status === "after-claim");
+		if (later.length) result.afterClaim.push({ id, nodes: graph.nodes.filter((node) => later.some((entry) => entry.node.stepId === node.stepId && entry.node.part === node.part)), source: "structure", reason: "Operations made after the claimed commit." });
+		const entries = own.filter((entry) => entry.status !== "after-claim");
+		if (!entries.length) continue;
+		const nodes = graph.nodes.filter((node) => entries.some((entry) => entry.node.stepId === node.stepId && entry.node.part === node.part));
 		const statuses = new Set(entries.map((entry) => entry.status));
 		const item: ReportStep = { id, nodes, source: entries.every((entry) => entry.source === "artifact") ? "artifact" : "structure", reason: [...new Set(entries.map((entry) => entry.reason))].join(" ") };
 		if (statuses.size === 1 && statuses.has("retained")) result.retained.push(item);
@@ -49,10 +54,10 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 		text = clean(text);
 		lines.push(text.length <= width ? text : `${text.slice(0, width - 1)}…`);
 	};
-	const stepOrder = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown]
+	const stepOrder = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim]
 		.sort((a, b) => Math.min(...a.nodes.map((node) => node.index)) - Math.min(...b.nodes.map((node) => node.index)));
 	const numbers = new Map<string, number>();
-	stepOrder.forEach((step, index) => numbers.set(step.id, index + 1));
+	for (const step of stepOrder) if (!numbers.has(step.id)) numbers.set(step.id, numbers.size + 1);
 	const label = (step: ReportStep) => {
 		const node = step.nodes[0];
 		const action = node?.action ?? "step";
@@ -130,5 +135,9 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 	}
 	add("Unknown");
 	for (const step of report.unknown) add(`  ${label(step)} · ${step.reason}`);
+	if (report.afterClaim.length) {
+		add("Operations made after the claimed commit");
+		for (const step of report.afterClaim) add(`  ${label(step)} · after-claim`);
+	}
 	return lines.join("\n");
 }

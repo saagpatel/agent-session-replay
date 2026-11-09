@@ -29,6 +29,7 @@ function denseReport(): BranchReport {
 		retained: [step("toolu_kept", 9)],
 		abandoned,
 		unknown: [],
+		afterClaim: [],
 		claimedButUnchanged: [],
 	};
 }
