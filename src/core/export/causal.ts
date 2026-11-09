@@ -134,6 +134,13 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		const knownStarts = ordered.every((call) => Number.isFinite(start(call)));
 		for (const step of chain) {
 			const time = start(step);
+			// Preserve the earliest dispatch as a playback floor even when the
+			// specific invocation cannot be assigned. Conflicting timestamps do
+			// not allow a child to precede every recorded dispatch either.
+			const floor = knownStarts && Number.isFinite(time)
+				? ordered.find((candidate) => start(candidate) <= time) ?? ordered[0]
+				: calls[0];
+			if (floor) add(floor.step_id, step.step_id, "spawn", ATTR.AGENT_SPAWNS);
 			// Equal invocation starts cannot be disambiguated by source order.
 			let index = -1;
 			if (knownStarts && Number.isFinite(time)) {
@@ -147,7 +154,8 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			const call = ordered[index];
 			const next = ordered[index + 1];
 			const resultTime = Date.parse(call?.ended_at ?? "");
-			const hasResult = call && (call.ended_at != null ||
+			const kind = call?.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND];
+			const hasResult = call && kind !== "launched" && kind !== "unknown" && (call.ended_at != null ||
 				Array.isArray(call.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS]) ||
 				["completed", "launched"].includes(String(call.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND])));
 			const end = Date.parse(step.ended_at ?? "");

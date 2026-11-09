@@ -63,8 +63,8 @@ test("parsed resumed Agent invocations constrain only their own child segment", 
 	assert.equal(validateExport(playback(trace), trace).ok, true);
 	for (const invocation of [1, 2]) {
 		const own = [`child-${invocation}`, `read-${invocation}-a`, `read-${invocation}-b`];
-		assert.deepEqual(graph.edges.filter((edge) => edge.kind === "spawn" && edge.from === `spawn-${invocation}`)
-			.map((edge) => edge.to), own);
+		for (const child of own) assert.ok(graph.edges.some((edge) =>
+			edge.kind === "spawn" && edge.from === `spawn-${invocation}` && edge.to === child));
 		for (const consumer of [`consumer-${invocation}`, `follow-${invocation}`]) {
 			assert.deepEqual(graph.edges.filter((edge) => edge.kind === "consumer" && edge.to === consumer)
 				.map((edge) => edge.from), own);
@@ -96,6 +96,29 @@ test("parsed resumed Agent invocations constrain only their own child segment", 
 	}
 });
 
+test("background receipts do not end child work or prove a consumer", () => {
+	for (const kind of ["launched", "unknown"] as const) {
+		const events = resumedEvents();
+		events.main[1]!.timestamp = timestamp(1);
+		Object.assign(events.main[1]!.message.content[0]!, {
+			content: kind === "launched" ? "Async agent launched successfully." : "",
+		});
+		events.child[0]!.timestamp = timestamp(2);
+		events.child[1]!.timestamp = timestamp(3);
+		const trace = parse(events);
+		// Exercise both result classifications independently of parser wording.
+		assert.equal(trace.steps.find((step) => step.step_id === "spawn-1")!.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND], kind);
+		const graph = buildCausalGraph(trace);
+		assert.ok(graph.edges.some((edge) => edge.kind === "spawn" && edge.from === "spawn-1" && edge.to === "read-1-a"));
+		assert.equal(graph.diagnostics.some((item) => item.reason === "ambiguous-subagent-invocation" && item.step === "read-1-a"), false);
+		assert.equal(graph.edges.some((edge) => edge.kind === "consumer" && edge.from === "read-1-a" && edge.to === "consumer-1"), false);
+		const ids = trace.steps.map((step) => step.step_id).filter((id) => id !== "read-1-a");
+		ids.splice(ids.indexOf("spawn-1"), 0, "read-1-a");
+		assert.ok(validateExport(playback(trace, ids), trace).failures.some((failure) =>
+			failure.reason === "reversed-causal-order" && failure.a === "spawn-1" && failure.b === "read-1-a"));
+	}
+});
+
 test("ambiguous child invocation membership warns and cannot support because captions", () => {
 	const cases: [string, (trace: Trace) => void][] = [
 		["missing child start", (trace) => { trace.steps.find((step) => step.step_id === "read-1-a")!.started_at = ""; }],
@@ -112,12 +135,16 @@ test("ambiguous child invocation membership warns and cannot support because cap
 		mutate(trace);
 		const graph = buildCausalGraph(trace);
 		assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.reason === "ambiguous-subagent-invocation" && diagnostic.step === "read-1-a"), name);
-		assert.equal(graph.edges.some((edge) => (edge.kind === "spawn" && edge.to === "read-1-a") ||
-			(edge.kind === "consumer" && edge.from === "read-1-a")), false, name);
+		assert.ok(graph.edges.some((edge) => edge.kind === "spawn" && edge.from === "spawn-1" && edge.to === "read-1-a"), name);
+		assert.equal(graph.edges.some((edge) => edge.kind === "consumer" && edge.from === "read-1-a"), false, name);
 		const manifest = playback(trace);
 		const result = validateExport(manifest, trace);
 		assert.equal(result.ok, true, name);
 		assert.ok(result.warnings.some((warning) => warning.reason === "ambiguous-subagent-invocation"), name);
+		const reversed = trace.steps.map((step) => step.step_id).filter((id) => id !== "read-1-a");
+		reversed.splice(reversed.indexOf("spawn-1"), 0, "read-1-a");
+		assert.ok(validateExport(playback(trace, reversed), trace).failures.some((failure) =>
+			failure.reason === "reversed-causal-order" && failure.a === "spawn-1" && failure.b === "read-1-a"), name);
 		// An independent explicit parent edge must not rescue a claim relying on
 		// a child step whose invocation cannot be established.
 		trace.steps.find((step) => step.step_id === "consumer-1")!.caused_by = "read-1-a";
@@ -149,7 +176,7 @@ test("invocation intervals include their start and result, and exclude the next 
 	for (const [from, to] of [["spawn-1", "read-1-a"], ["spawn-1", "read-1-b"], ["spawn-2", "read-2-a"]]) {
 		assert.ok(graph.edges.some((edge) => edge.kind === "spawn" && edge.from === from && edge.to === to));
 	}
-	assert.equal(graph.edges.some((edge) => edge.kind === "spawn" && edge.from === "spawn-1" && edge.to === "read-2-a"), false);
+	assert.ok(graph.edges.some((edge) => edge.kind === "spawn" && edge.from === "spawn-1" && edge.to === "read-2-a"));
 	assert.deepEqual(graph.diagnostics, []);
 });
 
