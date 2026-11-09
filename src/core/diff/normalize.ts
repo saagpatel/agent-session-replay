@@ -178,6 +178,11 @@ const GIT_READS = new Set([
 ]);
 /** At most this many steps are taken from one compound command. */
 const MAX_STAGES = 6;
+
+/** Optional accounting shared by every path that applies a normalization cap. */
+interface NormalizationCoverage {
+	truncated: boolean;
+}
 const READ_CMDS = new Set(["cat", "sed", "head", "tail", "nl", "less", "bat"]);
 const SEARCH_CMDS = new Set(["rg", "grep", "find", "ls", "fd", "tree", "ag"]);
 
@@ -337,11 +342,11 @@ interface Classified {
 }
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
-function classifyStage(stage: string, where: Where): Classified[] {
+function classifyStage(stage: string, where: Where, coverage?: NormalizationCoverage): Classified[] {
 	const cmds = pipeline(stage);
 	// A pipeline exits with its last command's status, so the command that
 	// feeds it never owns that status (`npm run build | grep -q ERROR`).
-	const base = classifyFirst(stage, where).map((c) =>
+	const base = classifyFirst(stage, where, coverage).map((c) =>
 		cmds.length > 1 ? { ...c, piped: true } : c,
 	);
 	// `… | tee f` also writes f, after the command that feeds it; tee owns the
@@ -356,7 +361,7 @@ function classifyStage(stage: string, where: Where): Classified[] {
 }
 
 /** Classify a stage by the first command of its pipeline. */
-function classifyFirst(stage: string, where: Where): Classified[] {
+function classifyFirst(stage: string, where: Where, coverage?: NormalizationCoverage): Classified[] {
 	const cmds = pipeline(stage);
 	const first = cmds[0] ?? "";
 	const toks = tokens(first);
@@ -383,6 +388,7 @@ function classifyFirst(stage: string, where: Where): Classified[] {
 		while (readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
 		const files = sedRead ?? fileArgs(readWords);
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
+		if (coverage && files.length > MAX_STAGES) coverage.truncated = true;
 		return files
 			.slice(0, MAX_STAGES)
 			.map((f) => located("read", resolveIn(f, where)));
@@ -528,6 +534,7 @@ function commandParts(
 	cmd: string,
 	root: string | null | undefined,
 	workdir?: string | null,
+	coverage?: NormalizationCoverage,
 ): CommandParts {
 	const core = coreCommand(cmd);
 	const where = whereFor(root, workdir);
@@ -552,8 +559,10 @@ function commandParts(
 			where.dir = to;
 		}
 		else if (stage) printing++;
-		for (const c of classifyStage(stage, where)) parts.push(last ? c : { ...c, last });
+		for (const c of classifyStage(stage, where, coverage)) parts.push(last ? c : { ...c, last });
 	});
+	if (coverage && parts.some((c, i) => i >= MAX_STAGES && c.action !== "test" && c.last === false))
+		coverage.truncated = true;
 	const solo = !control && printing === 1 && parts.length === 1 && parts[0]?.action === "test";
 	// Every separator counts, including those around dropped stages: the
 	// `|| true` in `false && npm test || true` decides what the exit status means.
@@ -592,12 +601,14 @@ function commandOf(args: unknown): string | undefined {
 function patchTargets(
 	patch: string,
 	cwd: string | null | undefined,
+	coverage?: NormalizationCoverage,
 ): Classified[] {
 	const out: Classified[] = [];
 	for (const m of patch.matchAll(/\*\*\* (Update|Add|Delete) File:\s*([^\s"\\]+)/g)) {
 		const file = relPath(m[2] ?? "", cwd);
 		out.push({ action: m[1] === "Add" ? "write" : "edit", target: file });
 	}
+	if (coverage && out.length > MAX_STAGES) coverage.truncated = true;
 	return out.slice(0, MAX_STAGES);
 }
 
@@ -860,7 +871,7 @@ const OK: UnitResult = { result: "ok", testFailures: false, testPasses: false };
  * result. Any other cell keeps its calls visible with unknown results, except
  * that a cell failing on `apply_patch` marks its single patch failed.
  */
-function codexExecCell(step: Step, input: string, cwd: string | null | undefined): Unit[] {
+function codexExecCell(step: Step, input: string, cwd: string | null | undefined, coverage?: NormalizationCoverage): Unit[] {
 	const masked = maskCode(input);
 	const calls = [...masked.matchAll(CELL_CALL_RE)];
 	const rawParts = step.attributes[ATTR.EXEC_PARTS];
@@ -886,7 +897,7 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			const wd = exactLiteralArg(body, "workdir");
 			const workdir = wd.found ? (wd.value ?? null) : undefined;
 			const unit = cmd.value !== undefined
-				? { ...commandParts(cmd.value, cwd, workdir), ...res }
+				? { ...commandParts(cmd.value, cwd, workdir, coverage), ...res }
 				: // A command we cannot read statically still happened: keep it, unresolved.
 					{ parts: [{ action: "run" as const, target: null, note: "unparsed command" }], chain: "single" as const, ...res };
 			out.push(unit);
@@ -895,7 +906,7 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
 		} else if (tool === "apply_patch") {
 			const patch = exactLiteralArg(body, null).value ?? "";
-			const parts = patchTargets(patch, cwd);
+			const parts = patchTargets(patch, cwd, coverage);
 			out.push({ parts: parts.length ? parts : [{ action: "edit", target: null }], chain: "single", ...res });
 		} else if (tool === "update_plan") {
 			out.push({ parts: [{ action: "plan", target: null }], chain: "single", ...res });
@@ -934,7 +945,7 @@ function yieldedOr(step: Step): UnitResult {
 	return only ? chunkResult(only) : stepResult(step);
 }
 
-function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
+function toolUnits(step: Step, cwd: string | null | undefined, coverage?: NormalizationCoverage): Unit[] {
 	const name = str(step.attributes[ATTR.TOOL_NAME]) ?? "";
 	const args = asObj(step.attributes[ATTR.TOOL_ARGS]);
 	const file = str(args["file_path"]) ?? str(args["path"]) ?? str(args["notebook_path"]);
@@ -966,7 +977,7 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			return one([{ action: "web", target: null }]);
 		case "apply_patch": {
 			const input = str(args["input"]) ?? str(args["patch"]) ?? "";
-			const parts = patchTargets(input, cwd);
+			const parts = patchTargets(input, cwd, coverage);
 			// A patch counts as applied only when its own output said so.
 			const own = stepResult(step);
 			const result: DiffStatus =
@@ -976,7 +987,7 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 			];
 		}
 		case "exec": {
-			const units = codexExecCell(step, str(args["input"]) ?? "", cwd);
+			const units = codexExecCell(step, str(args["input"]) ?? "", cwd, coverage);
 			return units.length ? units : one([{ action: "other", target: "exec" }]);
 		}
 		default: {
@@ -993,7 +1004,7 @@ function toolUnits(step: Step, cwd: string | null | undefined): Unit[] {
 					(v) => v !== undefined && v !== null && v !== "",
 				);
 				const workdir = raw === undefined ? undefined : (str(raw) ?? null);
-				return [{ ...commandParts(cmd, cwd, workdir), ...yieldedOr(step) }];
+				return [{ ...commandParts(cmd, cwd, workdir, coverage), ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
 		}
@@ -1104,10 +1115,10 @@ function summaries(
 	return parts.map(() => (solo ? sum : undefined));
 }
 
-function stepUnits(step: Step, cwd: string | null | undefined): Unit[] {
+function stepUnits(step: Step, cwd: string | null | undefined, coverage?: NormalizationCoverage): Unit[] {
 	if (step.kind === "tool_call") {
 		if (step.attributes[ATTR.GUARD_TRIPPED]) {
-			const first = toolUnits(step, cwd)[0]?.parts[0];
+			const first = toolUnits(step, cwd, coverage)[0]?.parts[0];
 			const guard = str(step.attributes[ATTR.GUARD_NAME]) ?? "guard";
 			return [
 				{
@@ -1117,7 +1128,7 @@ function stepUnits(step: Step, cwd: string | null | undefined): Unit[] {
 				},
 			];
 		}
-		return toolUnits(step, cwd);
+		return toolUnits(step, cwd, coverage);
 	}
 	const single = (c: Classified): Unit[] => [{ parts: [c], chain: "single", ...stepResult(step) }];
 	if (step.kind === "agent")
@@ -1140,6 +1151,17 @@ function rewritesAsEdits(parts: Classified[], seen: Set<string>): Classified[] {
 			seen.add(c.target);
 		return c;
 	});
+}
+
+/**
+ * Report caps using the same classifiers as normalizeTrace, without changing its
+ * output. Main-context sources must be checked even when they emit no DiffSteps.
+ */
+export function sourceNormalizationTruncated(step: Step, cwd?: string | null): boolean {
+	if (step.subagent_id) return false;
+	const coverage: NormalizationCoverage = { truncated: false };
+	stepUnits(step, cwd, coverage);
+	return coverage.truncated;
 }
 
 /** Steps worth comparing, in order. One source step may yield several. */

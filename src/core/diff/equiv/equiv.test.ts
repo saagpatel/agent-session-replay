@@ -4,7 +4,7 @@ import { ATTR, type Step, type Trace } from "../../types.ts";
 import { parseClaudeCodeEvents } from "../../parsers/claude-code.ts";
 import { parseCodexEvents } from "../../parsers/codex.ts";
 import { ccEvents, codexEvents, toJsonl } from "../fixtures.ts";
-import { normalizeTrace } from "../normalize.ts";
+import { normalizeTrace, sourceNormalizationTruncated } from "../normalize.ts";
 import { diffRuns, diffRunsEquivalent } from "../run-diff.ts";
 import type { DiffAction, DiffStatus } from "../types.ts";
 import { alignEquivalent } from "./align.ts";
@@ -17,10 +17,23 @@ type Tool = [string, Record<string, unknown>, DiffStatus?];
 const cases: Trace[] = [];
 function trace(tools: Tool[]): Trace {
 	const result: Trace = {
-		plumbline_version: "1", run: { run_id: "synthetic", harness: { name: "claude-code" }, started_at: "2026-10-01T00:00:00Z", workspace: { cwd: "/work/equiv" } },
+		plumbline_version: "1",
+		run: {
+			run_id: "synthetic",
+			harness: { name: "claude-code" },
+			started_at: "2026-10-01T00:00:00Z",
+			workspace: { cwd: "/work/equiv" },
+		},
 		steps: tools.map(([name, args, status = "ok"], i): Step => ({
-			step_id: `tool-${i}`, kind: "tool_call", started_at: "2026-10-01T00:00:00Z", ended_at: status === "unknown" ? undefined : "2026-10-01T00:00:01Z", status: status === "unknown" ? undefined : status,
-			attributes: { [ATTR.TOOL_NAME]: name, [ATTR.TOOL_ARGS]: args },
+			step_id: `tool-${i}`,
+			kind: "tool_call",
+			started_at: "2026-10-01T00:00:00Z",
+			ended_at: status === "unknown" ? undefined : "2026-10-01T00:00:01Z",
+			status: status === "unknown" ? undefined : status,
+			attributes: {
+				[ATTR.TOOL_NAME]: name,
+				[ATTR.TOOL_ARGS]: args,
+			},
 		})),
 	};
 	cases.push(result);
@@ -174,22 +187,171 @@ test("shell pipelines, redirects, expansions, and exec sources remain opaque ord
 	assert.equal(alignEquivalent(exec, exec).incomplete, true);
 });
 
+test("dropped opaque source calls remain incomplete and divide observations and edits", () => {
+	for (const command of ['echo "$(node mutate.js)"', 'printf "%s" "$(node mutate.js)"']) {
+		const standalone = trace([shell(command)]);
+		assert.deepEqual(normalizeTrace(standalone), [], command);
+		const result = alignEquivalent(standalone, trace([]));
+		assert.equal(result.incomplete, true, command);
+		assert.equal(result.equivalent, false, command);
+		const interleaved = trace([read(1, 5), shell(command), read(6, 5)]);
+		assert.equal(normalized(interleaved).events.length, 2, command);
+		assert.equal(alignEquivalent(interleaved, trace([read(1, 10)])).equivalent, false, command);
+		assert.equal(normalized(trace([grep(), shell(command), grep()])).events.length, 2, command);
+		assert.equal(normalized(trace([edit("a", "b"), shell(command), edit("b", "c")])).events.length, 2, command);
+		const compound = trace([read(1, 5), shell(`cat b.ts && ${command}`), read(6, 5)]);
+		assert.equal(normalized(compound).events.length, 3, command);
+		assert.equal(normalized(compound).events[1]?.action, "other", command);
+	}
+	const literal = trace([read(1, 5), shell('echo "synthetic progress"'), read(6, 5)]);
+	assert.equal(normalized(literal).events.length, 1);
+	assert.equal(normalized(literal).incomplete, false);
+	const sidechain = trace([read(1, 5), shell('echo "$(node mutate.js)"'), read(6, 5)]);
+	(sidechain.steps[1] as Step).subagent_id = "synthetic-sidechain";
+	assert.equal(normalized(sidechain).events.length, 1);
+	assert.equal(normalized(sidechain).incomplete, false);
+});
+
+test("shell searches with execution, mutation or unsupported options are global barriers", () => {
+	for (const command of [
+		"find . -exec node mutate.js {} +",
+		"find . -delete",
+		"rg --pre ./mutate token a.ts",
+		"rg --pre=./mutate token a.ts",
+		"rg --unsupported-option token a.ts",
+	]) {
+		const repeated = trace([shell(command), read(1, 5), shell(command)]);
+		const n = normalized(repeated);
+		assert.equal(n.events.length, 3, command);
+		assert.equal(n.events[0]?.action, "other", command);
+		assert.equal(n.events[2]?.action, "other", command);
+		assert.equal(alignEquivalent(repeated, repeated).incomplete, true, command);
+		assert.equal(alignEquivalent(repeated, trace([shell(command), read(1, 5)])).equivalent, false, command);
+		assert.equal(normalized(trace([read(1, 5), shell(command), read(6, 5)])).events.length, 3, command);
+	}
+	const literal = trace([shell("rg -n token a.ts"), read(1, 5), shell("rg -n token a.ts")]);
+	assert.equal(normalized(literal).events.length, 2);
+	assert.equal(normalized(literal).incomplete, false);
+});
+
+test("multi-file sed ranges are not independent per-file reads", () => {
+	const combined = trace([shell("sed -n '1,5p' a.ts b.ts")]);
+	const independent = trace([read(1, 5), read(1, 5, "b.ts")]);
+	assert.equal(normalizeTrace(combined).length, 2);
+	assert.deepEqual(normalized(combined).events.map((event) => event.range), [null, null]);
+	assert.equal(alignEquivalent(combined, independent).equivalent, false);
+	assert.equal(alignEquivalent(trace([shell("sed -n '1,5p' a.ts")]), trace([read(1, 5)])).equivalent, true);
+});
+
+test("shell reads use full lexical file identities before commuting across edits", () => {
+	for (const [command, path] of [
+		["cat /work/external/shared/a.ts", "/work/external/shared/a.ts"],
+		["cat /work/equiv/src/../a.ts", "/work/equiv/a.ts"],
+		["cat a.ts", "/work/equiv/src/../a.ts"],
+		["head -n 5 /work/equiv/src/../a.ts", "/work/equiv/a.ts"],
+	]) {
+		const mutation: Tool = ["Edit", { file_path: path, old_string: "a", new_string: "b" }];
+		const repeated = trace([shell(command), mutation, shell(command)]);
+		const n = normalized(repeated);
+		assert.equal(n.events.length, 3, command);
+		assert.equal(n.events[0]?.target, n.events[1]?.target, command);
+		assert.equal(alignEquivalent(repeated, trace([shell(command), mutation])).equivalent, false, command);
+		assert.equal(n.incomplete, false, command);
+	}
+	const distinct = trace([shell("cat a.ts"), edit("a", "b", "b.ts"), shell("cat a.ts")]);
+	assert.equal(normalized(distinct).events.length, 2);
+	// Unsupported shell file forms have no recovered identity, so every edit
+	// remains a barrier even when Run Diff retained a plausible display target.
+	const unlocated = trace([shell("tail a.ts"), edit("a", "b"), shell("tail a.ts")]);
+	assert.equal(normalized(unlocated).events.length, 3);
+	assert.equal(normalized(unlocated).events[0]?.target, null);
+	for (const [name, args] of [
+		["Edit", { old_string: "a", new_string: "b" }],
+		["Write", { content: "synthetic" }],
+	] as const) {
+		const left = trace([[name, { ...args, file_path: "a.ts" }]]);
+		const right = trace([[name, { ...args, file_path: "b.ts" }]]);
+		delete left.run.workspace;
+		delete right.run.workspace;
+		assert.equal(normalized(left).events[0]?.target, null);
+		assert.equal(alignEquivalent(left, right).equivalent, false, name);
+	}
+});
+
+test("normalizer cap metadata covers all read commands and stripped prefixes", () => {
+	for (const command of [
+		"tail a b c d e f g",
+		"X=1 cat a b c d e f g",
+		"head -n 5 a b c d e f g",
+		"sed -n '1,5p' a b c d e f g",
+		"nl a b c d e f g",
+		"less a b c d e f g",
+		"bat a b c d e f g",
+		"bash -lc 'cat a b c d e f g'",
+	]) {
+		const capped = trace([shell(command)]);
+		assert.equal(normalizeTrace(capped).length, 6, command);
+		assert.equal(sourceNormalizationTruncated(capped.steps[0] as Step, capped.run.workspace?.cwd), true, command);
+		const result = alignEquivalent(capped, capped);
+		assert.equal(result.incomplete, true, command);
+		assert.equal(result.equivalent, false, command);
+		assert.ok(result.incompleteReasons.includes("normalizer-cap-or-unsupported-shape"), command);
+	}
+	for (const command of ["tail a b c d e f", "X=1 cat a b c d e f", "cat a; echo one; echo two; echo three; echo four; echo five; echo six"]) {
+		const uncapped = trace([shell(command)]);
+		assert.equal(sourceNormalizationTruncated(uncapped.steps[0] as Step, uncapped.run.workspace?.cwd), false, command);
+		assert.equal(alignEquivalent(uncapped, uncapped).incomplete, false, command);
+	}
+	const patch = Array.from({ length: 7 }, (_, i) => `*** Update File: /work/equiv/file${i}.ts`).join("\n");
+	const cappedSources: Tool[] = [
+		["apply_patch", { input: patch }],
+		["exec", { input: 'text(await tools.exec_command({cmd:"tail a b c d e f g"}))' }],
+		["exec", { input: `text(await tools.apply_patch(${JSON.stringify(patch)}))` }],
+	];
+	for (const tool of cappedSources) {
+		const capped = trace([tool]);
+		assert.equal(sourceNormalizationTruncated(capped.steps[0] as Step, capped.run.workspace?.cwd), true, tool[0]);
+		assert.ok(normalized(capped).incompleteReasons.includes("normalizer-cap-or-unsupported-shape"), tool[0]);
+	}
+});
+
 test("canCommute exhaustive action/status/target matrix is symmetric", () => {
 	const actions: DiffAction[] = ["read", "search", "edit", "write", "test", "run", "plan", "delegate", "web", "compaction", "blocked", "other"];
 	const statuses: DiffStatus[] = ["ok", "unknown", "error", "interrupted"];
 	const targets = ["a.ts", "b.ts", null];
 	const event = (action: DiffAction, target: string | null, status: DiffStatus): CanonicalEvent => ({
-		id: "event", action, target, status, key: "key", signature: "key", rule: null, members: [0], memberStepIds: ["source"],
+		id: "event",
+		action,
+		target,
+		status,
+		key: "key",
+		signature: "key",
+		rule: null,
+		members: [0],
+		memberStepIds: ["source"],
 	});
-	for (const aa of actions) for (const ba of actions) for (const at of targets) for (const bt of targets) for (const as of statuses) for (const bs of statuses) {
-		const a = event(aa, at, as);
-		const b = event(ba, bt, bs);
-		const observations = ["read", "search"];
-		const bothReadOnly = observations.includes(aa) && observations.includes(ba);
-		const distinct = at !== null && bt !== null && at !== bt;
-		const readAndKnownFileEdit = distinct && (aa === "read" && ["edit", "write"].includes(ba) && bs === "ok" || ba === "read" && ["edit", "write"].includes(aa) && as === "ok");
-		assert.equal(canCommute(a, b), bothReadOnly || readAndKnownFileEdit, `${aa}/${as}/${at}, ${ba}/${bs}/${bt}`);
-		assert.equal(canCommute(a, b), canCommute(b, a));
+	for (const aa of actions) {
+		for (const ba of actions) {
+			for (const at of targets) {
+				for (const bt of targets) {
+					for (const as of statuses) {
+						for (const bs of statuses) {
+							const a = event(aa, at, as);
+							const b = event(ba, bt, bs);
+							const observations = ["read", "search"];
+							const bothReadOnly = observations.includes(aa) && observations.includes(ba);
+							const distinct = at !== null && bt !== null && at !== bt;
+							const readAndKnownFileEdit = distinct && (
+								(aa === "read" && ["edit", "write"].includes(ba) && bs === "ok") ||
+								(ba === "read" && ["edit", "write"].includes(aa) && as === "ok")
+							);
+							assert.equal(canCommute(a, b), bothReadOnly || readAndKnownFileEdit, `${aa}/${as}/${at}, ${ba}/${bs}/${bt}`);
+							assert.equal(canCommute(a, b), canCommute(b, a));
+						}
+					}
+				}
+			}
+		}
 	}
 });
 
