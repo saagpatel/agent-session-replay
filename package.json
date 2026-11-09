@@ -15,6 +15,7 @@
 		"typecheck": "tsc -p tsconfig.app.json && tsc -p tsconfig.watchdog.json && tsc -p tsconfig.node.json",
 		"check": "node scripts/check.mjs",
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
+		"test:equiv": "node --test --experimental-strip-types \"src/core/diff/equiv/*.test.ts\"",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
