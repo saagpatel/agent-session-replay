@@ -1,4 +1,4 @@
-import { classifyCommand, execLiteralCalls } from "../diff/normalize.ts";
+import { classifyCommand, execLiteralCalls, maskCode } from "../diff/normalize.ts";
 import { ATTR, type Step } from "../types.ts";
 
 /** A recorded file access or test invocation, without a claim about its result. */
@@ -40,95 +40,165 @@ function commandOf(args: Record<string, unknown>): string | undefined {
 	return string(args.command) ?? string(args.cmd);
 }
 
-// Only literal one-file reads are recognized. Compound commands, expansion,
-// options and other sed programs remain unknown rather than guessed.
+// This is an allowlist, not a general shell parser. New forms stay unresolved.
 const FILE_WORD = String.raw`(?:'([^'\n]+)'|"([^"$\x60\\\n]+)"|([^\s'"$\x60\\;|&<>()*?\[\]{}!#~]+))`;
-const CAT_READ = new RegExp(String.raw`^\s*cat\s+(?:<\s*)?${FILE_WORD}\s*$`);
-const SED_READ = new RegExp(String.raw`^\s*sed\s+-n\s+(?:'\d+(?:,\d+)?p'|"\d+(?:,\d+)?p")\s+${FILE_WORD}\s*$`);
+const CAT_READ = new RegExp(String.raw`^cat[ \t]+${FILE_WORD}$`);
+const SED_READ = new RegExp(String.raw`^sed[ \t]+-n[ \t]+'\d+,\d+p'[ \t]+${FILE_WORD}$`);
+const HEAD_READ = new RegExp(String.raw`^head[ \t]+-n[ \t]+\d+[ \t]+${FILE_WORD}$`);
+const PATH_TOOLS: Record<string, { kind: "read" | "write"; keys: string[] }> = {
+	Read: { kind: "read", keys: ["file_path", "path"] },
+	Edit: { kind: "write", keys: ["file_path", "path"] },
+	MultiEdit: { kind: "write", keys: ["file_path", "path"] },
+	Write: { kind: "write", keys: ["file_path", "path"] },
+	NotebookEdit: { kind: "write", keys: ["notebook_path"] },
+	read_file: { kind: "read", keys: ["path", "file_path"] },
+	write_file: { kind: "write", keys: ["path", "file_path"] },
+};
+const SHELL_TOOLS = new Set(["Bash", "exec_command", "shell"]);
+
+export interface OperationEvidence {
+	operations: FileOperation[];
+	unresolved: boolean;
+	reason?: string;
+}
+
+const unknown = (reason: string, operations: FileOperation[] = []): OperationEvidence =>
+	({ operations, unresolved: true, reason });
+const known = (operations: FileOperation[]): OperationEvidence => ({ operations, unresolved: false });
+
+/** Consume the whole cell, so unrecognized executable statements cannot hide. */
+function onlyLiteralCalls(input: string): boolean {
+	// The shared masker hides template interpolation too. Reject it anywhere,
+	// including in payload fields that are not used for operation extraction.
+	if (input.includes("${")) return false;
+	let remaining = maskCode(input).trim();
+	while (remaining) {
+		const inline = /^text\(\s*(String\(\s*)?await\s+tools\.\w+\s*\(/.exec(remaining);
+		const assigned = /^(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+tools\.\w+\s*\(/.exec(remaining);
+		const prefix = inline ?? assigned;
+		if (!prefix) return false;
+		let depth = 1;
+		let end = prefix[0].length;
+		for (; end < remaining.length && depth; end++) {
+			if (remaining[end] === "(") depth++;
+			if (remaining[end] === ")") depth--;
+		}
+		if (depth) return false;
+		// Non-path fields must also be data: evaluating an ignored expression
+		// (e.g. extra: mutate()) would introduce unextracted operations. Strings
+		// are already masked; retain only literal containers, keys and scalars.
+		const argumentsMask = remaining.slice(prefix[0].length, end - 1)
+			.replace(/(["'`])[^"'`]*\1/g, "0")
+			.replace(/\b[A-Za-z_$][\w$]*\s*:/g, "")
+			.replace(/\b(?:true|false|null)\b/g, "0")
+			.replace(/-?\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b/gi, "0");
+		if (/[^\s0{}\[\]:,]/.test(argumentsMask)) return false;
+		remaining = remaining.slice(end);
+		if (inline) {
+			const close = inline[1] ? /^\s*\)\s*\)\s*;?/ : /^\s*\)\s*;?/;
+			const suffix = close.exec(remaining);
+			if (!suffix) return false;
+			remaining = remaining.slice(suffix[0].length);
+		} else {
+			// Match the original variable literally, including legal JS '$' names.
+			const print = /^\s*;?\s*text\(\s*(String\(\s*)?([A-Za-z_$][\w$]*)\s*\)(\s*\))?\s*;?/.exec(remaining);
+			if (!print || print[2] !== assigned![1] || Boolean(print[1]) !== Boolean(print[3])) return false;
+			remaining = remaining.slice(print[0].length);
+		}
+		remaining = remaining.trim();
+	}
+	return true;
+}
 
 /** Extract evidenced accesses from full tool arguments, never normalized DiffSteps. */
 export function fileOperations(step: Step, cwd?: string | null): FileOperation[] {
 	return operationEvidence(step, cwd).operations;
 }
 
-/** Unknown exec cells remain explicit rather than proving independence. */
-export function operationEvidence(step: Step, cwd?: string | null): { operations: FileOperation[]; unresolved: boolean } {
-	if (step.kind === "tool_call" && step.attributes[ATTR.TOOL_NAME] === "exec") {
-		const calls = execLiteralCalls(string(argumentsOf(step).input) ?? "");
-		// Without completion, a prior call could have thrown before later calls
-		// were invoked. Literal source alone cannot prove those accesses occurred.
-		if (!calls || step.attributes[ATTR.EXEC_COMPLETED] !== true) return { operations: [], unresolved: true };
-		const operations: FileOperation[] = [];
-		let unresolved = false;
-		for (const call of calls) {
-			let args: Record<string, unknown>;
-			if (call.tool === "apply_patch") {
-				const patch = call.argument(null).value;
-				if (patch === undefined) { unresolved = true; continue; }
-				args = { input: patch };
-			} else if (call.tool === "exec_command") {
-				const command = call.argument("cmd").value;
-				const workdir = call.argument("workdir");
-				if (command === undefined || (workdir.found && workdir.value === undefined)) {
-					unresolved = true;
-					continue;
-				}
-				args = { cmd: command, ...(workdir.found ? { workdir: workdir.value } : {}) };
-			} else {
-				unresolved = true;
-				continue;
-			}
-			const extracted = directOperations({ ...step, attributes: { [ATTR.TOOL_NAME]: call.tool, [ATTR.TOOL_ARGS]: args } }, cwd);
-			if (!extracted.length) unresolved = true;
-			// A recognized test inside a compound shell command does not resolve
-			// the other stages' accesses. Retain the invocation, flag the gap.
-			const command = commandOf(args);
-			if (command && extracted.some((op) => op.kind === "test") &&
-				(/[;&|<>`$()\n]/.test(command) || classifyCommand(command, cwd).some((part) => part.action !== "test"))) {
-				unresolved = true;
-			}
-			operations.push(...extracted);
-		}
-		return { operations, unresolved };
-	}
-	return { operations: directOperations(step, cwd), unresolved: false };
-}
-
-function directOperations(step: Step, cwd?: string | null): FileOperation[] {
-	if (step.kind !== "tool_call") return [];
+/** Direct calls and completed, literal exec calls share exactly one allowlist. */
+export function operationEvidence(step: Step, cwd?: string | null): OperationEvidence {
+	if (step.kind !== "tool_call") return known([]);
 	const name = string(step.attributes[ATTR.TOOL_NAME]) ?? "";
 	const args = argumentsOf(step);
-	const path = string(args.file_path) ?? string(args.path);
-	if (/^(write|write_file|edit|edit_file|multiedit)$/i.test(name) && path) {
-		return [{ kind: "write", path: normalizeFilePath(path, cwd) }];
+	if (name !== "exec") return directOperations(name, args, cwd);
+	const calls = execLiteralCalls(string(args.input) ?? "");
+	// Completion proves invocation, not success or the resulting file contents.
+	if (!calls || !onlyLiteralCalls(string(args.input) ?? "") || step.attributes[ATTR.EXEC_COMPLETED] !== true) {
+		return unknown("Exec cell is incomplete or is not a supported literal straight-line cell.");
 	}
-	if (/^(read|read_file)$/i.test(name) && path) {
-		return [{ kind: "read", path: normalizeFilePath(path, cwd) }];
+	const operations: FileOperation[] = [];
+	const reasons: string[] = [];
+	for (const call of calls) {
+		const nested: Record<string, unknown> = {};
+		const keys = call.tool === "apply_patch" ? [null]
+			: Object.hasOwn(PATH_TOOLS, call.tool) ? PATH_TOOLS[call.tool]!.keys
+			: SHELL_TOOLS.has(call.tool) ? ["cmd", "command", "workdir", "working_directory", "cwd"] : [];
+		let dynamic = false;
+		for (const key of keys) {
+			const arg = call.argument(key);
+			if (!arg.found) continue;
+			if (arg.value === undefined) dynamic = true;
+			else nested[key ?? "input"] = arg.value;
+		}
+		const evidence = dynamic ? unknown("Nested call arguments are not fully literal.") : directOperations(call.tool, nested, cwd);
+		operations.push(...evidence.operations);
+		if (evidence.unresolved) reasons.push(evidence.reason!);
+	}
+	return reasons.length ? unknown(reasons.join(" "), operations) : known(operations);
+}
+
+/** A supplied alias must also be valid and agree; never silently ignore one. */
+function literalArgument(args: Record<string, unknown>, keys: string[]): string | undefined {
+	const values = keys.filter((key) => Object.hasOwn(args, key)).map((key) => args[key]);
+	return values.length && values.every((value) => string(value) && value === values[0])
+		? values[0] as string : undefined;
+}
+
+function directOperations(name: string, args: Record<string, unknown>, cwd?: string | null): OperationEvidence {
+	const tool = Object.hasOwn(PATH_TOOLS, name) ? PATH_TOOLS[name] : undefined;
+	if (tool) {
+		const path = literalArgument(args, tool.keys);
+		return path && !/[\0\r\n]/.test(path) ? known([{ kind: tool.kind, path: normalizeFilePath(path, cwd) }])
+			: unknown("Allowlisted file tool has no unambiguous literal path.");
 	}
 	if (name === "apply_patch") {
 		const input = string(args.input) ?? "";
-		return [...input.matchAll(/^\*\*\* (?:(?:Update|Add) File|Move to): ([^\r\n]+)\r?$/gm)]
-			.map((match) => ({ kind: "write", path: normalizeFilePath(match[1]!, cwd) }));
+		const operations: FileOperation[] = [];
+		let unresolved = !/^\*\*\* Begin Patch\r?\n/.test(input) || !input.trimEnd().endsWith("*** End Patch");
+		let update = false;
+		for (const line of input.split(/\r?\n/)) {
+			const header = /^\*\*\* (Update File|Add File|Delete File|Move to): ([^\0\r\n]+)$/.exec(line);
+			if (header) {
+				if (!header[2]!.trim() || (header[1] === "Move to" && !update)) unresolved = true;
+				operations.push({ kind: "write", path: normalizeFilePath(header[2]!, cwd) });
+				update = header[1] === "Update File";
+			} else if (line.startsWith("*** ") && !["*** Begin Patch", "*** End Patch", "*** End of File"].includes(line)) unresolved = true;
+		}
+		return unresolved || !operations.length ? unknown("Patch is missing targets or contains unsupported directives.", operations) : known(operations);
 	}
-	if (/^(test|run_tests)$/i.test(name)) return [{ kind: "test" }];
-	if (!/^(bash|shell|exec_command)$/i.test(name)) return [];
-	const command = commandOf(args);
-	if (!command) return [];
-	const operations: FileOperation[] = [];
-	if (classifyCommand(command, cwd).some((part) => part.action === "test")) {
-		operations.push({ kind: "test" });
+	if (!SHELL_TOOLS.has(name)) return unknown("Tool is outside the operation allowlist.");
+	const command = literalArgument(args, ["command", "cmd"]);
+	if (!command || /[\0\r\n]/.test(command)) return unknown("Shell command is missing or is not a single literal stage.");
+	const directoryKeys = ["workdir", "working_directory", "cwd"];
+	const workdir = literalArgument(args, directoryKeys);
+	if (directoryKeys.some((key) => Object.hasOwn(args, key)) && (!workdir || /[\0\r\n]/.test(workdir))) {
+		return unknown("Shell working directory is not an unambiguous literal path.");
 	}
-	const match = CAT_READ.exec(command) ?? SED_READ.exec(command);
+	const match = CAT_READ.exec(command.trim()) ?? SED_READ.exec(command.trim()) ?? HEAD_READ.exec(command.trim());
 	const target = match?.[1] ?? match?.[2] ?? match?.[3];
-	const workdir = args.workdir ?? args.working_directory ?? args.cwd;
-	if (target && !target.startsWith("-") && (workdir === undefined || string(workdir))) {
-		const directory = typeof workdir === "string"
-			? canonicalPath(workdir.startsWith("/") || !cwd ? workdir : `${cwd}/${workdir}`)
-			: cwd;
+	if (target && !target.startsWith("-")) {
+		const directory = workdir ? canonicalPath(workdir.startsWith("/") || !cwd ? workdir : `${cwd}/${workdir}`) : cwd;
 		const full = directory && !target.startsWith("/") ? `${directory}/${target}` : target;
-		operations.push({ kind: "read", path: normalizeFilePath(full, cwd) });
+		return known([{ kind: "read", path: normalizeFilePath(full, cwd) }]);
 	}
-	return operations;
+	// Classification alone can hide dropped noise, control flow or redirects.
+	const classified = classifyCommand(command, cwd);
+	if (!/[;&|<>`$()\\*?\[\]{}!#~]/.test(command) &&
+		!/^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|select)\b/.test(command) &&
+		classified.length === 1 && classified[0]!.action === "test" && classified[0]!.last !== false) {
+		return known([{ kind: "test" }]);
+	}
+	return unknown("Shell command is outside the literal read/test allowlist.");
 }
 
 /** Short human label for diagnostics; raw identifiers stay in structured fields. */

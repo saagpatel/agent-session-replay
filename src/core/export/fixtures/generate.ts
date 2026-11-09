@@ -53,6 +53,7 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		tool("edit-a", "Edit", { file_path: `${cwd}/src/a.ts` }, { caused_by: "gate" });
 		tool("edit-b", "Edit", { file_path: `${cwd}/src/b.ts` });
 		tool("test", "Bash", { command: "pnpm test" }, { status: n % 2 === 0 ? "error" : "ok" });
+		if (n >= 17) tool("unresolved-shell", "Bash", { command: "echo refreshed > src/cache.ts" });
 		for (let cycle = 1; cycle < cycleCount; cycle++) {
 			const editId = cycle === 1 ? "fix" : `fix-${cycle}`;
 			tool(editId, "Edit", { file_path: `${cwd}/src/${cycle % 2 === 0 ? "b" : "a"}.ts` }, { caused_by: cycle === 1 ? "test" : `retest-${cycle - 1}` });
@@ -86,6 +87,7 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		const firstConsumer = trace.steps.find((step) => /^consume-/.test(step.step_id))!.step_id;
 		const firstWorkerRead = trace.steps.find((step) => /^[a-z]-read$/.test(step.step_id))!.step_id;
 		const finishIds = new Set([finishStart, "fix", "review", "result", "compact", ...parallelIds]);
+		if (n >= 17) finishIds.add("unresolved-shell");
 		for (let cycle = 1; cycle < cycleCount; cycle++) {
 			finishIds.add(cycle === 1 ? "fix" : `fix-${cycle}`);
 			finishIds.add(`retest-${cycle}`);
@@ -120,6 +122,9 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		addMisleading("absent-event-caption", "caption-ref-absent", (m) => { m.captions.push({ id: "absent", sceneId: "finish", kind: "shows", text: "A later note appears.", refs: ["note-0"] }); });
 		if (n < 10) addMisleading("unsupported-claim", "caption-unsupported-claim", (m) => { m.captions.push({ id: "unsupported", sceneId: "finish", kind: "because", text: "One independent read caused the other.", cause: "parallel-a", effect: "parallel-b" }); });
 		if (n < 10) addMisleading("cross-subagent-reorder", "reversed-causal-order", (m) => { [m.scenes[1], m.scenes[2]] = [m.scenes[2]!, m.scenes[1]!]; });
+		if (n >= 17) addMisleading("unresolved-reorder", "unresolved-operation", (m) => {
+			m.scenes[5]!.steps = [...m.scenes[5]!.steps.filter((id) => id !== "unresolved-shell"), "unresolved-shell"];
+		});
 	}
 	return { sessions, misleading };
 }

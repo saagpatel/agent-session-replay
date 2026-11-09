@@ -94,6 +94,7 @@ export function traceDigest(trace: Trace): string {
 	const encoded = new TextEncoder().encode(JSON.stringify(stableValue({
 		cwd: trace.run.workspace?.cwd ?? null,
 		steps: trace.steps,
+		...(trace.external_parent_ids ? { external_parent_ids: trace.external_parent_ids } : {}),
 	})));
 	for (const byte of encoded) {
 		hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);

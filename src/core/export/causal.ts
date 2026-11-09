@@ -2,7 +2,7 @@ import { ATTR, type Step, type Trace } from "../types.ts";
 import { operationEvidence, stepLabel } from "./operations.ts";
 
 /** The source evidence supporting an edge's direction. */
-export type EdgeKind = "caused-by" | "parent" | "spawn" | "consumer" | "file-read" | "test-write";
+export type EdgeKind = "caused-by" | "parent" | "spawn" | "consumer" | "file-read" | "test-write" | "unresolved-write";
 
 /** An evidenced dependency between two source steps. */
 export interface Edge {
@@ -14,7 +14,7 @@ export interface Edge {
 
 /** Invalid source graphs and evidence gaps; unresolved operations are scoped by the validator. */
 export interface GraphDiagnostic {
-	reason: "dangling-parent" | "causal-cycle" | "unlinked-subagent-result" | "unresolved-operations";
+	reason: "dangling-parent" | "external-parent" | "causal-cycle" | "unlinked-subagent-result" | "unresolved-operation";
 	message: string;
 	step?: string;
 	parent?: string;
@@ -31,7 +31,8 @@ export interface CausalGraph {
 }
 
 /**
- * Build only evidenced dependencies, never timestamp or source adjacency.
+ * Build evidenced dependencies and conservative unresolved-operation barriers,
+ * never timestamp or source adjacency alone.
  * Parsers merge a tool call/result pair into one Step, so no separate result
  * edge is needed. Claude parents can reference non-Step user events; only hooks
  * set caused_by. Codex sets neither. Synthetic traces may explicitly supply both.
@@ -45,11 +46,20 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	const edgeKeys = new Set<string>();
 	const cwd = trace.run.workspace?.cwd;
 	const label = (id: string) => stepLabel(steps.get(id), cwd);
+	// A parser-known omitted event is external even when its ID shares a Step
+	// format. Otherwise a family present in this trace evidences a missing Step.
+	const externalParents = new Set(trace.external_parent_ids);
+	const stepFamilies = [/^toolu_/, /^call(?:_|-|\d)/, /^step[-_]/, /^s\d+$/, /^ev\d+(?:_tu\d+)?$/, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i];
+	const looksLikeStep = (id: string) => stepFamilies.some((family) =>
+		family.test(id) && trace.steps.some((step) => family.test(step.step_id)),
+	);
 	const add = (from: string, to: string, kind: EdgeKind, evidence: string) => {
 		if (!steps.has(from) || !steps.has(to)) {
+			const external = kind === "parent" && (externalParents.has(from) || !looksLikeStep(from));
 			diagnostics.push({
-				reason: "dangling-parent",
-				message: `${label(to)} references a parent absent from the source trace.`,
+				reason: external ? "external-parent" : "dangling-parent",
+				message: external ? `${label(to)} references an event outside the source steps.`
+					: `${label(to)} references a parent absent from the source trace.`,
 				step: to,
 				parent: from,
 			});
@@ -112,17 +122,26 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 
 	const writes = new Map<string, string>();
 	const pendingWrites = new Set<string>();
+	const allWrites = new Set<string>();
+	const barriers = new Set<string>();
 	for (const step of trace.steps) {
 		const evidence = operationEvidence(step, cwd);
-		if (evidence.unresolved) diagnostics.push({
-			reason: "unresolved-operations",
-			message: `Operations in ${label(step.step_id)} cannot be resolved from literal source evidence.`,
-			step: step.step_id,
-		});
+		if (evidence.unresolved) {
+			diagnostics.push({
+				reason: "unresolved-operation",
+				message: `Operations in ${label(step.step_id)} are unresolved: ${evidence.reason}`,
+				step: step.step_id,
+			});
+			for (const writer of allWrites) add(writer, step.step_id, "unresolved-write", "earlier write before a possible global mutation");
+		}
+		if (evidence.unresolved || evidence.operations.some((operation) => operation.kind !== "write")) {
+			for (const barrier of barriers) add(barrier, step.step_id, "unresolved-write", "possible global mutation before a later read/test");
+		}
 		for (const operation of evidence.operations) {
 			if (operation.kind === "write" && operation.path) {
 				writes.set(operation.path, step.step_id);
 				pendingWrites.add(step.step_id);
+				allWrites.add(step.step_id);
 			}
 			if (operation.kind === "read" && operation.path) {
 				const writer = writes.get(operation.path);
@@ -134,6 +153,10 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 				}
 				pendingWrites.clear();
 			}
+		}
+		if (evidence.unresolved) {
+			barriers.add(step.step_id);
+			allWrites.add(step.step_id);
 		}
 	}
 

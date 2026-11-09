@@ -7,13 +7,14 @@ import { parseManifest } from "./manifest.ts";
 import { validateExport } from "./index.ts";
 import { generateReplayFixtures } from "./fixtures/generate.ts";
 
-const kinds = ["reversed-cause-effect", "dropped-prerequisite", "absent-event-caption", "unsupported-claim", "cross-subagent-reorder"];
+const kinds = ["reversed-cause-effect", "dropped-prerequisite", "absent-event-caption", "unsupported-claim", "cross-subagent-reorder", "unresolved-reorder"];
 const reasons: Record<string, string> = {
 	"reversed-cause-effect": "reversed-causal-order",
 	"dropped-prerequisite": "dropped-prerequisite",
 	"absent-event-caption": "caption-ref-absent",
 	"unsupported-claim": "caption-unsupported-claim",
 	"cross-subagent-reorder": "reversed-causal-order",
+	"unresolved-reorder": "unresolved-operation",
 };
 
 test("20 synthetic traces have faithful shortened manifests", () => {
@@ -25,6 +26,7 @@ test("20 synthetic traces have faithful shortened manifests", () => {
 	const hookPositions = new Set<string>();
 	const compactPositions = new Set<string>();
 	const workerInterleavings = new Set<string>();
+	let unresolvedSessions = 0;
 	for (const { slug, trace, faithful } of sessions) {
 		const n = Number(slug.slice(0, 2)) - 1;
 		assert.equal(trace.plumbline_version, "1");
@@ -92,6 +94,10 @@ test("20 synthetic traces have faithful shortened manifests", () => {
 		const result = validateExport(parsed, trace);
 		assert.deepEqual(result.failures, [], slug);
 		assert.equal(result.ok, true, slug);
+		if (result.warnings.some((warning) => warning.reason === "unresolved-operation")) {
+			unresolvedSessions++;
+			assert.ok(parsed.scenes.flatMap((scene) => scene.steps).includes("unresolved-shell"), slug);
+		}
 		const indices = new Map(trace.steps.map((step, index) => [step.step_id, index]));
 		const ranges = parsed.scenes.map((scene) => [indices.get(scene.range.from)!, indices.get(scene.range.to)!]);
 		assert.ok(ranges.slice(0, 3).every((range, i) => ranges.slice(0, 3).every((other, j) => i === j || Math.max(range[0]!, other[0]!) <= Math.min(range[1]!, other[1]!))), slug);
@@ -102,6 +108,7 @@ test("20 synthetic traces have faithful shortened manifests", () => {
 	assert.ok(hookPositions.size >= 3);
 	assert.ok(compactPositions.size >= 4);
 	assert.ok(workerInterleavings.size >= 6);
+	assert.equal(unresolvedSessions, 3);
 });
 
 test("misleading edits fail with their named reason and expected counts", () => {
@@ -122,6 +129,7 @@ test("misleading edits fail with their named reason and expected counts", () => 
 		"absent-event-caption": 20,
 		"unsupported-claim": 10,
 		"cross-subagent-reorder": 10,
+		"unresolved-reorder": 3,
 	});
 });
 
@@ -130,5 +138,5 @@ test("fixture generation is deterministic", () => {
 	const second = generateReplayFixtures();
 	assert.deepEqual(second, first);
 	const digest = createHash("sha256").update(JSON.stringify(first)).digest("hex");
-	assert.equal(digest, "52dbd517418981f98bbfbdee8feca4cdceac52c4167992258e66328c2e02cbdf");
+	assert.equal(digest, "d4b10ff7270dec9e18dd7738eafd561b624cce1e12dd93671095d993fdb4b79b");
 });

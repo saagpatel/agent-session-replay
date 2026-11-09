@@ -26,7 +26,11 @@ export function validateExport(input: unknown, trace: Trace): { ok: boolean; fai
 	}
 	const warnings: GraphDiagnostic[] = [];
 	const diagnostics = graph.diagnostics.filter((diagnostic) => {
-		if (diagnostic.reason !== "unresolved-operations") return true;
+		if (diagnostic.reason === "external-parent") {
+			warnings.push(diagnostic);
+			return false;
+		}
+		if (diagnostic.reason !== "unresolved-operation") return true;
 		const index = indices.get(diagnostic.step!)!;
 		const dependedOn = reversed.some(([from, to]) => from <= index && index <= to) || manifest.captions.some((caption) => {
 			if (caption.kind === "shows") return caption.refs.includes(diagnostic.step!);

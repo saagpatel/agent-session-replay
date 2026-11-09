@@ -13,11 +13,13 @@ import {
 } from "./manifest.ts";
 import { validateExport } from "./index.ts";
 import { parseCodexTranscript } from "../parsers/codex.ts";
+import { parseClaudeCodeTranscript } from "../parsers/claude-code.ts";
+import { operationEvidence } from "./operations.ts";
 
 function makeStep(id: string, extra: Partial<Step> = {}): Step {
 	return {
 		step_id: id,
-		kind: "tool_call",
+		kind: "decision",
 		started_at: "2026-01-01T00:00:00Z",
 		attributes: {},
 		...extra,
@@ -31,6 +33,7 @@ function toolStep(
 	extra: Partial<Step> = {},
 ): Step {
 	return makeStep(id, {
+		kind: "tool_call",
 		attributes: {
 			[ATTR.TOOL_NAME]: name,
 			[ATTR.TOOL_ARGS]: args,
@@ -163,7 +166,7 @@ test("parses only the strict manifest shape and reports invalid JSON", () => {
 test("trace digest changes when the source step order or kind changes", () => {
 	const first = makeTrace([makeStep("one"), makeStep("two")]);
 	const reordered = makeTrace([makeStep("two"), makeStep("one")]);
-	const retyped = makeTrace([makeStep("one", { kind: "decision" }), makeStep("two")]);
+	const retyped = makeTrace([makeStep("one", { kind: "llm" }), makeStep("two")]);
 	assert.notEqual(traceDigest(first), traceDigest(reordered));
 	assert.notEqual(traceDigest(first), traceDigest(retyped));
 });
@@ -408,12 +411,12 @@ test("rejects a because caption when no source causal path supports its claim", 
 
 test("reports dangling explicit parent references", () => {
 	const graph = buildCausalGraph(makeTrace([
-		toolStep("edit-step", "Edit", { file_path: "src/a.ts" }, { parent_step_id: "missing-parent" }),
+		toolStep("step-edit", "Edit", { file_path: "src/a.ts" }, { parent_step_id: "step-missing" }),
 	]));
 	const diagnostic = graph.diagnostics.find((item) => item.reason === "dangling-parent");
 	assert.ok(diagnostic);
 	assert.match(diagnostic.message, /Edit src\/a\.ts/);
-	assert.doesNotMatch(diagnostic.message, /edit-step|missing-parent/);
+	assert.doesNotMatch(diagnostic.message, /step-edit|step-missing/);
 });
 
 test("reports causal cycles", () => {
@@ -492,15 +495,18 @@ test("recognizes plain cat and sed file reads after a write", () => {
 	assert.ok(happensBefore(graph, "write", "sed-read"));
 });
 
-test("does not infer file reads from dynamic or compound shell commands", () => {
+test("dynamic or compound shell commands are global barriers rather than inferred reads", () => {
 	const trace = makeTrace([
 		toolStep("write", "Write", { file_path: "src/a.ts" }),
 		toolStep("dynamic-cat", "Bash", { command: "cat \"$FILE\"" }),
 		toolStep("compound-cat", "Bash", { command: "cat src/a.ts && echo done" }),
 	]);
 	const graph = buildCausalGraph(trace);
-	assert.equal(happensBefore(graph, "write", "dynamic-cat"), false);
-	assert.equal(happensBefore(graph, "write", "compound-cat"), false);
+	for (const id of ["dynamic-cat", "compound-cat"]) {
+		assert.ok(happensBefore(graph, "write", id));
+		assert.deepEqual(operationEvidence(graph.steps.get(id)!).operations, []);
+		assert.ok(graph.edges.some((edge) => edge.to === id && edge.kind === "unresolved-write"));
+	}
 });
 
 test("does not infer a sed read from mismatched quote delimiters", () => {
@@ -508,7 +514,8 @@ test("does not infer a sed read from mismatched quote delimiters", () => {
 		toolStep("write", "Write", { file_path: "src/a.ts" }),
 		toolStep("sed-read", "Bash", { command: "sed -n '2,4p\" src/a.ts" }),
 	]);
-	assert.equal(happensBefore(buildCausalGraph(trace), "write", "sed-read"), false);
+	assert.deepEqual(operationEvidence(trace.steps[1]!).operations, []);
+	assert.ok(happensBefore(buildCausalGraph(trace), "write", "sed-read"));
 });
 
 test("keeps distinct outside-workspace absolute paths from aliasing by tail", () => {
@@ -623,15 +630,15 @@ test("unresolved exec cells warn unless captions or reordered source intervals d
 		const faithful = oneScene(trace, [patch, unknown, read]);
 		const result = validateExport(faithful, trace);
 		assert.equal(result.ok, true, cell);
-		assert.equal(result.warnings[0]?.reason, "unresolved-operations", cell);
+		assert.equal(result.warnings[0]?.reason, "unresolved-operation", cell);
 		for (const played of [[unknown, patch, read], [read, patch]]) {
-			assert.ok(validateExport(oneScene(trace, played), trace).failures.some((failure) => failure.reason === "unresolved-operations"), cell);
+			assert.ok(validateExport(oneScene(trace, played), trace).failures.some((failure) => failure.reason === "unresolved-operation"), cell);
 		}
 		for (const caption of [
 			{ id: "show", sceneId: "scene-main", kind: "shows" as const, text: "The cell is shown.", refs: [unknown] },
 			{ id: "cause", sceneId: "scene-main", kind: "because" as const, text: "The patch precedes the read.", cause: patch, effect: read },
 		]) {
-			assert.ok(validateExport({ ...faithful, captions: [caption] }, trace).failures.some((failure) => failure.reason === "unresolved-operations"), cell);
+			assert.ok(validateExport({ ...faithful, captions: [caption] }, trace).failures.some((failure) => failure.reason === "unresolved-operation"), cell);
 		}
 	}
 });
@@ -651,11 +658,12 @@ test("an incomplete exec cell cannot prove that its literal calls were all invok
 	const trace = rollout([patchCell, readCell]);
 	delete trace.steps[0]!.attributes[ATTR.EXEC_COMPLETED];
 	const [patch, read] = trace.steps.map((step) => step.step_id) as [string, string];
-	assert.equal(happensBefore(buildCausalGraph(trace), patch, read), false);
+	assert.deepEqual(operationEvidence(trace.steps[0]!).operations, []);
+	assert.ok(happensBefore(buildCausalGraph(trace), patch, read));
 	const manifest = oneScene(trace, [patch, read]);
-	assert.equal(validateExport(manifest, trace).warnings[0]?.reason, "unresolved-operations");
+	assert.equal(validateExport(manifest, trace).warnings[0]?.reason, "unresolved-operation");
 	manifest.captions.push({ id: "cause", sceneId: "scene-main", kind: "because", text: "The patch precedes its read.", cause: patch, effect: read });
-	assert.ok(validateExport(manifest, trace).failures.some((failure) => failure.reason === "unresolved-operations"));
+	assert.ok(validateExport(manifest, trace).failures.some((failure) => failure.reason === "unresolved-operation"));
 });
 
 test("source digest binds causal links, nested tool evidence, workspace and playback fields", () => {
@@ -694,6 +702,185 @@ test("rename destinations are writes and cannot play after their destination rea
 	assert.equal(validateExport(oneScene(trace, ["rename", "destination-read"]), trace).ok, true);
 	const reversed = validateExport(oneScene(trace, ["destination-read", "rename"]), trace);
 	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order"));
+});
+
+function nestedStep(name: string, args: Record<string, unknown>): Step {
+	const argument = name === "apply_patch" ? JSON.stringify(args.input) : JSON.stringify(args);
+	return toolStep("operation", "exec", { input: `text(await tools.${name}(${argument}));` }, {
+		attributes: {
+			[ATTR.TOOL_NAME]: "exec",
+			[ATTR.TOOL_ARGS]: { input: `text(await tools.${name}(${argument}));` },
+			[ATTR.EXEC_COMPLETED]: true,
+		},
+	});
+}
+
+test("the explicit file-tool and literal shell allowlist extracts direct and nested calls equally", () => {
+	const cases: Array<[string, Record<string, unknown>, "read" | "write" | "test"]> = [
+		["Read", { file_path: "src/a.ts" }, "read"],
+		["Edit", { file_path: "src/a.ts", old_string: "old", new_string: "new" }, "write"],
+		["MultiEdit", { file_path: "src/a.ts", edits: [] }, "write"],
+		["Write", { file_path: "src/a.ts", content: "new" }, "write"],
+		["NotebookEdit", { notebook_path: "src/a.ts", new_source: "new" }, "write"],
+		["read_file", { path: "src/a.ts" }, "read"],
+		["write_file", { path: "src/a.ts", content: "new" }, "write"],
+		["Bash", { command: "cat src/a.ts" }, "read"],
+		["exec_command", { cmd: "sed -n '1,4p' src/a.ts" }, "read"],
+		["shell", { command: "head -n 4 src/a.ts" }, "read"],
+		["exec_command", { cmd: "cat a.ts", workdir: "/work/project/src" }, "read"],
+		["Bash", { command: "pnpm test" }, "test"],
+	];
+	for (const [name, args, kind] of cases) for (const step of [toolStep("operation", name, args), nestedStep(name, args)]) {
+		assert.deepEqual(operationEvidence(step, "/work/project"), {
+			operations: [kind === "test" ? { kind } : { kind, path: "src/a.ts" }], unresolved: false,
+		}, `${name}: ${JSON.stringify(args)}`);
+	}
+});
+
+test("non-allowlisted forms fail closed with a reason for direct and nested calls", () => {
+	const commands = [
+		"echo new > src/a.ts", "cat src/a.ts && echo done", "cat src/a.ts; pnpm test",
+		"cat src/a.ts | head", "cat < src/a.ts", "cat src/a.ts src/b.ts", "cat -n src/a.ts",
+		"cat src/*.ts", 'cat "$FILE"', "cat $(printf src/a.ts)",
+		"sed -i 's/old/new/' src/a.ts", "sed -n '2p' src/a.ts", "sed -n '2,4p\" src/a.ts",
+		"head src/a.ts", "head -c 4 src/a.ts", "tail -n 4 src/a.ts", "touch src/a.ts",
+		"rm src/a.ts", "cp src/b.ts src/a.ts", "mv src/b.ts src/a.ts", "python mutate.py",
+		"pnpm test > src/a.ts", "pnpm test | tail", "pwd; pnpm test", "if pnpm test",
+		"cat src/a.ts\ncat src/b.ts", "git show HEAD:src/a.ts", "rg token src/a.ts", "pwd",
+	];
+	const cases: Array<[string, Record<string, unknown>]> = commands.flatMap((command) => [
+		["Bash", { command }], ["exec_command", { cmd: command }], ["shell", { command }],
+	] as Array<[string, Record<string, unknown>]>);
+	cases.push(
+		["unknown_tool", { path: "src/a.ts" }], ["edit_file", { path: "src/a.ts" }],
+		["run_tests", {}], ["test", {}], ["Read", {}], ["Write", { file_path: 7 }],
+		["Read", { file_path: "src/a.ts", path: "src/b.ts" }],
+		["exec_command", { cmd: "cat src/a.ts", workdir: null }],
+		["apply_patch", { input: "*** Begin Patch\n*** Update File: src/b.ts\n*** Unknown File: src/a.ts\n*** End Patch" }],
+	);
+	for (const [name, args] of cases) for (const step of [toolStep("operation", name, args), nestedStep(name, args)]) {
+		const context = `${name} ${JSON.stringify(args)} (${step.attributes[ATTR.TOOL_NAME]})`;
+		const evidence = operationEvidence(step);
+		assert.equal(evidence.unresolved, true, context);
+		assert.ok(evidence.reason, context);
+		const trace = makeTrace([
+			toolStep("write", "Write", { file_path: "src/other.ts" }), step,
+			toolStep("read", "Read", { file_path: "src/a.ts" }),
+			toolStep("test", "Bash", { command: "pnpm test" }),
+		]);
+		const faithful = oneScene(trace, ["write", "operation", "read", "test"]);
+		const result = validateExport(faithful, trace);
+		assert.equal(result.ok, true, context);
+		assert.ok(result.warnings.some((warning) => warning.reason === "unresolved-operation"), context);
+		const graph = buildCausalGraph(trace);
+		for (const [from, to] of [["write", "operation"], ["operation", "read"], ["operation", "test"]]) {
+			assert.ok(graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === "unresolved-write"), context);
+		}
+		for (const played of [["operation", "write", "read", "test"], ["write", "read", "test", "operation"], ["read", "write", "test"]]) {
+			const reordered = validateExport(oneScene(trace, played), trace);
+			assert.equal(reordered.ok, false, context);
+			assert.ok(reordered.failures.some((failure) => failure.reason === "unresolved-operation"), context);
+		}
+		faithful.captions.push({ id: "crossing", sceneId: "scene-main", kind: "because", text: "The write preceded the test.", cause: "write", effect: "test" });
+		assert.ok(validateExport(faithful, trace).failures.some((failure) => failure.reason === "unresolved-operation"), context);
+	}
+});
+
+test("exec cells reject executable statements and expressions outside their literal calls", () => {
+	const cells = [
+		`${readCell}\nmutate();`,
+		`${readCell}\nawait anotherTool({path: "src/a.ts"});`,
+		'text(await tools.Read({file_path: "src/a.ts", extra: mutate()}));',
+		'text(await tools.exec_command({cmd: "cat src/a.ts", env: dangerous()}));',
+		'text(await tools.Read({file_path: "src/a.ts", extra: `${mutate()}`}));',
+	];
+	for (const cell of cells) {
+		const trace = rollout([cell, readCell]);
+		assert.equal(operationEvidence(trace.steps[0]!).unresolved, true, cell);
+		assert.ok(validateExport(oneScene(trace, trace.steps.map((step) => step.step_id).reverse()), trace).failures.some((failure) => failure.reason === "unresolved-operation"), cell);
+	}
+	for (const cell of [
+		`// Only data and a printed tool result.\n${readCell}`,
+		'const result = await tools.exec_command({cmd: "cat src/a.ts", yield_time_ms: 1000}); text(result);',
+		'let result = await tools.exec_command({cmd: "cat src/a.ts"}); text(String(result));',
+	]) assert.equal(operationEvidence(rollout([cell]).steps[0]!).unresolved, false, cell);
+});
+
+test("delete-only and mixed patches mutate every target in direct and completed exec calls", () => {
+	for (const mixed of [false, true]) {
+		const input = `*** Begin Patch\n*** Delete File: src/a.ts\n${mixed ? "*** Update File: src/b.ts\n@@\n-old\n+new\n" : ""}*** End Patch`;
+		for (const step of [toolStep("operation", "apply_patch", { input }), nestedStep("apply_patch", { input })]) {
+			assert.deepEqual(operationEvidence(step), {
+				operations: (mixed ? ["src/a.ts", "src/b.ts"] : ["src/a.ts"]).map((path) => ({ kind: "write", path })), unresolved: false,
+			});
+			const trace = makeTrace([step, toolStep("read", "Read", { file_path: "src/a.ts" }), toolStep("test", "Bash", { command: "pnpm test" })]);
+			assert.equal(validateExport(oneScene(trace, ["operation", "read", "test"]), trace).ok, true);
+			for (const played of [["read", "operation", "test"], ["test", "operation", "read"]]) {
+				assert.ok(validateExport(oneScene(trace, played), trace).failures.some((failure) => failure.reason === "reversed-causal-order"));
+			}
+		}
+	}
+});
+
+test("rename extraction mutates both the source and destination in direct and nested calls", () => {
+	const input = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/b.ts\n@@\n-old\n+new\n*** End Patch";
+	for (const step of [toolStep("operation", "apply_patch", { input }), nestedStep("apply_patch", { input })]) {
+		assert.deepEqual(operationEvidence(step), { operations: [{ kind: "write", path: "src/a.ts" }, { kind: "write", path: "src/b.ts" }], unresolved: false });
+	}
+});
+
+test("unresolved barriers retain all earlier writes even across tests and overwrites", () => {
+	const trace = makeTrace([
+		toolStep("first", "Write", { file_path: "src/a.ts" }),
+		toolStep("second", "Edit", { file_path: "src/a.ts" }),
+		toolStep("test", "Bash", { command: "pnpm test" }),
+		toolStep("unknown", "Bash", { command: "echo new > src/a.ts" }),
+		toolStep("later-test", "Bash", { command: "pnpm test" }),
+		toolStep("later-read", "Read", { file_path: "src/a.ts" }),
+	]);
+	const graph = buildCausalGraph(trace);
+	for (const from of ["first", "second"]) assert.ok(happensBefore(graph, from, "unknown"));
+	for (const to of ["later-test", "later-read"]) assert.ok(happensBefore(graph, "unknown", to));
+});
+
+test("a normal parsed Claude user-assistant-tool exchange exports faithfully with external parents", () => {
+	const trace = parseClaudeCodeTranscript([
+		{ type: "user", uuid: "u", sessionId: "synthetic-run", cwd: "/work/project", message: { content: "Read the file." } },
+		{ type: "assistant", uuid: "a", parentUuid: "u", message: { content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "src/a.ts" } }] } },
+		{ type: "user", uuid: "result-event", parentUuid: "a", message: { content: [{ type: "tool_result", tool_use_id: "toolu_read", content: "synthetic content" }] } },
+		{ type: "assistant", uuid: "done", parentUuid: "result-event", message: { content: [{ type: "text", text: "Read completed." }] } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.equal(trace.steps.length, 3);
+	const result = validateExport(oneScene(trace, trace.steps.map((step) => step.step_id)), trace);
+	assert.equal(result.ok, true);
+	assert.deepEqual(result.failures, []);
+	assert.ok(result.warnings.every((warning) => warning.reason === "external-parent"));
+	assert.equal(buildCausalGraph(trace).edges.length, 0);
+	const toolOnly = validateExport(oneScene(trace, ["toolu_read"]), trace);
+	assert.equal(toolOnly.ok, true);
+});
+
+test("absent parents matching the trace's tool-use ID family remain dangling", () => {
+	const trace = makeTrace([toolStep("toolu_read", "Read", { file_path: "src/a.ts" }, { parent_step_id: "toolu_missing" })]);
+	assert.ok(validateExport(oneScene(trace, ["toolu_read"]), trace).failures.some((failure) => failure.reason === "dangling-parent"));
+});
+
+test("parser-known omitted UUID parents are external while missing UUID steps remain dangling", () => {
+	const user = "00000000-0000-0000-0000-000000000001";
+	const assistant = "00000000-0000-0000-0000-000000000002";
+	const missing = "00000000-0000-0000-0000-000000000003";
+	const trace = parseClaudeCodeTranscript([
+		{ type: "user", uuid: user, message: { content: "Read the file." } },
+		{ type: "assistant", uuid: assistant, parentUuid: user, message: { content: "Reading." } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.deepEqual(trace.external_parent_ids, [user]);
+	const faithful = oneScene(trace, [assistant]);
+	assert.equal(validateExport(faithful, trace).ok, true);
+	const withoutMetadata = structuredClone(trace);
+	delete withoutMetadata.external_parent_ids;
+	assert.ok(validateExport(faithful, withoutMetadata).failures.some((failure) => failure.reason === "source-mismatch"));
+	trace.steps[0]!.parent_step_id = missing;
+	assert.ok(validateExport(oneScene(trace, [assistant]), trace).failures.some((failure) => failure.reason === "dangling-parent"));
 });
 
 test("a 2,000-step valid chain validates under 750ms with at most one traversal per exported source", () => {

@@ -449,7 +449,14 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	steps.sort((a, b) =>
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
-	return { plumbline_version: PLUMBLINE_VERSION, run, steps };
+	const stepIds = new Set(steps.map((step) => step.step_id));
+	const externalParents = [...new Set(events.flatMap((event) => {
+		const id = str(event["uuid"]);
+		return id && !stepIds.has(id) ? [id] : [];
+	}))];
+	return { plumbline_version: PLUMBLINE_VERSION, run, steps,
+		...(externalParents.length ? { external_parent_ids: externalParents } : {}),
+	};
 }
 
 /** Parse raw transcript text (main + optional subagent sidechain texts) into a Trace. */
