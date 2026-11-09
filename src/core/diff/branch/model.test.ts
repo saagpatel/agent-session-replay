@@ -390,3 +390,55 @@ test("a failed edit is not evidence of a superseded insertion", () => {
 	assert.equal(graph.endState["src/a.ts"], "base\n");
 	assert.ok(!graph.branches.some((branch) => branch.kind === "superseded"));
 });
+
+test("redirects from reads, searches and tests invalidate their output destinations", () => {
+	for (const command of [
+		"git diff > src/a.ts",
+		"pnpm test > src/a.ts",
+		"rg idea src/b.ts >>src/a.ts",
+		"git diff>src/a.ts",
+		"pnpm test 2>src/a.ts",
+		"git diff > 'src/a.ts' > src/new.ts",
+		"cd src && git diff > a.ts",
+		"bash -lc 'git diff > src/a.ts'",
+	]) {
+		const graph = buildBranchGraph(
+			trace(edit("change", "base", "idea"), shell("redirect", command)),
+			base,
+		);
+		assert.equal(graph.endState["src/a.ts"], null, command);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown", command);
+		if (graph.nodes.at(-1)?.action !== "run")
+			assert.equal(graph.endState["src/b.ts"], "other\n", command);
+		if (command.includes("src/new.ts")) assert.equal(graph.endState["src/new.ts"], null);
+	}
+});
+
+test("dynamic redirects fail closed while quoted redirect text and descriptors preserve content", () => {
+	for (const command of ["git diff > $OUTPUT", 'pnpm test > "$OUTPUT"', 'git diff "$(pnpm test > src/a.ts)"']) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("redirect", command)), base);
+		assert.equal(graph.endStateComplete, false, command);
+		assert.equal(graph.endState["src/a.ts"], null, command);
+	}
+	for (const command of ["rg '>' src/a.ts", "pnpm test 2>&1", 'git diff -- ">"']) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("read", command)), base);
+		assert.equal(graph.endState["src/a.ts"], "idea\n", command);
+		assert.equal(graph.editEffects[0]?.lineage, "retained", command);
+	}
+});
+
+test("whole-tree reset and stash invalidate staged additions absent from the base", () => {
+	for (const command of ["git reset --hard", "git stash", "git stash push"]) {
+		const graph = buildBranchGraph(
+			trace(
+				tool("new", "Write", { path: "src/new.ts", content: "new\n" }),
+				shell("stage", "git add src/new.ts"),
+				shell("restore", command),
+			),
+			base,
+		);
+		assert.equal(graph.endState["src/new.ts"], null, command);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown", command);
+		assert.ok(!graph.branches.some((branch) => branch.kind === "backtrack"), command);
+	}
+});

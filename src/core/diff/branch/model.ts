@@ -50,6 +50,52 @@ function shellCommand(args: Json): string | undefined {
 		: v.join(" ");
 }
 
+/** Output redirects write independently of the command's normalized action.
+ * A null destination means shell expansion or syntax prevents naming the file.
+ */
+function redirectTargets(command: string): Array<string | null> {
+	const wrapped = /^(?:\/bin\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(command.trim());
+	if (wrapped) return redirectTargets(wrapped[2]!);
+	const targets: Array<string | null> = [];
+	let quote = "";
+	for (let i = 0; i < command.length; i++) {
+		const ch = command[i]!;
+		if (ch === "\\" && quote !== "'") { i++; continue; }
+		if (quote !== "'" && (ch === "`" || (ch === "$" && command[i + 1] === "("))) {
+			// Substitutions execute shell code, including writes hidden inside quotes.
+			targets.push(null);
+		}
+		if (quote) { if (ch === quote) quote = ""; continue; }
+		if (ch === "'" || ch === '"') { quote = ch; continue; }
+		if (ch !== ">") continue;
+		if (command[i + 1] === ">" || command[i + 1] === "|") i++;
+		const descriptor = command[i + 1] === "&";
+		if (descriptor) i++;
+		while (/\s/.test(command[i + 1] ?? "") && i + 1 < command.length) i++;
+		let word = "";
+		let dynamic = false;
+		let operandQuote = "";
+		while (i + 1 < command.length) {
+			const next = command[i + 1]!;
+			if (!operandQuote && /[\s;|&<>]/.test(next)) break;
+			i++;
+			if (next === "\\" && operandQuote !== "'") {
+				word += command[++i] ?? "";
+				continue;
+			}
+			if (next === operandQuote) { operandQuote = ""; continue; }
+			if (!operandQuote && (next === "'" || next === '"')) { operandQuote = next; continue; }
+			if (operandQuote !== "'" && /[$`]/.test(next)) dynamic = true;
+			if (!operandQuote && /[*?\[~(){}]/.test(next)) dynamic = true;
+			word += next;
+		}
+		// Descriptor duplication/closure writes no filesystem destination.
+		if (descriptor && /^(?:\d+|-)$/.test(word)) continue;
+		targets.push(!word || dynamic || operandQuote ? null : word);
+	}
+	return targets;
+}
+
 function operations(trace: Trace): Operation[] {
 	const out: Operation[] = [];
 	// Label each context separately, so sidechains cannot change main-run labels.
@@ -439,6 +485,14 @@ export function buildBranchGraph(
 			applyEdit(op, file);
 		else if (op.command) {
 			const command = op.command.trim();
+			for (const destination of redirectTargets(command)) {
+				const target = destination === null ? null : classifyCommand(
+					[...(op.directoryStages ?? []), `cat ${JSON.stringify(destination)}`].join(" && "),
+					trace.run.workspace?.cwd,
+				)[0]?.target;
+				if (target) invalidate(target);
+				else invalidateTree();
+			}
 			const restore =
 				/^git (?:checkout --|restore(?: --)?) ((?!-)[\w./-]+(?: (?!-)[\w./-]+)*)$/.exec(
 					command,
@@ -447,7 +501,7 @@ export function buildBranchGraph(
 			if (restore || whole) {
 				const paths = restore
 					? (restore[1] ?? "").split(/\s+/)
-					: Object.keys(base);
+					: [...new Set([...Object.keys(base), ...files.keys(), ...touched])];
 				const undone = new Set<string>();
 				const resolved: string[] = [];
 				for (const raw of paths) {
