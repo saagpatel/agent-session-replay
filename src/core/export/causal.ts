@@ -115,13 +115,17 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		add(spawn.step_id, chain[0]!.step_id, "spawn", ATTR.AGENT_SPAWNS);
 		const last = chain.at(-1)!;
 		const lastIndex = indices.get(last.step_id)!;
+		const referencesResult = (step: Step) => Boolean(step.parent_step_id &&
+			!steps.has(step.parent_step_id) && resultEventSteps.get(step.parent_step_id)?.has(spawn.step_id));
 		const consumer = trace.steps.find((step, index) =>
 			index > lastIndex &&
 			(step.subagent_id ?? null) === (spawn.subagent_id ?? null) &&
-			(step.caused_by === last.step_id || step.parent_step_id === last.step_id),
+			(step.caused_by === last.step_id || step.parent_step_id === last.step_id || referencesResult(step)),
 		);
 		if (consumer) {
-			add(last.step_id, consumer.step_id, "consumer", "first later parent-context step explicitly referencing subagent endpoint");
+			add(last.step_id, consumer.step_id, "consumer", referencesResult(consumer)
+				? "parent references Agent result-event"
+				: "first later parent-context step explicitly referencing subagent endpoint");
 		} else {
 			diagnostics.push({
 				reason: "unlinked-subagent-result",

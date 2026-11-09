@@ -19,10 +19,17 @@ export function checkCaptions(resolved: ResolvedManifest, graph: CausalGraph): C
 	const cwd = resolved.trace.run.workspace?.cwd;
 	const label = (id: string) => stepLabel(graph.steps.get(id), cwd);
 	const predecessors = new Map<string, Set<string>>();
+	// Possible mutations constrain playback, but cannot substantiate a claim.
+	const evidencedGraph: CausalGraph = { ...graph, edges: [], adjacency: new Map() };
 	for (const edge of graph.edges) {
 		const incoming = predecessors.get(edge.to) ?? new Set<string>();
 		incoming.add(edge.from);
 		predecessors.set(edge.to, incoming);
+		if (edge.kind === "unresolved-write") continue;
+		evidencedGraph.edges.push(edge);
+		const neighbors = evidencedGraph.adjacency.get(edge.from) ?? [];
+		if (!neighbors.includes(edge.to)) neighbors.push(edge.to);
+		evidencedGraph.adjacency.set(edge.from, neighbors);
 	}
 	for (const caption of resolved.manifest.captions) {
 		const refs = caption.kind === "shows" ? caption.refs : [caption.cause, caption.effect];
@@ -49,7 +56,7 @@ export function checkCaptions(resolved: ResolvedManifest, graph: CausalGraph): C
 				effect,
 			});
 		}
-		if (!findPath(graph, cause, effect)) {
+		if (!findPath(evidencedGraph, cause, effect)) {
 			failures.push({
 				reason: "caption-unsupported-claim",
 				message: `No source causal path proves ${label(cause)} caused ${label(effect)}.`,

@@ -1,5 +1,5 @@
 import type { Trace } from "../types.ts";
-import { buildCausalGraph, type GraphDiagnostic } from "./causal.ts";
+import { buildCausalGraph, happensBefore, type GraphDiagnostic } from "./causal.ts";
 import { checkCaptions, type CaptionFailure } from "./caption-ref.ts";
 import { parseManifest, resolveManifest, type ManifestError } from "./manifest.ts";
 import { checkOrder, type OrderFailure } from "./order-check.ts";
@@ -34,9 +34,11 @@ export function validateExport(input: unknown, trace: Trace): { ok: boolean; fai
 		const index = indices.get(diagnostic.step!)!;
 		const dependedOn = reversed.some(([from, to]) => from <= index && index <= to) || manifest.captions.some((caption) => {
 			if (caption.kind === "shows") return caption.refs.includes(diagnostic.step!);
-			const cause = indices.get(caption.cause)!;
-			const effect = indices.get(caption.effect)!;
-			return Math.min(cause, effect) <= index && index <= Math.max(cause, effect);
+			// Dependency scope includes conservative barriers, even when an
+			// explicit parent places the operation outside the source interval.
+			return diagnostic.step === caption.cause || diagnostic.step === caption.effect ||
+				happensBefore(graph, diagnostic.step!, caption.effect) ||
+				happensBefore(graph, caption.cause, diagnostic.step!);
 		});
 		if (!dependedOn) warnings.push(diagnostic);
 		return dependedOn;

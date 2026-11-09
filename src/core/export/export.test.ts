@@ -654,6 +654,67 @@ test("unrelated unresolved exec cells remain warnings for a supported caption an
 	assert.equal(result.warnings.length, 1);
 });
 
+test("unresolved barriers outside the caption source interval cannot prove a because claim", () => {
+	const trace = makeTrace([
+		toolStep("unknown", "unknown_tool", {}, { caused_by: "cause" }),
+		toolStep("effect", "Read", { file_path: "src/a.ts" }),
+		makeStep("cause"),
+	]);
+	const manifest = oneScene(trace, ["cause", "effect"]);
+	manifest.captions.push({ id: "unsupported", sceneId: "scene-main", kind: "because", text: "The cause led to the read.", cause: "cause", effect: "effect" });
+	const graph = buildCausalGraph(trace);
+	assert.deepEqual(findPath(graph, "cause", "effect"), ["cause", "unknown", "effect"]);
+	const resolved = resolveManifest(manifest, trace);
+	assert.ok(!("errors" in resolved));
+	assert.ok(checkCaptions(resolved, graph).some((failure) => failure.reason === "caption-unsupported-claim"));
+	const result = validateExport(manifest, trace);
+	assert.equal(result.ok, false);
+	assert.ok(result.failures.some((failure) => failure.reason === "caption-unsupported-claim"));
+	assert.ok(result.failures.some((failure) => failure.reason === "unresolved-operation" && failure.step === "unknown"));
+	assert.ok(!result.warnings.some((warning) => warning.reason === "unresolved-operation"));
+});
+
+test("caption dependencies follow graph ancestors and descendants rather than source intervals", () => {
+	const cases = [
+		[
+			toolStep("unknown", "unknown_tool"),
+			makeStep("cause"),
+			makeStep("effect", { parent_step_id: "unknown" }),
+		],
+		[
+			makeStep("cause"),
+			makeStep("effect"),
+			toolStep("unknown", "unknown_tool", {}, { parent_step_id: "cause" }),
+		],
+		[
+			makeStep("cause"),
+			toolStep("unknown", "unknown_tool"),
+			makeStep("effect"),
+		],
+	];
+	for (const [index, steps] of cases.entries()) {
+		const trace = makeTrace(steps);
+		const manifest = oneScene(trace, ["cause", "effect"]);
+		manifest.captions.push({ id: "claim", sceneId: "scene-main", kind: "because", text: "The cause led to the effect.", cause: "cause", effect: "effect" });
+		const result = validateExport(manifest, trace);
+		assert.equal(result.failures.some((failure) => failure.reason === "unresolved-operation"), index < 2);
+		assert.equal(result.warnings.some((warning) => warning.reason === "unresolved-operation"), index === 2);
+	}
+});
+
+test("caption proofs retain evidenced paths alongside unresolved barriers", () => {
+	const trace = makeTrace([
+		toolStep("cause", "Write", { file_path: "src/a.ts" }),
+		toolStep("unknown", "unknown_tool"),
+		toolStep("effect", "Read", { file_path: "src/a.ts" }),
+	]);
+	const manifest = oneScene(trace, ["cause", "effect"]);
+	manifest.captions.push({ id: "supported", sceneId: "scene-main", kind: "because", text: "The write precedes its read.", cause: "cause", effect: "effect" });
+	const result = validateExport(manifest, trace);
+	assert.ok(result.failures.some((failure) => failure.reason === "unresolved-operation"));
+	assert.ok(!result.failures.some((failure) => failure.reason === "caption-unsupported-claim"));
+});
+
 test("an incomplete exec cell cannot prove that its literal calls were all invoked", () => {
 	const trace = rollout([patchCell, readCell]);
 	delete trace.steps[0]!.attributes[ATTR.EXEC_COMPLETED];
@@ -918,6 +979,57 @@ test("parsed Claude result events retain every contributing tool and distinct re
 		playback.push(lateTool);
 		assert.ok(validateExport(oneScene(trace, playback), trace).failures.some((failure) => failure.reason === "reversed-causal-order"), lateTool);
 	}
+});
+
+test("parsed synchronous Agent results link the sidechain endpoint to the parent continuation", () => {
+	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
+	const main = [
+		{ type: "assistant", uuid: "dispatch", timestamp: "2026-01-01T00:00:00Z", message: { content: [
+			{ type: "tool_use", id: "toolu_agent", name: "Agent", input: { subagent_type: "Explore", prompt: "Read the synthetic file." } },
+		] } },
+		{ type: "user", uuid: "agent-result", timestamp: "2026-01-01T00:00:05Z", parentUuid: "dispatch", toolUseResult: { agentId: "child" }, message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_agent", content: "Synthetic inspection completed." },
+		] } },
+		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:06Z", parentUuid: "agent-result", message: { content: "Using the inspection result." } },
+	];
+	const sidechain = [
+		{ type: "assistant", uuid: "child-start", timestamp: "2026-01-01T00:00:01Z", isSidechain: true, agentId: "child", message: { content: "Inspecting." } },
+		{ type: "assistant", uuid: "child-read", timestamp: "2026-01-01T00:00:02Z", parentUuid: "child-start", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_use", id: "toolu_child_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+		{ type: "user", uuid: "child-result", timestamp: "2026-01-01T00:00:03Z", parentUuid: "child-read", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_child_read", content: "Synthetic file content." },
+		] } },
+		{ type: "assistant", uuid: "child-done", timestamp: "2026-01-01T00:00:04Z", parentUuid: "child-result", isSidechain: true, agentId: "child", message: { content: "Inspection complete." } },
+	];
+	const trace = parseClaudeCodeTranscript(jsonl(main), [jsonl(sidechain)]);
+	assert.deepEqual(trace.steps.find((step) => step.step_id === "toolu_agent")!.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["agent-result"]);
+	assert.equal(trace.steps.find((step) => step.step_id === "continuation")!.parent_step_id, "agent-result");
+	const graph = buildCausalGraph(trace);
+	assert.deepEqual(graph.edges.filter((edge) => edge.kind === "consumer"), [
+		{ from: "child-done", to: "continuation", kind: "consumer", evidence: "parent references Agent result-event" },
+	]);
+	const playback = trace.steps.map((step) => step.step_id);
+	assert.equal(validateExport(oneScene(trace, playback), trace).ok, true);
+	const reordered = playback.filter((id) => id !== "continuation");
+	reordered.splice(reordered.indexOf("child-done"), 0, "continuation");
+	const reversed = validateExport(oneScene(trace, reordered), trace);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "child-done" && failure.b === "continuation"));
+	// A launch receipt followed by a continuation before the sidechain ends
+	// does not establish consumption of the completed child result.
+	const background = structuredClone(main);
+	background[1]!.timestamp = "2026-01-01T00:00:01Z";
+	background[2]!.timestamp = "2026-01-01T00:00:02Z";
+	const backgroundTrace = parseClaudeCodeTranscript(jsonl(background), [jsonl(sidechain)]);
+	assert.ok(buildCausalGraph(backgroundTrace).diagnostics.some((diagnostic) => diagnostic.reason === "unlinked-subagent-result"));
+	assert.equal(buildCausalGraph(backgroundTrace).edges.some((edge) => edge.kind === "consumer"), false);
+	// A result recorded later cannot make an unrelated earlier continuation
+	// consume it, even when that continuation follows the child endpoint.
+	const unlinked = structuredClone(main);
+	unlinked[2]!.parentUuid = "dispatch";
+	unlinked[1]!.timestamp = "2026-01-01T00:00:07Z";
+	const unlinkedTrace = parseClaudeCodeTranscript(jsonl(unlinked), [jsonl(sidechain)]);
+	assert.ok(validateExport(oneScene(unlinkedTrace, unlinkedTrace.steps.map((step) => step.step_id)), unlinkedTrace).failures.some((failure) => failure.reason === "unlinked-subagent-result"));
 });
 
 test("absent parents matching the trace's tool-use ID family remain dangling", () => {
