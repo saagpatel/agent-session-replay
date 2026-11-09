@@ -1,5 +1,6 @@
 import type { ArtifactCheck } from "./artifact-check.ts";
 import type { BranchGraph, BranchNode } from "./types.ts";
+import type { Trace } from "../../types.ts";
 
 export interface ReportStep { id: string; nodes: BranchNode[]; source: "artifact" | "structure"; reason: string }
 export interface BranchReport {
@@ -7,16 +8,26 @@ export interface BranchReport {
 	retained: ReportStep[];
 	abandoned: Array<{ branchId: string; kind: string; fork: string | null; rejoin: string | null; reason: string; steps: ReportStep[] }>;
 	unknown: ReportStep[];
+	control: ReportStep[];
 	afterClaim: ReportStep[];
 	claimedButUnchanged: string[];
 }
 
-export function branchReport(graph: BranchGraph, check: ArtifactCheck): BranchReport {
-	const result: BranchReport = { claim: check.claim, retained: [], abandoned: [], unknown: [], afterClaim: [], claimedButUnchanged: check.claimedButUnchanged };
+export function branchReport(graph: BranchGraph, check: ArtifactCheck, trace: Trace): BranchReport {
+	const result: BranchReport = { claim: check.claim, retained: [], abandoned: [], unknown: [], control: [], afterClaim: [], claimedButUnchanged: check.claimedButUnchanged };
+	const controls = new Set(trace.steps.filter((step) => step.kind !== "tool_call").map((step) => step.step_id));
 	const ids = [...new Set(graph.nodes.map((node) => node.stepId))];
 	for (const id of ids) {
 		const own = check.steps.filter((entry) => entry.node.stepId === id);
+		if (controls.has(id)) {
+			result.control.push({ id, nodes: graph.nodes.filter((node) => node.stepId === id), source: "structure", reason: "Control step; not work." });
+			continue;
+		}
 		const later = own.filter((entry) => entry.status === "after-claim");
+		if (later.length && later.length !== own.length) {
+			result.unknown.push({ id, nodes: graph.nodes.filter((node) => node.stepId === id), source: "structure", reason: "Mixed operation statuses across the claimed commit; some operations were made after the claim." });
+			continue;
+		}
 		if (later.length) result.afterClaim.push({ id, nodes: graph.nodes.filter((node) => later.some((entry) => entry.node.stepId === node.stepId && entry.node.part === node.part)), source: "structure", reason: "Operations made after the claimed commit." });
 		const entries = own.filter((entry) => entry.status !== "after-claim");
 		if (!entries.length) continue;
@@ -54,10 +65,13 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 		text = clean(text);
 		lines.push(text.length <= width ? text : `${text.slice(0, width - 1)}…`);
 	};
-	const stepOrder = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim]
+	const stepOrder = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim, ...report.control]
 		.sort((a, b) => Math.min(...a.nodes.map((node) => node.index)) - Math.min(...b.nodes.map((node) => node.index)));
 	const numbers = new Map<string, number>();
 	for (const step of stepOrder) if (!numbers.has(step.id)) numbers.set(step.id, numbers.size + 1);
+	const workOrder = stepOrder.filter((step) => !report.control.includes(step));
+	const workNumbers = new Map<string, number>();
+	for (const step of workOrder) if (!workNumbers.has(step.id)) workNumbers.set(step.id, workNumbers.size + 1);
 	const label = (step: ReportStep) => {
 		const node = step.nodes[0];
 		const action = node?.action ?? "step";
@@ -70,7 +84,8 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 	for (const branch of report.abandoned) kindCounts.set(branch.kind, (kindCounts.get(branch.kind) ?? 0) + branch.steps.length);
 	const droppedKinds = [...kindCounts].map(([kind, count]) => `${count} ${kind}`).join(", ");
 	const commit = report.claim.sha ? report.claim.sha.slice(0, 7) : report.claim.status;
-	add(`Retained ${report.retained.length} · Dropped ${droppedCount}${droppedKinds ? ` (${droppedKinds})` : ""} · Unknown ${report.unknown.length} · Commit ${commit}${report.claim.sha ? ` ${report.claim.status}` : ""}`);
+	add(`Retained ${report.retained.length} · Dropped ${droppedCount}${droppedKinds ? ` (${droppedKinds})` : ""} · Unknown ${report.unknown.length} · Control ${report.control.length} · Commit ${commit}${report.claim.sha ? ` ${report.claim.status}` : ""}`);
+	add(`Control steps: ${report.control.length} — not work, listed in the JSON report`);
 	for (const file of report.claimedButUnchanged) add(`Claimed unchanged ${shortTarget(file)}`);
 	add("Retained");
 	for (const step of report.retained) add(`  ${label(step)} · ${step.source}`);
@@ -97,7 +112,7 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 		if (line.length > 2) lines.push(line);
 	};
 	const consecutiveSteps = (branch: BranchReport["abandoned"][number]) => {
-		const steps = branchSteps(branch);
+		const steps = branch.steps.map((step) => workNumbers.get(step.id)!).sort((a, b) => a - b);
 		return steps.length > 0 && steps.every((number, offset) => offset === 0 || number === steps[offset - 1]! + 1);
 	};
 	const rejoinAction = (branch: BranchReport["abandoned"][number]) => {
@@ -105,9 +120,8 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 		return { step, action: step?.nodes[0]?.action, number: step ? numbers.get(step.id) : undefined };
 	};
 	const rejoinIsNext = (branch: BranchReport["abandoned"][number], action: string) => {
-		const last = branchSteps(branch).at(-1);
 		const rejoin = rejoinAction(branch);
-		return rejoin.action === action && rejoin.number === (last ?? 0) + 1;
+		return rejoin.action === action && workNumbers.get(rejoin.step!.id) === (workNumbers.get(branch.steps.at(-1)!.id) ?? 0) + 1;
 	};
 	const branchFile = (branch: BranchReport["abandoned"][number]) => {
 		const targets = branch.steps.flatMap((step) => step.nodes.map((node) => node.target));
@@ -121,19 +135,18 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 		const eligible = dense && (branch.kind === "backtrack" || branch.kind === "superseded") && target !== null && consecutiveSteps(branch);
 		if (eligible) {
 			const group = [branch];
-			let nextNumber = branchSteps(branch).at(-1) ?? 0;
+			let nextNumber = workNumbers.get(branch.steps.at(-1)!.id) ?? 0;
 			while (index + group.length < report.abandoned.length) {
 				const next = report.abandoned[index + group.length]!;
-				const nextSteps = branchSteps(next);
-				if (next.kind !== branch.kind || branchFile(next) !== target || !consecutiveSteps(next) || nextSteps[0] !== nextNumber + 1) break;
+				if (next.kind !== branch.kind || branchFile(next) !== target || !consecutiveSteps(next) || workNumbers.get(next.steps[0]!.id) !== nextNumber + 1) break;
 				group.push(next);
-				nextNumber = nextSteps.at(-1)!;
+				nextNumber = workNumbers.get(next.steps.at(-1)!.id)!;
 			}
 			const steps = group.flatMap((item) => item.steps);
 			const stepNumbers = group.flatMap(branchSteps);
 			const first = stepNumbers[0] ?? 0;
 			const last = stepNumbers.at(-1) ?? first;
-			const range = first === last ? `#${first}` : `#${first}–#${last}`;
+			const range = first === last ? `#${first}` : `#${first}–#${last}${last - first + 1 === stepNumbers.length ? "" : `, ${stepNumbers.length} steps`}`;
 			const allRejoinAsNextEdit = group.every((item) => rejoinIsNext(item, "edit"));
 			const allRejoinAsNextRun = group.every((item) => rejoinIsNext(item, "run"));
 			const restore = allRejoinAsNextEdit ? "restored by the next edit" : allRejoinAsNextRun ? "restored by the next command" : "restored at its recorded rejoin";
@@ -143,13 +156,14 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 			const relation = branch.kind === "backtrack" ? "on" : "to";
 			const count = branch.kind === "backtrack" ? `${steps.length} ${steps.length === 1 ? "backtrack" : "backtracks"}` : plural(steps.length, kind, "superseded edits");
 			const prefix = `${count} ${relation} `;
-			const suffix = ` (${range}), each ${verb}`;
+			const qualifier = steps.length === 1 ? "" : "each ";
+			const suffix = ` (${range}), ${qualifier}${verb}`;
 			const summary = `${prefix}${shortTarget(target, width - prefix.length - suffix.length)}${suffix}`;
 			if (summary.length <= width) add(summary);
 			else {
 				add(`${prefix}${shortTarget(target)}`);
 				addStepRanges(stepNumbers);
-				add(`  each ${verb}`);
+				add(`  ${qualifier}${verb}`);
 			}
 			index += group.length;
 		} else {

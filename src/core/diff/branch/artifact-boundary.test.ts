@@ -32,7 +32,7 @@ function artifact(base: string, committed: Record<string, string>) {
 	const run = (steps: Step[]) => {
 		const graph = buildBranchGraph(trace(steps), { [file]: base });
 		const check = checkArtifacts(graph, repo);
-		return { graph, check, report: branchReport(graph, check) };
+		return { graph, check, report: branchReport(graph, check, trace(steps)) };
 	};
 	return { run, commit, short };
 }
@@ -153,8 +153,9 @@ test("commit boundary identifies the exact exec operation and splits later opera
 	assert.equal(graph.claim.stepId, "cell");
 	assert.equal(graph.claim.part, 1);
 	assert.deepEqual(check.effects.map((effect) => [effect.node.part, effect.status]), [[0, "retained"], [2, "after-claim"]]);
-	assert.deepEqual(report.retained[0]?.nodes.map((node) => node.part), [0, 1]);
-	assert.deepEqual(report.afterClaim[0]?.nodes.map((node) => node.part), [2]);
+	assert.deepEqual(report.unknown[0]?.nodes.map((node) => node.part), [0, 1, 2]);
+	assert.match(report.unknown[0]!.reason, /some operations were made after the claim/);
+	assert.deepEqual(report.afterClaim, []);
 });
 
 test("artifact attribution follows confirmed moves even after the source is recreated", () => {
@@ -217,7 +218,7 @@ test("parser-to-artifact claims the last successful commit call in an exec cell"
 	assert.equal(check.claim.sha, shas[1]);
 	assert.equal(graph.claim.tree?.[file]?.text, "second\n");
 	assert.deepEqual(check.effects.map((effect) => [effect.node.part, effect.status]), [[0, "abandoned"], [2, "retained"]]);
-	assert.deepEqual(branchReport(graph, check).afterClaim, []);
+	assert.deepEqual(branchReport(graph, check, parsed).afterClaim, []);
 });
 
 test("uncertain move destinations cannot prove the original edit abandoned", () => {

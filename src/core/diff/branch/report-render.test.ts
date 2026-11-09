@@ -29,6 +29,7 @@ function denseReport(): BranchReport {
 		retained: [step("toolu_kept", 9)],
 		abandoned,
 		unknown: [],
+		control: [],
 		afterClaim: [],
 		claimedButUnchanged: [],
 	};
@@ -38,7 +39,7 @@ test("dense report groups consecutive same-file abandoned branches and uses read
 	const report = denseReport();
 	const rendered = renderBranchReport(report, { dense: true });
 	const lines = rendered.split("\n");
-	assert.equal(lines[0], "Retained 1 · Dropped 9 (7 superseded, 2 backtrack) · Unknown 0 · Commit 3a6790b resolved");
+	assert.equal(lines[0], "Retained 1 · Dropped 9 (7 superseded, 2 backtrack) · Unknown 0 · Control 0 · Commit 3a6790b resolved");
 	assert.ok(rendered.includes("7 superseded edits to src/value.ts (#1–#7), each replaced by the next"));
 	assert.ok(rendered.includes("2 backtracks on src/value.ts (#8–#9), each restored by the next edit"));
 	assert.ok(rendered.includes("#10 edit src/value.ts"));
@@ -85,6 +86,7 @@ test("dense groups require a single file and report the actual backtrack rejoin 
 	report.retained = [step("toolu_reset", 9, "run", "git reset --hard")];
 	const rendered = renderBranchReport(report, { dense: true });
 	assert.ok(rendered.includes("src/other.ts (#2)"));
+	assert.ok(rendered.includes("1 superseded edit to src/other.ts (#2), replaced by the next"));
 	assert.ok(rendered.includes("restored by the next command"));
 	assert.ok(!rendered.includes("each restored by the next edit"));
 });
