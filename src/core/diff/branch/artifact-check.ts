@@ -28,6 +28,7 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 	const effects: ArtifactCheck["effects"] = graph.editEffects.map((effect) => {
 		const result = (status: ArtifactStatus, reason: string) => ({ node: effect.node, file: effect.file, status, reason });
 		if (afterClaim(effect.node)) return result("after-claim", "Edit made after the claimed commit.");
+		if (effect.file.startsWith("external:")) return result("unknown", "External paths cannot be attributed to repository commits.");
 		if (!commit) return result("unknown", `Commit claim ${status}.`);
 		const content = commit.files[effect.file];
 		if (content === undefined) return result("unknown", "File is absent from the commit.");
@@ -37,7 +38,7 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 		if (!effect.payload || total === 0) return result("unknown", "Edit has no proven introduced spans.");
 		if (!aligned.has(effect.file)) aligned.set(effect.file, alignProvenance(file, content));
 		const origins = aligned.get(effect.file);
-		if (!origins) return result("unknown", "Committed content cannot be aligned within the text comparison limits.");
+		if (!origins) return result("unknown", "Committed content has ambiguous alignment or exceeds the text comparison limits.");
 		const retained = origins.get(key(effect.node)) ?? 0;
 		if (retained === 0) return result("abandoned", "No introduced spans align with the commit.");
 		if (retained < total) return result("partial", "Only part of the introduced spans aligns with the commit.");

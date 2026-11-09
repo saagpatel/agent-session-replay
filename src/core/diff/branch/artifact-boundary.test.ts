@@ -83,6 +83,27 @@ test("equal base text elsewhere cannot prove retention of an omitted introduced 
 	assert.equal(check.effects[0]?.status, "abandoned");
 });
 
+test("duplicate introduced lines are unknown whether they precede or follow base text", () => {
+	for (const base of ["old\nnew\n", "new\nold\n"]) {
+		const { run, commit } = artifact(base, { [file]: "new\n" });
+		const { check } = run([edit("duplicate", "old", "new"), commit]);
+		assert.equal(check.effects[0]?.status, "unknown", base);
+	}
+});
+
+test("external paths stay unknown even if a commit fixture names their identity", () => {
+	const external = "external:/tmp/source.ts";
+	const repo = { commits: [{ parent: null, message: "synthetic artifact", files: { [external]: "idea\n" } }] };
+	const short = fixtureRepoCommitShas(repo.commits)[0]!.slice(0, 7);
+	const operation = tool("external-edit", "Edit", {
+		file_path: "/tmp/source.ts", old_string: "base", new_string: "idea",
+	});
+	const commit = tool("commit", "Bash", { command: "git commit -am fixture" });
+	commit.attributes[ATTR.GIT_COMMIT] = { short };
+	const graph = buildBranchGraph(trace([operation, commit]), { [external]: "base\n" });
+	assert.equal(checkArtifacts(graph, repo).effects[0]?.status, "unknown");
+});
+
 test("alignment distinguishes partial line retention from a changed line", () => {
 	const { run, commit } = artifact("base\n", { [file]: "left\nchanged\n" });
 	const { check } = run([edit("two-lines", "base\n", "left\nright\n"), commit]);
