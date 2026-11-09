@@ -1,0 +1,18 @@
+{
+  "repo": "unparsed-write",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ],
+    "unknown": [
+      "toolu_0"
+    ]
+  },
+  "claim": {
+    "commitShort": "f3d60b6"
+  },
+  "notes": "A shell write names a target but its payload cannot be reconstructed; the touched file lineage is unknown."
+}

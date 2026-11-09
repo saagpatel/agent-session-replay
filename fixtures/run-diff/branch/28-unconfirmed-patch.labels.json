@@ -1,0 +1,17 @@
+{
+  "repo": "unconfirmed-patch",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_1"
+    ],
+    "unknown": [
+      "toolu_0"
+    ]
+  },
+  "claim": {
+    "commitShort": "21b39be"
+  },
+  "notes": "The patch is reported successful but its context cannot be located in the known file, leaving lineage unknown."
+}

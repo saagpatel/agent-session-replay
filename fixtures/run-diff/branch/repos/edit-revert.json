@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "edit-revert base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "c4018f2ad4cedfaccd34fff8966538543eaa1cfc",
+      "message": "edit-revert final",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

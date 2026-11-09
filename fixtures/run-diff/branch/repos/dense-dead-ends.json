@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "dense-dead-ends base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "376375c90e0851789e1546f0d8ac40248cd6cc89",
+      "message": "dense-dead-ends final",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

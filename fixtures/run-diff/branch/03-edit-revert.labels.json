@@ -1,0 +1,17 @@
+{
+  "repo": "edit-revert",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0"
+    ],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "2bc81db"
+  },
+  "notes": "An edit restores the base text."
+}

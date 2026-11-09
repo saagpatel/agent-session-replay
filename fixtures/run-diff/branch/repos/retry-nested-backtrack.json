@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "retry-nested-backtrack base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "dedfdacff6a77cf23921ca4c6c258caa23b60fa1",
+      "message": "retry-nested-backtrack final",
+      "files": {
+        "src/value.ts": "const value = 1;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "retry-then-edit base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "f1e7a1159f63c61a0572691e77614f6c20551152",
+      "message": "retry-then-edit final",
+      "files": {
+        "src/value.ts": "const value = 2;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

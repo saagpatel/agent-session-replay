@@ -1,0 +1,17 @@
+{
+  "repo": "codex-partial-edit",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [
+      "call_0"
+    ],
+    "retained": [
+      "call_1",
+      "call_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "5c1858f"
+  },
+  "notes": "Codex writes replace and supersede the earlier inserted text."
+}

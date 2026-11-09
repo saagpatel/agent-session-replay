@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "claim-outside-repo base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "68d671863881a771643c13e7967b1d1f2b573722",
+      "message": "claim-outside-repo final",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

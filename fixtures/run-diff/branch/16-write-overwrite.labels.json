@@ -1,0 +1,17 @@
+{
+  "repo": "write-overwrite",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0"
+    ],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "76ae340"
+  },
+  "notes": "A full write replaces the earlier file contents."
+}
