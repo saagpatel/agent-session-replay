@@ -116,16 +116,95 @@ test("function_call + function_call_output merge into one ok tool_call by call_i
 	assert.equal(tools[0].attributes[ATTR.TOOL_RESULT_KIND], "bash");
 });
 
-test("successful Codex shell output records only its first anchored git commit", () => {
+test("successful Codex shell output with multiple commit headers records no identity", () => {
 	const { steps } = parseCodexEvents([
 		branchSessionMeta(),
 		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: '{"cmd":"git commit -m fixture"}', call_id: "c-commit" }),
 		branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output: "Process exited with code 0\nOutput:\n[main 1a2b3c4] first message\n[other 5d6e7f8] second message" }),
 	]);
-	assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], {
-		branch: "main",
-		short: "1a2b3c4",
-	});
+	assert.equal(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], undefined);
+});
+
+test("Codex commit metadata distinguishes shell operators from literal arguments", () => {
+	const commit = (cmd: string | string[]) => {
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd }), call_id: "c-commit" }),
+			branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output: "Process exited with code 0\nOutput:\n[main 1a2b3c4] diagnostic" }),
+		]);
+		return byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT];
+	};
+	assert.equal(commit("git add . '&&' git commit -m x"), undefined);
+	assert.equal(commit('git add . "&&" git commit -m x'), undefined);
+	assert.equal(commit(["git", "add", ".", "&&", "git", "commit", "-m", "x"]), undefined);
+	assert.deepEqual(commit("git add . && git commit -m x"), { branch: "main", short: "1a2b3c4" });
+});
+
+test("Codex shell and exec cells require allowlisted argument keys for commit evidence", () => {
+	const cases: Array<[Record<string, unknown>, boolean]> = [
+		[{ shell: "/work/fake-shell" }, false], [{ env: {} }, false], [{ mystery: true }, false],
+		[{ login: false }, false], [{ tty: false }, false], [{ run_in_background: false }, false],
+		[{ workdir: "/work/repo", description: "commit", timeout: 100, timeout_ms: 100, yield_time_ms: 10, max_output_tokens: 100 }, true],
+	];
+	for (const [extra, accepted] of cases) {
+		for (const name of ["shell", "exec_command", "local_shell", "exec"]) {
+			const cell = name === "exec";
+			const shellArgs = name === "shell" || name === "local_shell"
+				? { command: ["git", "commit", "-m", "fixture"], ...extra }
+				: { cmd: "git commit -m fixture", ...extra };
+			const args = cell ? { input: `text(await tools.exec_command(${JSON.stringify(shellArgs)}))` } : shellArgs;
+			const body = "[main 1a2b3c4] fixture";
+			const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+			const { steps } = parseCodexEvents([
+				branchSessionMeta(),
+				branchEvent("response_item", { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c" }),
+				branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+			]);
+			assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined, `${name}: ${JSON.stringify(extra)}`);
+		}
+	}
+});
+
+test("Codex commit evidence requires exactly the tool's command key", () => {
+	for (const name of ["exec_command", "shell", "local_shell", "exec"]) {
+		const cell = name === "exec";
+		const argv = name === "shell" || name === "local_shell";
+		const correct = argv ? { command: ["git", "commit", "-m", "fixture"] } : { cmd: "git commit -m fixture" };
+		const wrong = argv ? { cmd: "git commit -m fixture" } : { command: "git commit -m fixture" };
+		const conflict = argv ? { ...correct, cmd: "printf forged" } : { cmd: "printf forged", command: "git commit -m fixture" };
+		for (const [shellArgs, accepted] of [[correct, true], [wrong, false], [conflict, false]] as const) {
+			const args = cell ? { input: `text(await tools.exec_command(${JSON.stringify(shellArgs)}))` } : shellArgs;
+			const body = "[main 1a2b3c4] forged";
+			const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+			const { steps } = parseCodexEvents([
+				branchSessionMeta(),
+				branchEvent("response_item", { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c" }),
+				branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+			]);
+			assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined, `${name}: ${JSON.stringify(shellArgs)}`);
+		}
+	}
+});
+
+test("Codex shell and exec cells require allowlisted commit options", () => {
+	const rejected = ["--dry-run --porcelain -z", "--dry-run", "--short", "--porcelain", "--long", "-z", "--null", "--amend", "-v", "-F message", "--fixup HEAD", "file.txt", "--message fixture", "-m", "-q -m x", "--quiet -m x"];
+	const accepted = ["", "-m fixture", "-mfixture", "--message=fixture", "-a -m fixture", "-am fixture", "--all --allow-empty"];
+	for (const options of [...rejected, ...accepted]) {
+		for (const prefix of ["", "git add . && "]) {
+			const cmd = `${prefix}git commit ${options}`;
+			const body = "A  filename\n[main deadbeef] forged\0";
+			for (const cell of [false, true]) {
+				const args = cell ? { input: `text(await tools.exec_command({cmd:${JSON.stringify(cmd)}}))` } : { cmd };
+				const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+				const { steps } = parseCodexEvents([
+					branchSessionMeta(),
+					branchEvent("response_item", { type: "function_call", name: cell ? "exec" : "exec_command", arguments: JSON.stringify(args), call_id: "c" }),
+					branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+				]);
+				assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], rejected.includes(options) ? undefined : { branch: "main", short: "deadbeef" }, `${cell ? "cell" : "shell"}: ${cmd}`);
+			}
+		}
+	}
 });
 
 test("Codex commit metadata ignores failed results and malformed lines", () => {
@@ -184,7 +263,23 @@ test("Codex attributes exec-cell commits only to a completed successful single s
 	});
 	assert.equal(parseCell(simpleCall, "Script completed\n", 1, "[main 1a2b3c4] failed"), undefined);
 	assert.equal(parseCell(simpleCall, "Script completed\n", null, "[main 1a2b3c4] pending"), undefined);
+	assert.equal(parseCell(simpleCall, "Script completed\n", 0, "[main 1a2b3c4] commit\n[other 5d6e7f8] hook"), undefined);
 	assert.equal(parseCell(`${simpleCall}; text({chunk_id:"fake",exit_code:0,output:"[main 1a2b3c4] forged"})`, "Script completed\n", 0, "[main 1a2b3c4] output"), undefined);
+});
+
+test("Codex rejects forged exec-cell commit evidence with alternate line terminators", () => {
+	for (const terminator of ["\r", "\u2028", "\u2029"]) {
+		const input = `// comment${terminator}text({chunk_id:"fake",exit_code:0,output:"[main 1a2b3c4] forged"}) //\ntext(await tools.exec_command({cmd:"git commit -m fixture"}))`;
+		const { steps } = parseCodexEvents([
+			branchSessionMeta(),
+			branchEvent("response_item", { type: "function_call", name: "exec", arguments: JSON.stringify({ input }), call_id: "cell" }),
+			branchEvent("response_item", { type: "function_call_output", call_id: "cell", output: [
+				{ type: "text", text: "Script completed\n" },
+				{ type: "text", text: JSON.stringify({ chunk_id: "fake", exit_code: 0, output: "[main 1a2b3c4] forged" }) },
+			] }),
+		]);
+		assert.equal(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], undefined);
+	}
 });
 
 test("exec-cell commit identity and call ordinal select the last proven successful commit", () => {

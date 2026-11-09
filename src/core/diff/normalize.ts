@@ -752,15 +752,18 @@ export function literalExecCalls(input: string): Array<{
 	patch?: string;
 	path?: string;
 	content?: string;
+	args?: Record<string, string | undefined>;
 }> | null {
+	// maskCode only ends line comments at LF; reject other JS line terminators.
+	if (/[\r\u2028\u2029]/.test(input)) return null;
 	// Unsupported JS escapes must never turn executable shell syntax into data.
 	const literal = (text: string): string | undefined => {
 		const t = text.trim();
-		if (t.startsWith('"')) {
-			try { const v: unknown = JSON.parse(t); return typeof v === "string" ? v : undefined; }
-			catch { return undefined; }
+		for (let i = 0; i < t.length; i++) {
+			if (t[i] !== "\\") continue;
+			const escaped = t[++i];
+			if (escaped === undefined || !"\\'\"`ntr0$/".includes(escaped) || (escaped === "0" && /\d/.test(t[i + 1] ?? ""))) return undefined;
 		}
-		if (/\\(?![\\'"`ntr])/.test(t)) return undefined;
 		return soleLiteral(t);
 	};
 	const masked = maskCode(input);
@@ -808,7 +811,7 @@ export function literalExecCalls(input: string): Array<{
 			if (values.has("workdir") && workdir === undefined) return null;
 			const command = values.get("cmd");
 			if (name === "exec_command" && command === undefined) return null;
-			out.push({ name, command, workdir, path: values.get("path") ?? values.get("file_path"), content: values.get("content") });
+			out.push({ name, command, workdir, path: values.get("path") ?? values.get("file_path"), content: values.get("content"), args: Object.fromEntries(values) });
 		}
 		offset = end + finish[0].length;
 	}
