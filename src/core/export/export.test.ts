@@ -533,10 +533,10 @@ test("keeps distinct outside-workspace absolute paths from aliasing by tail", ()
 	assert.equal(happensBefore(buildCausalGraph(trace), "write", "read"), false);
 });
 
-test("stops file read dependencies at the next content-independent write to that path", () => {
+test("stops file read dependencies at a confirmed content-independent write to that path", () => {
 	const trace = makeTrace([
 		toolStep("first-write", "Write", { file_path: "src/a.ts" }),
-		toolStep("second-write", "Write", { file_path: "src/a.ts" }),
+		toolStep("second-write", "Write", { file_path: "src/a.ts" }, { status: "ok", ended_at: "2026-01-01T00:00:01Z" }),
 		toolStep("read", "Read", { file_path: "src/a.ts" }),
 	]);
 	const graph = buildCausalGraph(trace);
@@ -544,7 +544,7 @@ test("stops file read dependencies at the next content-independent write to that
 	assert.ok(happensBefore(graph, "second-write", "read"));
 });
 
-test("links all writes since the prior test to the next classified test command", () => {
+test("links current writes to each classified test command", () => {
 	const trace = makeTrace([
 		toolStep("first-write", "Write", { file_path: "src/a.ts" }),
 		toolStep("first-test", "Bash", { command: "pnpm test" }),
@@ -556,7 +556,7 @@ test("links all writes since the prior test to the next classified test command"
 	assert.ok(happensBefore(graph, "first-write", "first-test"));
 	assert.ok(happensBefore(graph, "second-write", "second-test"));
 	assert.ok(happensBefore(graph, "third-write", "second-test"));
-	assert.equal(happensBefore(graph, "first-write", "second-test"), false);
+	assert.ok(happensBefore(graph, "first-write", "second-test"));
 });
 
 test("reuses Run Diff command classification to identify test runs", () => {
@@ -796,6 +796,59 @@ function nestedStep(name: string, args: Record<string, unknown>): Step {
 		},
 	});
 }
+
+test("uncertain overwrites preserve every possible writer for reads and tests", () => {
+	const args = { file_path: "src/a.ts", content: "replacement" };
+	for (const nested of [false, true]) for (const status of ["error", "interrupted", undefined, "ok"] as const) {
+		const overwrite = nested ? nestedStep("Write", args) : toolStep("operation", "Write", args);
+		overwrite.status = status;
+		// An ok but unsettled call is also unconfirmed; exec completion alone
+		// does not establish that its nested write succeeded.
+		if (nested) overwrite.ended_at = "2026-01-01T00:00:02Z";
+		const trace = makeTrace([
+			toolStep("first", "Write", args, { status: "ok", ended_at: "2026-01-01T00:00:01Z" }),
+			overwrite,
+			toolStep("read", "Read", { file_path: "src/a.ts" }),
+			toolStep("test", "Bash", { command: "pnpm test" }),
+			toolStep("later-test", "Bash", { command: "pnpm test" }),
+		]);
+		const graph = buildCausalGraph(trace);
+		for (const from of ["first", "operation"]) for (const [to, kind] of [["read", "file-read"], ["test", "test-write"], ["later-test", "test-write"]]) {
+			assert.ok(graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), `${nested} ${status} ${from} ${to}`);
+		}
+		const result = validateExport(oneScene(trace, ["operation", "read", "first", "test", "later-test"]), trace);
+		assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "first" && failure.b === "read"));
+	}
+});
+
+test("only confirmed successful direct overwrites retire earlier possible writers", () => {
+	const args = { file_path: "src/a.ts", content: "new" };
+	const confirmed = { status: "ok" as const, ended_at: "2026-01-01T00:00:01Z" };
+	const trace = makeTrace([
+		toolStep("first", "Write", args, confirmed),
+		toolStep("uncertain", "Write", args, { status: "error" }),
+		toolStep("replacement", "Write", args, confirmed),
+		toolStep("read", "Read", { file_path: "src/a.ts" }),
+		toolStep("test", "Bash", { command: "pnpm test" }),
+	]);
+	const edges = buildCausalGraph(trace).edges.filter((edge) => edge.kind === "file-read" || edge.kind === "test-write");
+	assert.deepEqual(edges.map(({ from, to }) => [from, to]), [["replacement", "read"], ["replacement", "test"]]);
+});
+
+test("a direct patch retires earlier writers only when its own result confirms application", () => {
+	for (const confirmed of [false, true]) {
+		const patch = toolStep("patch", "apply_patch", { input: "*** Begin Patch\n*** Add File: src/a.ts\n+new\n*** End Patch" }, {
+			status: "ok", ended_at: "2026-01-01T00:00:02Z",
+		});
+		if (confirmed) patch.attributes[ATTR.PATCH_CONFIRMED] = true;
+		const graph = buildCausalGraph(makeTrace([
+			toolStep("first", "Write", { file_path: "src/a.ts" }), patch,
+			toolStep("read", "Read", { file_path: "src/a.ts" }),
+		]));
+		assert.equal(happensBefore(graph, "first", "read"), !confirmed);
+		assert.ok(happensBefore(graph, "patch", "read"));
+	}
+});
 
 test("the explicit file-tool and literal shell allowlist extracts direct and nested calls equally", () => {
 	const cases: Array<[string, Record<string, unknown>, "read" | "write" | "test"]> = [

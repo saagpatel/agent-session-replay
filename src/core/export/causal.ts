@@ -157,8 +157,7 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		}
 	}
 
-	const writes = new Map<string, string>();
-	const pendingWrites = new Set<string>();
+	const writes = new Map<string, Set<string>>();
 	const allWrites = new Set<string>();
 	const barriers = new Set<string>();
 	for (const step of trace.steps) {
@@ -176,19 +175,24 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		}
 		for (const operation of evidence.operations) {
 			if (operation.kind === "write" && operation.path) {
-				writes.set(operation.path, step.step_id);
-				pendingWrites.add(step.step_id);
+				const name = step.attributes[ATTR.TOOL_NAME];
+				// A completed exec proves invocation, not its individual write results.
+				const confirmed = step.status === "ok" && Boolean(step.ended_at) && !evidence.unresolved &&
+					name !== "exec" && (name !== "apply_patch" || step.attributes[ATTR.PATCH_CONFIRMED] === true);
+				const writers = confirmed ? new Set<string>() : (writes.get(operation.path) ?? new Set<string>());
+				writers.add(step.step_id);
+				writes.set(operation.path, writers);
 				allWrites.add(step.step_id);
 			}
 			if (operation.kind === "read" && operation.path) {
-				const writer = writes.get(operation.path);
-				if (writer && writer !== step.step_id) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
+				for (const writer of writes.get(operation.path) ?? []) {
+					if (writer !== step.step_id) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
+				}
 			}
 			if (operation.kind === "test") {
-				for (const writer of pendingWrites) {
-					if (writer !== step.step_id) add(writer, step.step_id, "test-write", "recorded write before next test invocation");
+				for (const writers of writes.values()) for (const writer of writers) {
+					if (writer !== step.step_id) add(writer, step.step_id, "test-write", "possible current write before test invocation");
 				}
-				pendingWrites.clear();
 			}
 		}
 		if (evidence.unresolved) {
