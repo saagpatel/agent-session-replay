@@ -32,7 +32,11 @@ test("20 synthetic traces have faithful shortened manifests", () => {
 		assert.equal(trace.plumbline_version, "1");
 		assert.equal(typeof trace.run.run_id, "string");
 		assert.ok(Array.isArray(trace.steps));
+		const stepIds = new Set(trace.steps.map((step) => step.step_id));
 		for (const step of trace.steps) {
+			for (const parent of [step.parent_step_id, step.caused_by]) {
+				if (parent) assert.ok(stepIds.has(parent), `${slug}: missing parent ${parent}`);
+			}
 			assert.equal(typeof step.step_id, "string");
 			assert.equal(typeof step.kind, "string");
 			assert.ok(Number.isFinite(Date.parse(step.started_at)));

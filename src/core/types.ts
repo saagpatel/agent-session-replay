@@ -110,6 +110,8 @@ export const ATTR = {
 	TOOL_RESULT_KIND: "tool.result.kind",
 	/** UUIDs of Claude user events whose tool results were merged into this step. */
 	CLAUDE_RESULT_EVENT_UUIDS: "claude.result_event_uuids",
+	/** Kind of a parser-observed parent event omitted from steps. */
+	CLAUDE_PARENT_EVENT_KIND: "claude.parent_event_kind",
 	TOOL_ERROR: "tool.error.message",
 	/** The tool output reports failing tests, whatever the exit code said. */
 	TEST_FAILURES: "tool.output.test_failures",

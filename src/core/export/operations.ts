@@ -55,6 +55,7 @@ const PATH_TOOLS: Record<string, { kind: "read" | "write"; keys: string[] }> = {
 	write_file: { kind: "write", keys: ["path", "file_path"] },
 };
 const SHELL_TOOLS = new Set(["Bash", "exec_command", "shell"]);
+const CONTENT_EDITS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 
 export interface OperationEvidence {
 	operations: FileOperation[];
@@ -158,8 +159,12 @@ function directOperations(name: string, args: Record<string, unknown>, cwd?: str
 	const tool = Object.hasOwn(PATH_TOOLS, name) ? PATH_TOOLS[name] : undefined;
 	if (tool) {
 		const path = literalArgument(args, tool.keys);
-		return path && !/[\0\r\n]/.test(path) ? known([{ kind: tool.kind, path: normalizeFilePath(path, cwd) }])
-			: unknown("Allowlisted file tool has no unambiguous literal path.");
+		if (!path || /[\0\r\n]/.test(path)) return unknown("Allowlisted file tool has no unambiguous literal path.");
+		const target = normalizeFilePath(path, cwd);
+		return known([
+			...(CONTENT_EDITS.has(name) ? [{ kind: "read" as const, path: target }] : []),
+			{ kind: tool.kind, path: target },
+		]);
 	}
 	if (name === "apply_patch") {
 		const input = string(args.input) ?? "";
@@ -170,6 +175,8 @@ function directOperations(name: string, args: Record<string, unknown>, cwd?: str
 			const header = /^\*\*\* (Update File|Add File|Delete File|Move to): ([^\0\r\n]+)$/.exec(line);
 			if (header) {
 				if (!header[2]!.trim() || (header[1] === "Move to" && !update)) unresolved = true;
+				// Updates (including move sources) require the preceding contents.
+				if (header[1] === "Update File") operations.push({ kind: "read", path: normalizeFilePath(header[2]!, cwd) });
 				operations.push({ kind: "write", path: normalizeFilePath(header[2]!, cwd) });
 				update = header[1] === "Update File";
 			} else if (line.startsWith("*** ") && !["*** Begin Patch", "*** End Patch", "*** End of File"].includes(line)) unresolved = true;
@@ -206,7 +213,7 @@ export function stepLabel(step: Step | undefined, cwd?: string | null): string {
 	if (!step) return "Unknown step";
 	const name = string(step.attributes[ATTR.TOOL_NAME]) ?? step.kind;
 	const args = argumentsOf(step);
-	const paths = fileOperations(step, cwd).flatMap((op) => op.path ? [op.path] : []);
+	const paths = [...new Set(fileOperations(step, cwd).flatMap((op) => op.path ? [op.path] : []))];
 	const target = commandOf(args) ?? (paths.length ? paths.join(", ") : undefined);
 	const label = `${name}${target ? ` ${target}` : ""}`.replace(/\s+/g, " ").trim();
 	return label.length > 100 ? `${label.slice(0, 97)}...` : label;

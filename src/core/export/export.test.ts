@@ -526,10 +526,10 @@ test("keeps distinct outside-workspace absolute paths from aliasing by tail", ()
 	assert.equal(happensBefore(buildCausalGraph(trace), "write", "read"), false);
 });
 
-test("stops file read dependencies at the next write to that path", () => {
+test("stops file read dependencies at the next content-independent write to that path", () => {
 	const trace = makeTrace([
 		toolStep("first-write", "Write", { file_path: "src/a.ts" }),
-		toolStep("second-write", "Edit", { file_path: "src/a.ts" }),
+		toolStep("second-write", "Write", { file_path: "src/a.ts" }),
 		toolStep("read", "Read", { file_path: "src/a.ts" }),
 	]);
 	const graph = buildCausalGraph(trace);
@@ -732,8 +732,33 @@ test("the explicit file-tool and literal shell allowlist extracts direct and nes
 	];
 	for (const [name, args, kind] of cases) for (const step of [toolStep("operation", name, args), nestedStep(name, args)]) {
 		assert.deepEqual(operationEvidence(step, "/work/project"), {
-			operations: [kind === "test" ? { kind } : { kind, path: "src/a.ts" }], unresolved: false,
+			operations: [
+				...(["Edit", "MultiEdit", "NotebookEdit"].includes(name) ? [{ kind: "read", path: "src/a.ts" }] : []),
+				kind === "test" ? { kind } : { kind, path: "src/a.ts" },
+			], unresolved: false,
 		}, `${name}: ${JSON.stringify(args)}`);
+	}
+});
+
+test("content-dependent edits require the preceding writer in direct calls and completed exec cells", () => {
+	const cases: Array<[string, Record<string, unknown>, string]> = [
+		["Edit", { file_path: "src/a.ts", old_string: "old", new_string: "new" }, "src/a.ts"],
+		["MultiEdit", { file_path: "src/a.ts", edits: [{ old_string: "old", new_string: "new" }] }, "src/a.ts"],
+		["NotebookEdit", { notebook_path: "src/a.ts", cell_id: "cell-a", new_source: "new" }, "src/a.ts"],
+		["apply_patch", { input: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch" }, "src/a.ts"],
+		["apply_patch", { input: "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/b.ts\n@@\n-old\n+new\n*** End Patch" }, "src/b.ts"],
+	];
+	for (const [name, args, readPath] of cases) for (const edit of [toolStep("operation", name, args), nestedStep(name, args)]) {
+		const context = `${name}: ${JSON.stringify(args)} (${edit.attributes[ATTR.TOOL_NAME]})`;
+		const trace = makeTrace([
+			toolStep("write", "Write", { file_path: "src/a.ts", content: "old" }), edit,
+			toolStep("read", "Read", { file_path: readPath }),
+		]);
+		assert.equal(validateExport(oneScene(trace, ["write", "operation", "read"]), trace).ok, true, context);
+		assert.ok(buildCausalGraph(trace).edges.some((edge) => edge.from === "write" && edge.to === "operation" && edge.kind === "file-read"), context);
+		const result = validateExport(oneScene(trace, ["operation", "write", "read"]), trace);
+		assert.equal(result.ok, false, context);
+		assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "write" && failure.b === "operation"), context);
 	}
 });
 
@@ -811,7 +836,7 @@ test("delete-only and mixed patches mutate every target in direct and completed 
 		const input = `*** Begin Patch\n*** Delete File: src/a.ts\n${mixed ? "*** Update File: src/b.ts\n@@\n-old\n+new\n" : ""}*** End Patch`;
 		for (const step of [toolStep("operation", "apply_patch", { input }), nestedStep("apply_patch", { input })]) {
 			assert.deepEqual(operationEvidence(step), {
-				operations: (mixed ? ["src/a.ts", "src/b.ts"] : ["src/a.ts"]).map((path) => ({ kind: "write", path })), unresolved: false,
+				operations: [{ kind: "write", path: "src/a.ts" }, ...(mixed ? [{ kind: "read", path: "src/b.ts" }, { kind: "write", path: "src/b.ts" }] : [])], unresolved: false,
 			});
 			const trace = makeTrace([step, toolStep("read", "Read", { file_path: "src/a.ts" }), toolStep("test", "Bash", { command: "pnpm test" })]);
 			assert.equal(validateExport(oneScene(trace, ["operation", "read", "test"]), trace).ok, true);
@@ -825,7 +850,7 @@ test("delete-only and mixed patches mutate every target in direct and completed 
 test("rename extraction mutates both the source and destination in direct and nested calls", () => {
 	const input = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/b.ts\n@@\n-old\n+new\n*** End Patch";
 	for (const step of [toolStep("operation", "apply_patch", { input }), nestedStep("apply_patch", { input })]) {
-		assert.deepEqual(operationEvidence(step), { operations: [{ kind: "write", path: "src/a.ts" }, { kind: "write", path: "src/b.ts" }], unresolved: false });
+		assert.deepEqual(operationEvidence(step), { operations: [{ kind: "read", path: "src/a.ts" }, { kind: "write", path: "src/a.ts" }, { kind: "write", path: "src/b.ts" }], unresolved: false });
 	}
 });
 
@@ -900,6 +925,22 @@ test("absent parents matching the trace's tool-use ID family remain dangling", (
 	assert.ok(validateExport(oneScene(trace, ["toolu_read"]), trace).failures.some((failure) => failure.reason === "dangling-parent"));
 });
 
+test("missing parents fail closed without step metadata regardless of identifier family", () => {
+	for (const parent of ["arbitrary-missing", "toolu_missing", "call_missing", "step-missing"]) {
+		for (const metadata of [undefined, "assistant", true]) {
+			const step = toolStep("call_edit", "Edit", { file_path: "src/a.ts" }, { parent_step_id: parent });
+			if (metadata !== undefined) step.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND] = metadata;
+			const trace = makeTrace([step]);
+			// Legacy trace-wide IDs alone do not establish the required classification.
+			trace.external_parent_ids = [parent];
+			const result = validateExport(oneScene(trace, ["call_edit"]), trace);
+			assert.equal(result.ok, false, parent);
+			assert.ok(result.failures.some((failure) => failure.reason === "dangling-parent" && failure.parent === parent), parent);
+			assert.ok(!result.warnings.some((warning) => warning.reason === "external-parent"), parent);
+		}
+	}
+});
+
 test("parser-known omitted UUID parents are external while missing UUID steps remain dangling", () => {
 	const user = "00000000-0000-0000-0000-000000000001";
 	const assistant = "00000000-0000-0000-0000-000000000002";
@@ -909,12 +950,15 @@ test("parser-known omitted UUID parents are external while missing UUID steps re
 		{ type: "assistant", uuid: assistant, parentUuid: user, message: { content: "Reading." } },
 	].map((event) => JSON.stringify(event)).join("\n"));
 	assert.deepEqual(trace.external_parent_ids, [user]);
+	assert.equal(trace.steps[0]!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND], "user");
 	const faithful = oneScene(trace, [assistant]);
 	assert.equal(validateExport(faithful, trace).ok, true);
 	const withoutMetadata = structuredClone(trace);
-	delete withoutMetadata.external_parent_ids;
+	delete withoutMetadata.steps[0]!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND];
 	assert.ok(validateExport(faithful, withoutMetadata).failures.some((failure) => failure.reason === "source-mismatch"));
+	assert.ok(validateExport(oneScene(withoutMetadata, [assistant]), withoutMetadata).failures.some((failure) => failure.reason === "dangling-parent"));
 	trace.steps[0]!.parent_step_id = missing;
+	delete trace.steps[0]!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND];
 	assert.ok(validateExport(oneScene(trace, [assistant]), trace).failures.some((failure) => failure.reason === "dangling-parent"));
 });
 

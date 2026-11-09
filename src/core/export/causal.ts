@@ -46,13 +46,6 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	const edgeKeys = new Set<string>();
 	const cwd = trace.run.workspace?.cwd;
 	const label = (id: string) => stepLabel(steps.get(id), cwd);
-	// A parser-known omitted event is external even when its ID shares a Step
-	// format. Otherwise a family present in this trace evidences a missing Step.
-	const externalParents = new Set(trace.external_parent_ids);
-	const stepFamilies = [/^toolu_/, /^call(?:_|-|\d)/, /^step[-_]/, /^s\d+$/, /^ev\d+(?:_tu\d+)?$/, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i];
-	const looksLikeStep = (id: string) => stepFamilies.some((family) =>
-		family.test(id) && trace.steps.some((step) => family.test(step.step_id)),
-	);
 	const resultEventSteps = new Map<string, Set<string>>();
 	for (const step of trace.steps) {
 		const uuids = step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS];
@@ -66,7 +59,8 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	}
 	const add = (from: string, to: string, kind: EdgeKind, evidence: string) => {
 		if (!steps.has(from) || !steps.has(to)) {
-			const external = kind === "parent" && (externalParents.has(from) || !looksLikeStep(from));
+			const parentKind = steps.get(to)?.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND];
+			const external = kind === "parent" && (parentKind === "user" || parentKind === "system" || parentKind === "summary");
 			diagnostics.push({
 				reason: external ? "external-parent" : "dangling-parent",
 				message: external ? `${label(to)} references an event outside the source steps.`

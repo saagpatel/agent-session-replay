@@ -16,6 +16,30 @@ function find(steps: Step[], pred: (s: Step) => boolean): Step {
 	return s;
 }
 
+test("classifies only observed non-Step user, system and summary parents", () => {
+	for (const kind of ["user", "system", "summary", "assistant", "progress", "missing"]) {
+		const parent = { type: kind, uuid: "parent", timestamp: TS1, message: { content: "Synthetic context." } };
+		const child = {
+			type: "assistant", uuid: "child", parentUuid: "parent", timestamp: TS2,
+			message: { content: [{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } }] },
+		};
+		// Classification uses all observed events, including an out-of-order parent.
+		const trace = parseClaudeCodeEvents(kind === "missing" ? [child] : [child, parent]);
+		for (const id of ["child", "toolu_read"]) {
+			assert.equal(trace.steps.find((step) => step.step_id === id)!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND],
+				["user", "system", "summary"].includes(kind) ? kind : undefined, `${kind}: ${id}`);
+		}
+	}
+	for (const subtype of ["compact_boundary", "hook"]) {
+		const trace = parseClaudeCodeEvents([
+			{ type: "system", uuid: "parent", subtype, timestamp: TS1 },
+			{ type: "assistant", uuid: "child", parentUuid: "parent", timestamp: TS2, message: { content: "Done." } },
+		]);
+		assert.ok(trace.steps.some((step) => step.step_id === "parent"));
+		assert.equal(trace.steps.find((step) => step.step_id === "child")!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND], undefined);
+	}
+});
+
 test("builds run metadata from session events", () => {
 	const events = [
 		{

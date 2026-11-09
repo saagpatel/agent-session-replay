@@ -456,6 +456,18 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
 	const stepIds = new Set(steps.map((step) => step.step_id));
+	const omittedEventKinds = new Map<string, "user" | "system" | "summary">();
+	for (const event of events) {
+		const id = str(event["uuid"]);
+		const kind = event["type"];
+		if (id && !stepIds.has(id) && (kind === "user" || kind === "system" || kind === "summary")) {
+			omittedEventKinds.set(id, kind);
+		}
+	}
+	for (const step of steps) {
+		const kind = step.parent_step_id ? omittedEventKinds.get(step.parent_step_id) : undefined;
+		if (kind) step.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND] = kind;
+	}
 	const externalParents = [...new Set(events.flatMap((event) => {
 		const id = str(event["uuid"]);
 		return id && !stepIds.has(id) ? [id] : [];
