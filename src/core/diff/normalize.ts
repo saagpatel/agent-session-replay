@@ -865,7 +865,23 @@ export function execLiteralCalls(input: string): Array<{
 		// The shared decoder handles common escapes, not JS unicode/hex/octal
 		// escapes or line continuations. Export must flag those as unresolved,
 		// rather than manufacture a different path. Run Diff remains unchanged.
-		const unsupportedEscape = /\\(?:[^\\'"`ntr0$/]|0[0-9])/.test(body);
+		const maskedBody = maskCode(body);
+		let unsupportedEscape = false;
+		for (let i = 0; i < body.length && !unsupportedEscape; i++) {
+			const quote = maskedBody[i];
+			if (quote !== '"' && quote !== "'" && quote !== "`") continue;
+			for (i++; i < body.length && body[i] !== quote; i++) {
+				if (body[i] !== "\\") continue;
+				// Consume both characters, so an escaped backslash cannot start
+				// a second, overlapping escape (e.g. a patch containing /\\w+/).
+				const escaped = body[++i];
+				if (!escaped || !"\\'\"`ntr0$/".includes(escaped) ||
+					(escaped === "0" && /[0-9]/.test(body[i + 1] ?? ""))) {
+					unsupportedEscape = true;
+					break;
+				}
+			}
+		}
 		return { tool: call[1]!, argument: (key) => unsupportedEscape ? { found: true } : exactLiteralArg(body, key) };
 	});
 }

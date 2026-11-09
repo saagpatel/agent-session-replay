@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ATTR, type Step, type Trace } from "../types.ts";
-import { classifyCommand } from "../diff/normalize.ts";
+import { classifyCommand, execLiteralCalls } from "../diff/normalize.ts";
 import { buildCausalGraph, findPath, happensBefore } from "./causal.ts";
 import { checkCaptions } from "./caption-ref.ts";
 import { checkOrder } from "./order-check.ts";
@@ -592,6 +592,41 @@ test("parsed Codex literal exec calls preserve enclosing IDs and reject a read b
 	assert.deepEqual(findPath(graph, patch, read), [patch, read]);
 	assert.equal(validateExport(oneScene(trace, [patch, read]), trace).ok, true);
 	assert.ok(validateExport(oneScene(trace, [read, patch]), trace).failures.some((failure) => failure.reason === "reversed-causal-order"));
+});
+
+test("JSON-encoded patch backslashes preserve operations and a faithful replay caption", () => {
+	const patch = "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-old\n+const pattern = /\\w+/;\n*** End Patch";
+	const trace = rollout([`text(await tools.apply_patch(${JSON.stringify(patch)}));`, readCell]);
+	const [write, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	assert.deepEqual(operationEvidence(trace.steps[0]!, trace.run.workspace?.cwd), {
+		operations: [{ kind: "read", path: "src/a.ts" }, { kind: "write", path: "src/a.ts" }],
+		unresolved: false,
+	});
+	const manifest = oneScene(trace, [write, read]);
+	manifest.captions.push({ id: "patch", sceneId: "scene-main", kind: "shows", text: "The recorded patch.", refs: [write] });
+	const result = validateExport(manifest, trace);
+	assert.equal(result.ok, true);
+	assert.deepEqual(result.warnings, []);
+});
+
+test("exec literal escape validation consumes pairs and rejects unsupported escapes in every quote style", () => {
+	const supported = ["\\\\w", "\\\\x41", "\\\\u0041", "\\\\101", "\\'", '\\"', "\\`", "\\n", "\\t", "\\r", "\\0", "\\$", "\\/"];
+	const unsupported = ["\\w", "\\x41", "\\u0041", "\\101", "\\01", "\\09", "\\\n", "\\\r\n", "\\\\\\w"];
+	for (const quote of ['"', "'", "`"]) {
+		for (const [escapes, accepted] of [[supported, true], [unsupported, false]] as const) {
+			for (const escape of escapes) {
+				const input = `text(await tools.apply_patch(${quote}${escape}${quote}));`;
+				const call = execLiteralCalls(input)?.[0];
+				assert.ok(call, input);
+				assert.equal(call.argument(null).value !== undefined, accepted, input);
+				if (!accepted) {
+					const evidence = operationEvidence(rollout([input]).steps[0]!);
+					assert.equal(evidence.unresolved, true, input);
+					assert.deepEqual(evidence.operations, [], input);
+				}
+			}
+		}
+	}
 });
 
 test("literal exec calls retain all patch targets, workdirs and same-cell accesses without self cycles", () => {
@@ -1201,10 +1236,10 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 	assert.equal(trace.steps.find((step) => step.step_id === "continuation")!.parent_step_id, "agent-result");
 	assert.equal(trace.steps.find((step) => step.step_id === "toolu_continue")!.parent_step_id, "agent-result");
 	const graph = buildCausalGraph(trace);
-	assert.deepEqual(graph.edges.filter((edge) => edge.kind === "consumer"), [
-		{ from: "child-done", to: "continuation", kind: "consumer", evidence: "parent references Agent result-event" },
-		{ from: "child-done", to: "toolu_continue", kind: "consumer", evidence: "parent references Agent result-event" },
-	]);
+	assert.deepEqual(graph.edges.filter((edge) => edge.kind === "consumer"), ["continuation", "toolu_continue"].flatMap((to) =>
+		["child-start", "child-read", "toolu_child_read", "child-done"].map((from) =>
+			({ from, to, kind: "consumer", evidence: "parent references Agent result-event" })),
+	));
 	const playback = trace.steps.map((step) => step.step_id);
 	assert.equal(validateExport(oneScene(trace, playback), trace).ok, true);
 	const reordered = playback.filter((id) => id !== "continuation");
@@ -1232,6 +1267,52 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 	const unlinkedResult = validateExport(oneScene(unlinkedTrace, unlinkedTrace.steps.map((step) => step.step_id)), unlinkedTrace);
 	assert.equal(unlinkedResult.ok, true);
 	assert.ok(unlinkedResult.warnings.some((warning) => warning.reason === "unlinked-subagent-result"));
+});
+
+test("parsed completed Agent consumers follow every parallel Read in the final child event", () => {
+	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
+	const main = [
+		{ type: "assistant", uuid: "dispatch", timestamp: "2026-01-01T00:00:00Z", message: { content: [
+			{ type: "tool_use", id: "toolu_agent", name: "Agent", input: { subagent_type: "Explore", prompt: "Read the synthetic files." } },
+		] } },
+		{ type: "user", uuid: "agent-result", timestamp: "2026-01-01T00:00:05Z", parentUuid: "dispatch", toolUseResult: { agentId: "child" }, message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_agent", content: "Synthetic inspection completed." },
+		] } },
+		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:06Z", parentUuid: "agent-result", message: { content: [
+			{ type: "text", text: "Using the inspection result." },
+			{ type: "tool_use", id: "toolu_continue", name: "Read", input: { file_path: "/work/project/src/c.ts" } },
+		] } },
+	];
+	const sidechain = [
+		{ type: "assistant", uuid: "child-reads", timestamp: "2026-01-01T00:00:01Z", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_use", id: "read-a", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+			{ type: "tool_use", id: "read-b", name: "Read", input: { file_path: "/work/project/src/b.ts" } },
+		] } },
+		{ type: "user", uuid: "child-results", timestamp: "2026-01-01T00:00:02Z", parentUuid: "child-reads", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_result", tool_use_id: "read-a", content: "Synthetic file A." },
+			{ type: "tool_result", tool_use_id: "read-b", content: "Synthetic file B." },
+		] } },
+	];
+	const trace = parseClaudeCodeTranscript(jsonl(main), [jsonl(sidechain)]);
+	const graph = buildCausalGraph(trace);
+	const childIds = trace.steps.filter((step) => step.subagent_id === "child").map((step) => step.step_id);
+	assert.deepEqual(childIds, ["child-reads", "read-a", "read-b"]);
+	for (const from of childIds) for (const to of ["continuation", "toolu_continue"]) {
+		assert.ok(graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === "consumer"), `${from} -> ${to}`);
+	}
+	assert.equal(happensBefore(graph, "read-a", "read-b"), false);
+	assert.equal(happensBefore(graph, "read-b", "read-a"), false);
+	const playback = trace.steps.map((step) => step.step_id);
+	assert.equal(validateExport(oneScene(trace, playback), trace).ok, true);
+	for (const lateRead of ["read-a", "read-b"]) {
+		for (const consumer of ["continuation", "toolu_continue"]) {
+			const reordered = playback.filter((id) => id !== lateRead);
+			reordered.splice(reordered.indexOf(consumer) + 1, 0, lateRead);
+			const result = validateExport(oneScene(trace, reordered), trace);
+			assert.equal(result.ok, false);
+			assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === lateRead && failure.b === consumer));
+		}
+	}
 });
 
 test("Agent consumer edges and because captions require completed output after every child step ends", () => {

@@ -144,9 +144,14 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		) : [];
 		const consumers = candidates.filter((step, index) => index === 0 || referencesResult(step));
 		if (consumers.length) {
-			for (const consumer of consumers) add(last.step_id, consumer.step_id, "consumer", referencesResult(consumer)
-				? "parent references Agent result-event"
-				: "first later parent-context step explicitly referencing subagent endpoint");
+			for (const consumer of consumers) {
+				// A completed result covers every child step, including parallel
+				// tools with no dependency on the final step in source order.
+				const resultReference = referencesResult(consumer);
+				for (const step of resultReference ? chain : [last]) add(step.step_id, consumer.step_id, "consumer", resultReference
+					? "parent references Agent result-event"
+					: "first later parent-context step explicitly referencing subagent endpoint");
+			}
 		} else {
 			diagnostics.push({
 				reason: "unlinked-subagent-result",
