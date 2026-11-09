@@ -495,6 +495,9 @@ function BranchLane({
 		return branchReport(graph, structuralCheck(graph), trace);
 	}, [trace]);
 	const collapseDropped = report.abandoned.length > 6;
+	const stepOrder = [...report.retained, ...report.abandoned.flatMap((branch) => branch.steps), ...report.unknown, ...report.afterClaim, ...report.control]
+		.sort((a, b) => Math.min(...a.nodes.map((node) => node.index)) - Math.min(...b.nodes.map((node) => node.index)));
+	const numbers = new Map(stepOrder.map((step, index) => [step.id, index + 1]));
 	return (
 		<section className="rd-branch__lane" aria-label={`${label} branch preservation`}>
 			<header className="rd-branch__head">
@@ -503,6 +506,15 @@ function BranchLane({
 					{fileName}
 				</span>
 			</header>
+			<details>
+				<summary>Control steps: {report.control.length} (llm turns, decisions, …), not work</summary>
+				<ol>
+					{report.control.map((step) => {
+						const node = step.nodes[0];
+						return <li key={step.id}>#{numbers.get(step.id) ?? "?"} {node?.action ?? "step"}{node?.target ? ` ${node.target}` : ""}</li>;
+					})}
+				</ol>
+			</details>
 			<h3>Retained</h3>
 			<ReportStepList steps={report.retained} />
 			<h3>Attempted and dropped</h3>
