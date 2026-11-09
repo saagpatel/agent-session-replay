@@ -29,6 +29,7 @@ const ref = (n: NodeRef): NodeRef => ({ stepId: n.stepId, part: n.part });
 const key = (n: NodeRef): string => JSON.stringify([n.stepId, n.part]);
 interface Operation {
 	node: BranchNode;
+	control?: boolean;
 	started_at: string;
 	ended_at?: string | null;
 	args: Json;
@@ -68,7 +69,6 @@ function operations(trace: Trace): Operation[] {
 	const cwd = trace.run.workspace?.cwd;
 	for (const step of trace.steps) {
 		const own = labels.filter((n) => n.stepId === step.step_id);
-		if (step.kind === "llm") continue;
 		const name = str(step.attributes[ATTR.TOOL_NAME]) ?? "";
 		const args = obj(step.attributes[ATTR.TOOL_ARGS]);
 		const directory = workingDirectory(cwd, args);
@@ -102,6 +102,11 @@ function operations(trace: Trace): Operation[] {
 				},
 			});
 		};
+		if (step.kind !== "tool_call") {
+			for (const label of own.length ? own : [{ action: "other" as const, target: null, status }])
+				add(label.action, label.target, { control: true }, label.status);
+			continue;
+		}
 		if (name === "exec") {
 			const calls = literalExecCalls(str(args["input"]) ?? "");
 			if (!calls) {
@@ -223,7 +228,7 @@ function operations(trace: Trace): Operation[] {
 		} else if (own.length) {
 			for (const label of own)
 				add(label.action, label.target, { unparsed: READ_TOOLS.has(name) ? undefined : name || "unknown tool" }, label.status);
-		} else if (step.kind === "tool_call" || step.kind === "agent") {
+		} else {
 			add("other", name || null, { unparsed: READ_TOOLS.has(name) ? undefined : name || "unknown tool" });
 		}
 	}
@@ -232,6 +237,7 @@ function operations(trace: Trace): Operation[] {
 
 /** Paths whose worktree or staging provenance an operation may change. */
 function mutationPaths(op: Operation, trace: Trace): string[] | null {
+	if (op.control) return [];
 	const resolve = (path: string) => lineagePath(path, trace.run.workspace?.cwd, op.directory);
 	if (op.unparsed) return null;
 	if (op.patch !== undefined || ["Edit", "MultiEdit", "Write", "write_file"].includes(op.name)) {
@@ -565,6 +571,7 @@ export function buildBranchGraph(
 	};
 	for (const op of ops) {
 		const { node, name } = op;
+		if (op.control) continue;
 		for (const path of conflicts.get(node.index) ?? []) invalidate(path);
 		const mutation = mutationPaths(op, trace);
 		if (op.unparsed) uncertainIndex = true;
@@ -805,7 +812,8 @@ export function buildBranchGraph(
 		return b;
 	};
 	const attempts = new Map<string, BranchNode>();
-	for (const { node } of ops) {
+	for (const { node, control } of ops) {
+		if (control) continue;
 		if (
 			(node.action !== "test" && node.action !== "run") ||
 			node.target === null

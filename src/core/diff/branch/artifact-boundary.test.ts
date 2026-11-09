@@ -37,6 +37,38 @@ function artifact(base: string, committed: Record<string, string>) {
 	return { run, commit, short };
 }
 
+test("control steps preserve edit lineage and commit attribution", () => {
+	for (const kind of ["llm", "decision", "compaction", "memory", "mode_change", "hook", "agent"] as const) {
+		const control: Step = { ...tool("control", "unknown_tool", {}), kind };
+		const { run, commit } = artifact("base\n", { [file]: "first second\n" });
+		const { graph, check } = run([edit("first", "base", "first"), control, edit("second", "\n", " second\n"), commit]);
+		assert.ok(graph.nodes.some((node) => node.stepId === "control"), kind);
+		assert.equal(graph.endStateComplete, true, kind);
+		assert.equal(graph.endState[file], "first second\n", kind);
+		assert.deepEqual(graph.editEffects.map((effect) => effect.lineage), ["retained", "retained"], kind);
+		assert.equal(check.claim.status, "resolved", kind);
+		assert.deepEqual(check.effects.map((effect) => effect.status), ["retained", "retained"], kind);
+	}
+});
+
+test("artifact paths require own string commit content and own boundary entries", () => {
+	for (const path of ["constructor", "__proto__", "toString"]) {
+		const repo = { commits: [{ parent: null, message: "synthetic artifact", files: {} as Record<string, string> }] };
+		const short = fixtureRepoCommitShas(repo.commits)[0]!.slice(0, 7);
+		const commit = tool("commit", "Bash", { command: "git commit -am fixture" });
+		commit.attributes[ATTR.GIT_COMMIT] = { short };
+		const graph = buildBranchGraph(trace([tool("edit", "Edit", { file_path: path, old_string: "base", new_string: "idea" }), commit]), { [path]: "base\n" });
+		assert.equal(checkArtifacts(graph, repo).effects[0]?.status, "unknown", path);
+		graph.claim.tree = {};
+		assert.equal(checkArtifacts(graph, repo).effects[0]?.status, "unknown", path);
+	}
+	const repo = { commits: [{ parent: null, message: "synthetic artifact", files: { [file]: 42 as unknown as string } }] };
+	const commit = tool("commit", "Bash", { command: "git commit -am fixture" });
+	commit.attributes[ATTR.GIT_COMMIT] = { short: fixtureRepoCommitShas(repo.commits)[0]!.slice(0, 7) };
+	const graph = buildBranchGraph(trace([edit("edit", "base", "idea"), commit]), { [file]: "base\n" });
+	assert.equal(checkArtifacts(graph, repo).effects[0]?.status, "unknown");
+});
+
 test("insertion-only patch hunks require a proven position and preserve EOF newlines", () => {
 	for (const [base, marker, expected] of [
 		["base\n", "*** End of File\n", "base\nidea\n"],

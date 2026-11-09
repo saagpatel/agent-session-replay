@@ -48,10 +48,10 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 		let retained = 0;
 		for (const path of paths) {
 			if (path.startsWith("external:")) return result("unknown", "External paths cannot be attributed to repository commits.");
-			const file = graph.claim.tree[path];
+			const file = Object.hasOwn(graph.claim.tree, path) ? graph.claim.tree[path] : undefined;
 			if (!file) return result("unknown", "File lineage at the claimed commit is unknown or absent.");
-			const content = commit.files[path];
-			if (content === undefined) return result("unknown", "File is absent from the commit.");
+			const content = Object.hasOwn(commit.files, path) ? commit.files[path] : undefined;
+			if (typeof content !== "string") return result("unknown", "File is absent from the commit or its content is unknown.");
 			if (!aligned.has(path)) aligned.set(path, alignProvenance(file, content));
 			const origins = aligned.get(path);
 			if (!origins) return result("unknown", "Committed content has ambiguous alignment or exceeds the text comparison limits.");
@@ -76,6 +76,6 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 		if ((node.action === "edit" || node.action === "write") && fallback === "retained") fallback = "unknown";
 		return { node, status: fallback, source: "structure", reason: node.action === "edit" || node.action === "write" ? "Edit payload is unknown." : branch.reasons.join(" ") };
 	});
-	const claimedButUnchanged = commit && parent ? graph.claim.files.filter((file) => Object.hasOwn(commit.files, file) && Object.hasOwn(parent.files, file) && commit.files[file] === parent.files[file]) : [];
+	const claimedButUnchanged = commit && parent ? graph.claim.files.filter((file) => Object.hasOwn(commit.files, file) && Object.hasOwn(parent.files, file) && typeof commit.files[file] === "string" && typeof parent.files[file] === "string" && commit.files[file] === parent.files[file]) : [];
 	return { claim: { status, sha: match?.sha ?? null }, effects, steps, claimedButUnchanged };
 }

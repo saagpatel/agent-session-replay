@@ -39,7 +39,7 @@ test("fixture reports preserve step provenance and artifact claims fail closed",
 	}
 });
 
-test("the dense fixture groups all dead ends and keeps every retained step visible", async () => {
+test("the dense fixture keeps control steps and all dead ends visible", async () => {
 	const slug = "09-dense-dead-ends";
 	const labels = JSON.parse(await readFile(join(dir, `${slug}.labels.json`), "utf8"));
 	const repo = JSON.parse(await readFile(join(dir, "repos", `${labels.repo}.json`), "utf8"));
@@ -49,13 +49,14 @@ test("the dense fixture groups all dead ends and keeps every retained step visib
 	const rendered = renderBranchReport(report, { dense: true });
 	assert.ok(rendered.split("\n").every((line) => line.length < 120));
 	assert.ok(!rendered.includes("toolu_"));
-	for (const step of report.retained) assert.ok(rendered.includes(`#${Number(step.id.split("_").at(-1)) + 1} `));
+	const orderedIds = [...new Set(graph.nodes.map((node) => node.stepId))];
+	for (const step of report.retained) assert.ok(rendered.includes(`#${orderedIds.indexOf(step.id) + 1} `));
 	const dropped = rendered.split("Attempted and dropped\n")[1]!.split("\nUnknown")[0]!.split("\n");
-	assert.deepEqual(dropped, [
-		"11 superseded edits to src/value.ts (#1–#11), each replaced by the next",
-		"12 backtracks on src/value.ts (#12–#23), each restored by the next edit",
-	]);
-	assert.ok(rendered.startsWith("Retained 3 · Dropped 23 (11 superseded, 12 backtrack) · Unknown 0 · Commit 3a6790b resolved\n"));
+	assert.equal(dropped.filter((line) => line.includes("superseded edit to src/value.ts")).length, 11);
+	assert.equal(dropped.filter((line) => line.includes("backtrack on src/value.ts")).length, 12);
+	for (const branch of report.abandoned) for (const step of branch.steps)
+		assert.ok(dropped.some((line) => line.includes(`(#${orderedIds.indexOf(step.id) + 1})`)));
+	assert.ok(rendered.startsWith("Retained 29 · Dropped 23 (11 superseded, 12 backtrack) · Unknown 0 · Commit 3a6790b resolved\n"));
 });
 
 test("a partially surviving payload is partial in the artifact check, never wholly dropped", () => {
