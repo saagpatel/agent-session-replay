@@ -1,10 +1,163 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
+import { validateExport } from "../src/core/export/index.ts";
+import { buildSidecar } from "../src/core/export/sidecar.ts";
+import { planScenePages } from "./export-replay.ts";
+
+function crowdedScene() {
+	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+	const scene = buildSidecar(faithful, trace, validateExport(faithful, trace)).scenes[0]!;
+	return {
+		...scene, durationMs: 3500,
+		steps: Array.from({ length: 20 }, (_, i) => ({ ...scene.steps[0]!, id: `step-${i}` })),
+		captions: Array.from({ length: 7 }, (_, i) => ({
+			...scene.captions[0]!, id: `caption-${i}`, text: i === 0 ? "Long caption. ".repeat(40).slice(0, 400) : `Caption ${i}`,
+		})),
+	};
+}
+
+test("crowded scenes paginate every row and caption with even, minimum holds", () => {
+	const scene = crowdedScene();
+	const pages = planScenePages(scene);
+	assert.equal(pages.length, 3);
+	assert.deepEqual(pages.map((page) => [page.steps.length, page.captions.length]), [[8, 3], [8, 3], [4, 1]]);
+	assert.deepEqual(pages.flatMap((page) => page.steps), scene.steps);
+	assert.deepEqual(pages.flatMap((page) => page.captions), scene.captions);
+	assert.deepEqual(pages.map((page) => [page.page, page.pageCount, page.durationMs]), [[1, 3, 2000], [2, 3, 2000], [3, 3, 2000]]);
+	assert.deepEqual(planScenePages({ ...scene, durationMs: 12000 }).map((page) => page.durationMs), [4000, 4000, 4000]);
+});
+
+test("a 401-character caption is rejected before rendering", () => {
+	const scene = crowdedScene();
+	scene.captions[0]!.text = "x".repeat(401);
+	assert.throws(() => planScenePages(scene), /Caption caption-0 exceeds 400 characters/);
+});
+
+const bundleFiles = ["evidence.json", "evidence.md", "replay.mp4"];
+for (const failure of ["invalid manifest", "malformed manifest", "missing Chrome", "missing ffmpeg", "layout failure", "long caption"] as const) {
+	test(`failed rerun preserves the existing bundle: ${failure}`, () => {
+		const dir = mkdtempSync(resolve(tmpdir(), "asr-bundle-test-"));
+		try {
+			const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+			const previous = bundleFiles.map((name) => Buffer.from(`previous ${name}\n`));
+			bundleFiles.forEach((name, i) => writeFileSync(resolve(dir, name), previous[i]!));
+			if (failure === "invalid manifest") faithful.source.digest = "mismatched";
+			if (failure === "long caption") faithful.captions[0]!.text = "x".repeat(401);
+			writeFileSync(resolve(dir, "trace.json"), JSON.stringify(trace));
+			writeFileSync(resolve(dir, "manifest.json"), failure === "malformed manifest" ? "{}" : JSON.stringify(faithful));
+			const run = spawnSync(process.execPath, ["--experimental-strip-types", "scripts/export-replay.ts", resolve(dir, "trace.json"), resolve(dir, "manifest.json"), "--out", dir], {
+				encoding: "utf8", env: { ...process.env,
+					// Node is an existing executable that rejects Chrome flags immediately; no browser starts.
+					CHROME_PATH: failure === "missing ffmpeg" || failure === "layout failure" ? process.execPath : "/missing",
+					FFMPEG_PATH: failure === "layout failure" ? process.execPath : "/missing",
+				},
+			});
+			assert.notEqual(run.status, 0);
+			bundleFiles.forEach((name, i) => assert.deepEqual(readFileSync(resolve(dir, name)), previous[i]));
+			const entries = readdirSync(dir);
+			assert.ok(!entries.some((name) => name.startsWith(".staging-")));
+			const failures = entries.filter((name) => name.startsWith("failed-"));
+			assert.equal(failures.length, 1);
+			const failed = resolve(dir, failures[0]!);
+			assert.ok(run.stderr.includes(failed), run.stderr);
+			assert.ok(readFileSync(resolve(failed, "evidence.md"), "utf8").length > 0);
+			const evidence = JSON.parse(readFileSync(resolve(failed, "evidence.json"), "utf8"));
+			const error = readFileSync(resolve(failed, "error.txt"), "utf8");
+			const expected = {
+				"invalid manifest": /Invalid manifest; refusing to render/, "malformed manifest": /invalid structure/,
+				"missing Chrome": /Chrome not found/, "missing ffmpeg": /ffmpeg not found/,
+				"layout failure": /Chrome layout check failed/, "long caption": /exceeds 400 characters/,
+			}[failure];
+			assert.match(error, expected);
+			if (failure === "long caption") assert.equal(evidence.scenes[0].captions[0].text, "x".repeat(401));
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+}
+
+// These process stubs exercise bundle handling, not browser layout or real video encoding.
+for (const failure of ["none", "screenshot", "encoding"] as const) {
+	test(`staged render ${failure === "none" ? "success replaces" : `${failure} failure preserves`} all three bundle files`, () => {
+		const dir = mkdtempSync(resolve(tmpdir(), "asr-staging-test-"));
+		try {
+			bundleFiles.forEach((name) => writeFileSync(resolve(dir, name), `previous ${name}`));
+			const tool = resolve(dir, "mock-tool.cjs");
+			writeFileSync(tool, `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const assert = require("node:assert/strict");
+const args = process.argv.slice(2);
+const screenshot = args.find((arg) => arg.startsWith("--screenshot="));
+if (args.includes("--dump-dom")) {
+	console.log('<meta name="replay-layout" content="ok">');
+} else if (screenshot) {
+	if (process.env.ASR_MOCK_FAIL === "screenshot") { console.error("synthetic screenshot failure"); process.exit(1); }
+	const html = require("node:url").fileURLToPath(args.at(-1));
+	fs.copyFileSync(html, path.join(process.env.ASR_MOCK_OUT, "captured-" + path.basename(html)));
+	fs.writeFileSync(screenshot.slice("--screenshot=".length), Buffer.concat([Buffer.alloc(20), Buffer.from("IEND"), Buffer.alloc(8)]));
+} else {
+	const output = args.at(-1);
+	assert.match(path.basename(path.dirname(output)), /^\\.staging-/);
+	assert.ok(!args.includes("-y"));
+	for (const name of ["evidence.json", "evidence.md", "replay.mp4"]) {
+		assert.equal(fs.readFileSync(path.join(process.env.ASR_MOCK_OUT, name), "utf8"), "previous " + name);
+	}
+	fs.writeFileSync(output, "mock encoded video");
+	if (process.env.ASR_MOCK_FAIL === "encoding") { console.error("synthetic encoding failure"); process.exit(1); }
+}
+`, { mode: 0o755 });
+			const session = generateReplayFixtures().sessions[0]!;
+			const ids = session.trace.steps.map((step) => step.step_id);
+			session.faithful.scenes = [
+				{ id: "crowded", range: { from: ids[0]!, to: ids[19]! }, steps: ids.slice(0, 20) },
+				{ id: "following", range: { from: ids[20]!, to: ids.at(-1)! }, steps: ids.slice(20) },
+			];
+			session.faithful.captions = Array.from({ length: 7 }, (_, i) => ({
+				id: `caption-${i}`, sceneId: "crowded", kind: "shows", refs: [ids[0]!],
+				text: i === 0 ? "Long caption. ".repeat(40).slice(0, 400) : `Caption ${i}`,
+			}));
+			writeFileSync(resolve(dir, "trace.json"), JSON.stringify(session.trace));
+			writeFileSync(resolve(dir, "manifest.json"), JSON.stringify(session.faithful));
+			const run = spawnSync(process.execPath, ["--experimental-strip-types", "scripts/export-replay.ts", resolve(dir, "trace.json"), resolve(dir, "manifest.json"), "--out", dir], {
+				encoding: "utf8", env: { ...process.env, CHROME_PATH: tool, FFMPEG_PATH: tool, ASR_MOCK_OUT: dir, ASR_MOCK_FAIL: failure },
+			});
+			const entries = readdirSync(dir);
+			assert.ok(!entries.some((name) => name.startsWith(".staging-")));
+			if (failure !== "none") {
+				assert.notEqual(run.status, 0);
+				bundleFiles.forEach((name) => assert.equal(readFileSync(resolve(dir, name), "utf8"), `previous ${name}`));
+				const failed = entries.find((name) => name.startsWith("failed-"));
+				assert.ok(failed);
+				assert.match(readFileSync(resolve(dir, failed, "error.txt"), "utf8"), failure === "encoding" ? /ffmpeg failed: synthetic encoding failure/ : /Chrome screenshot failed: synthetic screenshot failure/);
+				assert.ok(existsSync(resolve(dir, failed, "evidence.json")) && existsSync(resolve(dir, failed, "evidence.md")));
+			} else {
+				assert.equal(run.status, 0, run.stderr);
+				assert.equal(readFileSync(resolve(dir, "replay.mp4"), "utf8"), "mock encoded video");
+				const evidence = JSON.parse(readFileSync(resolve(dir, "evidence.json"), "utf8"));
+				assert.equal(evidence.verdict, "VALID");
+				assert.match(readFileSync(resolve(dir, "evidence.md"), "utf8"), /Verdict: VALID/);
+				const firstPages = [1, 2, 3].map((i) => readFileSync(resolve(dir, `captured-${i}.html`), "utf8"));
+				assert.deepEqual(firstPages.map((html) => (html.match(/class="step"/g) ?? []).length), [8, 8, 4]);
+				assert.deepEqual(firstPages.map((html) => (html.match(/class="caption"/g) ?? []).length), [3, 3, 1]);
+				firstPages.forEach((html, i) => assert.ok(html.includes(`page ${i + 1} of 3`)));
+				assert.ok(firstPages[0]!.includes(session.faithful.captions[0]!.text));
+				const expected = buildSidecar(session.faithful, session.trace, validateExport(session.faithful, session.trace));
+				let positionMs = 3500;
+				expected.scenes.forEach((scene, i) => {
+					const durationMs = planScenePages(scene).reduce((sum, page) => sum + page.durationMs, 0);
+					assert.equal(evidence.scenes[i].positionMs, positionMs);
+					assert.equal(evidence.scenes[i].durationMs, durationMs);
+					positionMs += durationMs;
+				});
+				assert.ok(!entries.some((name) => name.startsWith("failed-")));
+			}
+		} finally { rmSync(dir, { recursive: true, force: true }); }
+	});
+}
 
 const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const ffmpeg = process.env.FFMPEG_PATH ?? "/opt/homebrew/bin/ffmpeg";
@@ -23,7 +176,8 @@ test("replay export produces an H.264 video with the expected duration", { skip 
 		assert.equal(probe.status, 0, probe.stderr);
 		const info = JSON.parse(probe.stdout); const stream = info.streams.find((s: { codec_type: string }) => s.codec_type === "video");
 		assert.equal(stream.codec_name, "h264"); assert.equal(stream.width, 1280); assert.equal(stream.height, 720);
-		const expected = (7000 + session.faithful.scenes.reduce((sum, scene) => sum + (scene.durationMs ?? 3500), 0)) / 1000;
+		const sidecar = buildSidecar(session.faithful, session.trace, validateExport(session.faithful, session.trace));
+		const expected = (7000 + sidecar.scenes.flatMap(planScenePages).reduce((sum, page) => sum + page.durationMs, 0)) / 1000;
 		assert.ok(Math.abs(Number(info.format.duration) - expected) <= expected * 0.1);
 		// Sample the middle of the title, first scene, and end holds. Distinct
 		// frames confirm that both bookend cards survived the assembled video.
