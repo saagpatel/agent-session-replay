@@ -974,6 +974,8 @@ export function execLiteralCalls(input: string): Array<{
 	/** Complete literal object, for allowlists that must inspect every key. */
 	arguments: () => Record<string, unknown> | undefined;
 }> | undefined {
+	// maskCode ends // comments only at LF; other JS line terminators fail closed.
+	if (/[\r\u2028\u2029]/.test(input)) return undefined;
 	const masked = maskCode(input);
 	const calls = [...masked.matchAll(CELL_CALL_RE)];
 	if (!straightLine(masked, calls)) return undefined;

@@ -620,8 +620,13 @@ test("exec literal escape validation consumes pairs and rejects unsupported esca
 			for (const escape of escapes) {
 				const input = `text(await tools.apply_patch(${quote}${escape}${quote}));`;
 				const call = execLiteralCalls(input)?.[0];
-				assert.ok(call, input);
-				assert.equal(call.argument(null).value !== undefined, accepted, input);
+				if (/[\r\u2028\u2029]/.test(input)) {
+					// Cells with non-LF line terminators fail closed as a whole.
+					assert.equal(call, undefined, input);
+				} else {
+					assert.ok(call, input);
+					assert.equal(call.argument(null).value !== undefined, accepted, input);
+				}
 				if (!accepted) {
 					const evidence = operationEvidence(rollout([input]).steps[0]!);
 					assert.equal(evidence.unresolved, true, input);
@@ -1626,4 +1631,18 @@ test("a 2,000-step valid chain validates with at most one traversal per exported
 	assert.deepEqual(checkOrder(resolved, graph), []);
 	assert.ok(visits <= count * (count + 1) / 2, `too many adjacency visits: ${visits}`);
 	console.log(`2,000-step export validation: ${elapsed.toFixed(1)}ms; adjacency visits: ${visits}`);
+});
+
+test("exec cells with CR, U+2028 or U+2029 terminators are unresolved and cannot hide writes", () => {
+	for (const terminator of ["\r", " ", " "]) {
+		const input = `text(await tools.Read({"file_path":"src/a.ts"}));\n// note${terminator}text(await tools.Write({"file_path":"src/b.ts","content":"x"}));`;
+		assert.equal(execLiteralCalls(input), undefined);
+		const cell: Step = toolStep("cell", "exec", { input }, {
+			status: "ok",
+			attributes: { [ATTR.TOOL_NAME]: "exec", [ATTR.TOOL_ARGS]: { input }, [ATTR.EXEC_COMPLETED]: true },
+		});
+		const trace = makeTrace([cell, toolStep("read-b", "Read", { file_path: "src/b.ts" })]);
+		const result = validateExport(oneScene(trace, ["read-b", "cell"]), trace);
+		assert.equal(result.ok, false, JSON.stringify(terminator));
+	}
 });
