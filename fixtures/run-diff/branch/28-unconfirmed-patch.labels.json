@@ -1,6 +1,14 @@
 {
   "repo": "unconfirmed-patch",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [],
+    "unknown": [
+      "toolu_0"
+    ]
+  },
   "expected": {
     "abandoned": [],
     "retained": [

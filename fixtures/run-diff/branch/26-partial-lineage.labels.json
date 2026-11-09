@@ -1,6 +1,16 @@
 {
   "repo": "partial-lineage",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_1"
+    ],
+    "abandoned": [],
+    "unknown": [
+      "toolu_0"
+    ]
+  },
   "expected": {
     "abandoned": [],
     "retained": [

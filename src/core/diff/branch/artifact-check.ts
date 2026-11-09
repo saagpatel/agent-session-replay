@@ -26,12 +26,13 @@ export function checkArtifacts(graph: BranchGraph, repo: { commits: FixtureRepoC
 		const content = commit.files[effect.file];
 		if (content === undefined) return result("unknown", "File is absent from the commit.");
 		if (effect.lineage === "unknown") return result("unknown", "Edit application or lineage is unknown.");
+		if (effect.lineage === "partial") return result("unknown", "Surviving provenance spans cannot be checked against the commit.");
 		if (!effect.payload || (!effect.payload.inserted.length && !effect.payload.removed.length)) return result("unknown", "Edit payload is unknown.");
 		const inserted = effect.payload.inserted;
 		if (inserted.length && inserted.every((text) => !content.includes(text))) return result("abandoned", "Inserted text is absent from the commit.");
 		if (inserted.some((text) => !content.includes(text)) || effect.payload.removed.some((text) => content.includes(text))) return result("unknown", "Payload is only partly present or removed text remains.");
 		// Matching content cannot identify its origin when a later operation replaced it.
-		if (effect.lineage === "abandoned" || effect.lineage === "partial") return result("unknown", "Matching text has conflicting structural lineage.");
+		if (effect.lineage === "abandoned") return result("unknown", "Matching text has conflicting structural lineage.");
 		return result("retained", "Recorded payload matches the commit.");
 	});
 	const steps: ArtifactCheck["steps"] = graph.nodes.map((node) => {

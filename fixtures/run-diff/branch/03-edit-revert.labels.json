@@ -1,6 +1,16 @@
 {
   "repo": "edit-revert",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_1"
+    ],
+    "abandoned": [
+      "toolu_0"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0"

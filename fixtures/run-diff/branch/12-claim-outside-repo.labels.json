@@ -1,6 +1,12 @@
 {
   "repo": "claim-outside-repo",
   "harness": "claude-code",
+  "artifact": {
+    "link": "not-found",
+    "retained": [],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [

@@ -1,6 +1,12 @@
 {
   "repo": "codex-retry",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "call_0"

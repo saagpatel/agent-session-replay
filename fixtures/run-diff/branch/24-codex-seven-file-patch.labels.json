@@ -1,6 +1,14 @@
 {
   "repo": "codex-seven-file-patch",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "call_0"
+    ],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [

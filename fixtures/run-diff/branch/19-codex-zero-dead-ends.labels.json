@@ -1,6 +1,12 @@
 {
   "repo": "codex-zero-dead-ends",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [
