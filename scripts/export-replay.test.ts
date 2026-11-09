@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
 import { validateExport } from "../src/core/export/index.ts";
 import { buildSidecar } from "../src/core/export/sidecar.ts";
-import { planScenePages, promoteBundle } from "./export-replay.ts";
+import { main, planScenePages, promoteBundle } from "./export-replay.ts";
 
 function crowdedScene() {
 	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
@@ -39,6 +39,85 @@ test("a 401-character caption is rejected before rendering", () => {
 });
 
 const bundleFiles = ["evidence.json", "evidence.md", "replay.mp4"];
+for (const input of ["trace", "manifest"] as const) {
+	for (const alias of ["direct", "input symlink", "output symlink"] as const) {
+		test(`preflight refuses ${input} collision via ${alias} without creating files`, () => {
+			const dir = mkdtempSync(resolve(tmpdir(), "asr-preflight-test-"));
+			try {
+				const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+				const tracePath = resolve(dir, input === "trace" ? "evidence.json" : "trace.json");
+				const manifestPath = resolve(dir, input === "manifest" ? "evidence.md" : "manifest.json");
+				writeFileSync(tracePath, JSON.stringify(trace));
+				writeFileSync(manifestPath, JSON.stringify(faithful));
+				let inputs = [tracePath, manifestPath]; let out = dir;
+				if (alias !== "direct") {
+					const link = resolve(dir, "alias");
+					symlinkSync(alias === "input symlink" ? (input === "trace" ? tracePath : manifestPath) : dir, link);
+					if (alias === "input symlink") inputs = input === "trace" ? [link, manifestPath] : [tracePath, link];
+					else out = link;
+				}
+				const entries = readdirSync(dir);
+				const before = [readFileSync(tracePath), readFileSync(manifestPath)];
+				assert.throws(() => main([...inputs, "--out", out, "--allow-invalid"]), /collides with input/);
+				assert.deepEqual([readFileSync(tracePath), readFileSync(manifestPath)], before);
+				assert.deepEqual(readdirSync(dir), entries);
+			} finally { rmSync(dir, { recursive: true, force: true }); }
+		});
+	}
+}
+
+test("preflight refuses an output directory equal to or nested inside either input file", () => {
+	const dir = mkdtempSync(resolve(tmpdir(), "asr-preflight-test-"));
+	try {
+		const inputs = [resolve(dir, "trace.json"), resolve(dir, "manifest.json")];
+		inputs.forEach((path) => writeFileSync(path, "synthetic input"));
+		const alias = resolve(dir, "alias"); symlinkSync(dir, alias);
+		for (const name of ["trace.json", "manifest.json"]) {
+			for (const suffix of ["", "nested/output"]) {
+				assert.throws(() => main([...inputs, "--out", resolve(alias, name, suffix)]), /output directory inside input file/);
+			}
+		}
+		assert.deepEqual(readdirSync(dir).sort(), ["alias", "manifest.json", "trace.json"]);
+		inputs.forEach((path) => assert.equal(readFileSync(path, "utf8"), "synthetic input"));
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const name of bundleFiles) {
+	for (const kind of ["directory", "symlink", "dangling symlink"] as const) {
+		test(`preflight and promotion preserve ${kind} at ${name} without moving anything`, () => {
+			const dir = mkdtempSync(resolve(tmpdir(), "asr-preflight-test-"));
+			const staging = mkdtempSync(resolve(dir, ".staging-"));
+			try {
+				const destination = resolve(dir, name);
+				const userFile = resolve(dir, "user-file"); writeFileSync(userFile, "user content");
+				if (kind === "directory") {
+					mkdirSync(destination); writeFileSync(resolve(destination, "keep"), "user content");
+				} else symlinkSync(kind === "symlink" ? userFile : resolve(dir, "absent"), destination);
+				for (const file of bundleFiles) {
+					if (file !== name) writeFileSync(resolve(dir, file), `previous ${file}`);
+					writeFileSync(resolve(staging, file), `new ${file}`);
+				}
+				const before = readdirSync(dir);
+				assert.throws(() => main(["--session", "01-parser", "--out", dir]), /not a regular file/);
+				assert.throws(() => promoteBundle(staging, dir), /not a regular file/);
+				assert.deepEqual(readdirSync(dir), before);
+				assert.equal(readFileSync(userFile, "utf8"), "user content");
+				if (kind === "directory") {
+					assert.deepEqual(readdirSync(destination), ["keep"]);
+					assert.equal(readFileSync(resolve(destination, "keep"), "utf8"), "user content");
+				} else {
+					assert.ok(lstatSync(destination).isSymbolicLink());
+					assert.equal(readlinkSync(destination), kind === "symlink" ? userFile : resolve(dir, "absent"));
+				}
+				for (const file of bundleFiles) {
+					if (file !== name) assert.equal(readFileSync(resolve(dir, file), "utf8"), `previous ${file}`);
+					assert.equal(readFileSync(resolve(staging, file), "utf8"), `new ${file}`);
+				}
+			} finally { rmSync(dir, { recursive: true, force: true }); }
+		});
+	}
+}
+
 for (const fault of ["rename-out second", "rename-in third", "undo previous", "undo new"] as const) {
 	test(`bundle promotion preserves every previous file: ${fault}`, () => {
 		const out = mkdtempSync(resolve(tmpdir(), "asr-promotion-test-"));
@@ -55,6 +134,7 @@ for (const fault of ["rename-out second", "rename-in third", "undo previous", "u
 			assert.throws(() => promoteBundle(staging, out, {
 				mkdir(path) { previous = path; mkdirSync(path); },
 				exists: existsSync,
+				lstat: lstatSync,
 				rm(path, options) { cleanup.push(path); rmSync(path, options); },
 				rename(from, to) {
 					attempts.push([from, to]);
@@ -151,8 +231,10 @@ for (const failure of ["invalid manifest", "malformed manifest", "missing Chrome
 }
 
 // These process stubs exercise bundle handling, not browser layout or real video encoding.
-for (const failure of ["none", "screenshot", "encoding"] as const) {
-	test(`staged render ${failure === "none" ? "success replaces" : `${failure} failure preserves`} all three bundle files`, () => {
+for (const scenario of ["none", "screenshot", "encoding", "missing cause", "missing effect", "missing shows"] as const) {
+	const missing = scenario.startsWith("missing");
+	const failure = missing ? "none" : scenario;
+	test(`staged render ${scenario}: ${failure === "none" ? "replaces" : "preserves"} all three bundle files`, () => {
 		const dir = mkdtempSync(resolve(tmpdir(), "asr-staging-test-"));
 		try {
 			bundleFiles.forEach((name) => writeFileSync(resolve(dir, name), `previous ${name}`));
@@ -191,9 +273,18 @@ if (args.includes("--dump-dom")) {
 				id: `caption-${i}`, sceneId: "crowded", kind: "shows", refs: [ids[0]!],
 				text: i === 0 ? "Long caption. ".repeat(40).slice(0, 400) : `Caption ${i}`,
 			}));
+			if (missing) {
+				session.faithful.captions[1] = scenario === "missing shows" ? {
+					id: "caption-1", sceneId: "crowded", kind: "shows", text: "Missing shown step.", refs: ["missing-shown", ids[0]!],
+				} : {
+					id: "caption-1", sceneId: "crowded", kind: "because", text: "Missing causal evidence.",
+					cause: scenario === "missing cause" ? "missing-cause" : ids[0]!,
+					effect: scenario === "missing effect" ? "missing-effect" : ids[1]!,
+				};
+			}
 			writeFileSync(resolve(dir, "trace.json"), JSON.stringify(session.trace));
 			writeFileSync(resolve(dir, "manifest.json"), JSON.stringify(session.faithful));
-			const run = spawnSync(process.execPath, ["--experimental-strip-types", "scripts/export-replay.ts", resolve(dir, "trace.json"), resolve(dir, "manifest.json"), "--out", dir], {
+			const run = spawnSync(process.execPath, ["--experimental-strip-types", "scripts/export-replay.ts", resolve(dir, "trace.json"), resolve(dir, "manifest.json"), "--out", dir, ...(missing ? ["--allow-invalid"] : [])], {
 				encoding: "utf8", env: { ...process.env, CHROME_PATH: tool, FFMPEG_PATH: tool, ASR_MOCK_OUT: dir, ASR_MOCK_FAIL: failure },
 			});
 			const entries = readdirSync(dir);
@@ -209,13 +300,27 @@ if (args.includes("--dump-dom")) {
 				assert.equal(run.status, 0, run.stderr);
 				assert.equal(readFileSync(resolve(dir, "replay.mp4"), "utf8"), "mock encoded video");
 				const evidence = JSON.parse(readFileSync(resolve(dir, "evidence.json"), "utf8"));
-				assert.equal(evidence.verdict, "VALID");
-				assert.match(readFileSync(resolve(dir, "evidence.md"), "utf8"), /Verdict: VALID/);
+				assert.equal(evidence.verdict, missing ? "INVALID" : "VALID");
+				const markdown = readFileSync(resolve(dir, "evidence.md"), "utf8");
+				assert.ok(markdown.includes(`Verdict: ${missing ? "INVALID" : "VALID"}`));
 				const firstPages = [1, 2, 3].map((i) => readFileSync(resolve(dir, `captured-${i}.html`), "utf8"));
 				assert.deepEqual(firstPages.map((html) => (html.match(/class="step"/g) ?? []).length), [8, 8, 4]);
 				assert.deepEqual(firstPages.map((html) => (html.match(/class="caption"/g) ?? []).length), [3, 3, 1]);
 				firstPages.forEach((html, i) => assert.ok(html.includes(`page ${i + 1} of 3`)));
 				assert.ok(firstPages[0]!.includes(session.faithful.captions[0]!.text));
+				if (missing) {
+					const detail = scenario === "missing cause" ? "cause: unknown (id missing-cause) → effect: #2" :
+						scenario === "missing effect" ? "cause: #1 → effect: unknown (id missing-effect)" : "unknown (id missing-shown), #1";
+					assert.ok(firstPages[0]!.includes(`<div class="caption-ref">${detail}</div>`));
+					assert.ok(markdown.includes(detail));
+					assert.ok(readFileSync(resolve(dir, "captured-0.html"), "utf8").includes('class="badge invalid">INVALID'));
+					const refs = evidence.scenes[0].captions[1].refs;
+					assert.equal(refs.length, 2);
+					const absent = refs[scenario === "missing effect" ? 1 : 0];
+					assert.equal(absent.step, null);
+					assert.equal(absent.id, scenario === "missing shows" ? "missing-shown" : scenario.replace(" ", "-"));
+					if (scenario !== "missing shows") assert.deepEqual(refs.map((ref: { role: string }) => ref.role), ["cause", "effect"]);
+				}
 				const expected = buildSidecar(session.faithful, session.trace, validateExport(session.faithful, session.trace));
 				let positionMs = 3500;
 				expected.scenes.forEach((scene, i) => {

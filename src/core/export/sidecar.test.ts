@@ -21,12 +21,14 @@ test("all generated sidecars retain scene and caption evidence", () => {
 		for (const caption of faithful.captions) {
 			const actual = sidecar.scenes.flatMap((s) => s.captions).find((c) => c.id === caption.id)!;
 			assert.deepEqual(actual.refs.map((s) => s.id), caption.kind === "shows" ? caption.refs : [caption.cause, caption.effect]);
+			assert.deepEqual(actual.refs.map((ref) => ref.step?.id), actual.refs.map((ref) => ref.id));
+			assert.deepEqual(actual.refs.map((ref) => ref.role), caption.kind === "shows" ? caption.refs.map(() => undefined) : ["cause", "effect"]);
 			assert.ok(markdown.includes(caption.text));
 		}
 		assert.ok(markdown.split("\n").every((line) => line.length < 120 && !line.trimStart().startsWith("{")));
 		assert.match(markdown, /Plays at 0:03\.5 for .*source steps #\d+–#\d+/);
 		assert.match(markdown, /shows #\d+[^\n]*\n✓/);
-		assert.match(markdown, /because #\d+ → #\d+ \(path: #\d+[^\n]*\n✓/);
+		assert.match(markdown, /because cause: #\d+ → effect: #\d+ \(path: #\d+[^\n]*\n✓/);
 		assert.match(markdown, /- #\d+ Read .* · ok · worker a/);
 	}
 });
@@ -41,7 +43,7 @@ test("failing captions retain kind, known step references and causal path before
 	assert.ok(captions.some((caption) => caption.kind === "because" && caption.path.length > 0));
 	for (const caption of captions) {
 		assert.equal(caption.ok, false);
-		const refs = caption.refs.map((step) => `#${step.index + 1}`);
+		const refs = caption.refs.map((ref) => `${ref.role ? `${ref.role}: ` : ""}#${ref.step!.index + 1}`);
 		const detail = caption.kind === "shows" ? `shows ${refs.join(", ")}` :
 			`because ${refs.join(" → ")} (path: ${caption.path.map((step) => `#${step.index + 1}`).join(" → ")})`;
 		assert.ok(markdown.includes(`> “${caption.text}”\n${detail}\n✗ ${caption.reasons[0]}`), markdown);
@@ -83,7 +85,7 @@ test("sidecar validator rejects a reference outside the export", () => {
 	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
 	const sidecar = buildSidecar(faithful, trace, validateExport(faithful, trace));
 	const missing = trace.steps.find((s) => !faithful.scenes.some((scene) => scene.steps.includes(s.step_id)))!;
-	sidecar.scenes[0]!.captions[0]!.refs.push({ id: missing.step_id, label: "test", status: "unknown", index: trace.steps.indexOf(missing), timestamp: missing.started_at });
+	sidecar.scenes[0]!.captions[0]!.refs.push({ id: missing.step_id, step: { id: missing.step_id, label: "test", status: "unknown", index: trace.steps.indexOf(missing), timestamp: missing.started_at } });
 	assert.equal(validateSidecar(sidecar, trace, faithful).ok, false);
 });
 
@@ -101,4 +103,30 @@ test("labels use recorded details and invalid captions report their reason", () 
 	assert.match(sidecar.scenes.flatMap((scene) => scene.steps).find((step) => step.id === agent.step_id)!.label, /^Agent worker-/);
 	assert.match(sidecar.scenes.flatMap((scene) => scene.steps).find((step) => step.id === decision.step_id)!.label, /^Decision: Choose a bounded fix/);
 	assert.match(renderSidecarMarkdown(sidecar), /✗ validation-incomplete: Caption validation could not be completed\./);
+	assert.match(renderSidecarMarkdown(sidecar), /shows unknown \(id missing-step\)/);
 });
+
+for (const role of ["cause", "effect"] as const) {
+	test(`missing ${role} retains its position and ID in caption evidence and Markdown`, () => {
+		const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+		const caption = faithful.captions.find((item) => item.kind === "because")!;
+		if (caption.kind !== "because") throw new Error("Expected because caption");
+		caption[role] = `missing-${role}`;
+		const sidecar = buildSidecar(faithful, trace, validateExport(faithful, trace));
+		const actual = sidecar.scenes.flatMap((scene) => scene.captions).find((item) => item.id === caption.id)!;
+		assert.equal(sidecar.verdict, "INVALID");
+		assert.equal(actual.ok, false);
+		assert.deepEqual(actual.refs.map((ref) => [ref.role, ref.id, ref.step?.id ?? null]), [
+			["cause", caption.cause, role === "cause" ? null : caption.cause],
+			["effect", caption.effect, role === "effect" ? null : caption.effect],
+		]);
+		const known = actual.refs.find((ref) => ref.step !== null)!;
+		assert.ok(renderSidecarMarkdown(sidecar).includes(role === "cause" ?
+			`because cause: unknown (id missing-cause) → effect: #${known.step!.index + 1}` :
+			`because cause: #${known.step!.index + 1} → effect: unknown (id missing-effect)`));
+		const swapped = structuredClone(sidecar);
+		const refs = swapped.scenes.flatMap((scene) => scene.captions).find((item) => item.id === caption.id)!.refs;
+		refs.reverse();
+		assert.equal(validateSidecar(swapped, trace, faithful).ok, false);
+	});
+}

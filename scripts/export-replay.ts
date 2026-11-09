@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
 import { validateExport } from "../src/core/export/index.ts";
 import { parseManifest } from "../src/core/export/manifest.ts";
-import { buildSidecar, renderSidecarMarkdown, validateSidecar, type Sidecar } from "../src/core/export/sidecar.ts";
+import { buildSidecar, formatCaptionRefs, renderSidecarMarkdown, validateSidecar, type Sidecar } from "../src/core/export/sidecar.ts";
 import type { Trace } from "../src/core/types.ts";
 
 type EvidenceScene = Sidecar["scenes"][number];
@@ -27,25 +27,61 @@ export function planScenePages(scene: EvidenceScene): ScenePage[] {
 }
 
 const bundleFiles = ["evidence.json", "evidence.md", "replay.mp4"];
+
+/** Resolve existing ancestors too, including an output directory that does not exist yet. */
+function resolvedPath(path: string): string {
+	try { return realpathSync(path); } catch (error) {
+		if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "") || dirname(path) === path) throw error;
+		return resolve(resolvedPath(dirname(path)), basename(path));
+	}
+}
+
+function regularBundleFiles(dir: string, lstat: PromotionFs["lstat"]): string[] {
+	return bundleFiles.filter((name) => {
+		const path = resolve(dir, name);
+		let entry;
+		try { entry = lstat(path); } catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+		if (!entry.isFile()) throw new Error(`Refusing bundle destination that is not a regular file: ${path}`);
+		return true;
+	});
+}
+
+function preflightOutput(out: string, inputs: string[]): void {
+	const sources = inputs.map((input) => realpathSync(resolve(input)));
+	const output = resolvedPath(resolve(out));
+	const destinations = bundleFiles.map((name) => resolvedPath(resolve(out, name)));
+	for (const source of sources) {
+		if (output === source || output.startsWith(`${source}${sep}`)) {
+			throw new Error(`Refusing output directory inside input file: ${source}`);
+		}
+		if (destinations.includes(source)) throw new Error(`Refusing bundle destination that collides with input: ${source}`);
+	}
+	regularBundleFiles(out, lstatSync);
+}
+
 export interface PromotionFs {
 	rename(from: string, to: string): void;
 	rm(path: string, options: { recursive: boolean; force: boolean }): void;
 	mkdir(path: string): void;
 	exists(path: string): boolean;
+	lstat(path: string): { isFile(): boolean };
 }
-const promotionFs: PromotionFs = { rename: renameSync, rm: rmSync, mkdir: mkdirSync, exists: existsSync };
+const promotionFs: PromotionFs = { rename: renameSync, rm: rmSync, mkdir: mkdirSync, exists: existsSync, lstat: lstatSync };
 class BundleRecoveryError extends Error {}
 
 /** Promotion owns cleanup; incomplete rollback keeps both directories for manual recovery. */
 export function promoteBundle(staging: string, out: string, fs: PromotionFs = promotionFs): void {
+	const oldFiles = regularBundleFiles(out, fs.lstat);
+	if (regularBundleFiles(staging, fs.lstat).length !== bundleFiles.length) throw new Error("Incomplete staged bundle; refusing promotion.");
 	const previous = resolve(out, `.previous-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	fs.mkdir(previous);
 	const moves: Array<{ from: string; to: string }> = [];
 	const move = (from: string, to: string) => { fs.rename(from, to); moves.push({ from, to }); };
 	try {
-		for (const name of bundleFiles) {
-			if (fs.exists(resolve(out, name))) move(resolve(out, name), resolve(previous, name));
-		}
+		for (const name of oldFiles) move(resolve(out, name), resolve(previous, name));
 		for (const name of bundleFiles) move(resolve(staging, name), resolve(out, name));
 	} catch (error) {
 		const failures: string[] = [];
@@ -84,6 +120,7 @@ export function main(args = process.argv.slice(2)): void {
 		else positional.push(arg);
 	}
 	if (!out || (slug ? positional.length !== 0 : positional.length !== 2)) throw new Error(usage);
+	preflightOutput(out, positional);
 	mkdirSync(resolve(out), { recursive: true });
 	const staging = mkdtempSync(resolve(out, ".staging-"));
 	let evidence: unknown;
@@ -153,7 +190,7 @@ document.head.append(marker);
 </script></body></html>`;
 		const number = (step: { index: number } | undefined) => step ? `#${step.index + 1}` : "unknown";
 		const cards = [card(`<div class="eyebrow">Agent Session Replay · Local export</div><div class="hero"><h1>${escape(parsed.title)}</h1><p>Source run ${escape(parsed.source.runId.slice(0, 12))}</p><p>Shortened replay: ${sidecar.counts.exportedSteps} of ${sidecar.counts.sourceSteps} source steps, ${sidecar.counts.scenes} scenes</p>${badge}</div>`),
-			...sidecar.scenes.flatMap((scene, i) => pages[i]!.map((page) => card(`<div class="eyebrow">Scene ${i + 1} of ${sidecar.counts.scenes}</div><h1>${escape(scene.id)}</h1><div class="steps">${page.steps.map((step) => `<div class="step"><span class="num">${number(step)}</span><span class="label">${escape(step.label)}</span><span class="pill">${escape(step.status)}</span>${step.lane ? `<span class="lane">${escape(step.lane.replaceAll("-", " "))}</span>` : ""}</div>`).join("")}</div><div class="captions">${page.captions.map((caption) => `<div class="caption"><p>${caption.ok ? "✓" : "✗"} ${escape(caption.text)}</p>${caption.kind === "because" ? `<div class="caption-ref">${number(caption.refs[0])} → ${number(caption.refs[1])}</div>` : ""}</div>`).join("")}</div><footer>page ${page.page} of ${page.pageCount} · steps ${scene.range.from ? scene.range.from.index + 1 : "?"}–${scene.range.to ? scene.range.to.index + 1 : "?"} of ${trace.steps.length}</footer><div class="progress" style="width:${(i + 1) / sidecar.counts.scenes * 100}%"></div>`))),
+			...sidecar.scenes.flatMap((scene, i) => pages[i]!.map((page) => card(`<div class="eyebrow">Scene ${i + 1} of ${sidecar.counts.scenes}</div><h1>${escape(scene.id)}</h1><div class="steps">${page.steps.map((step) => `<div class="step"><span class="num">${number(step)}</span><span class="label">${escape(step.label)}</span><span class="pill">${escape(step.status)}</span>${step.lane ? `<span class="lane">${escape(step.lane.replaceAll("-", " "))}</span>` : ""}</div>`).join("")}</div><div class="captions">${page.captions.map((caption) => `<div class="caption"><p>${caption.ok ? "✓" : "✗"} ${escape(caption.text)}</p><div class="caption-ref">${escape(formatCaptionRefs(caption))}</div></div>`).join("")}</div><footer>page ${page.page} of ${page.pageCount} · steps ${scene.range.from ? scene.range.from.index + 1 : "?"}–${scene.range.to ? scene.range.to.index + 1 : "?"} of ${trace.steps.length}</footer><div class="progress" style="width:${(i + 1) / sidecar.counts.scenes * 100}%"></div>`))),
 			card(`<div class="eyebrow">Replay complete</div><div class="hero"><h1>Evidence summary</h1>${badge}<p>${sidecar.counts.exportedSteps} of ${sidecar.counts.sourceSteps} source steps · ${sidecar.counts.scenes} scenes · ${sidecar.counts.captions} captions</p><p>Evidence: evidence.md</p></div><footer>Source digest: ${escape(sidecar.sourceDigest)}</footer>`)];
 		const durations = [3500, ...pages.flatMap((scene) => scene.map((page) => page.durationMs)), 3500];
 		if (durations.some((d) => d < 400)) throw new Error("Scene durations must be at least 400 ms for crossfades.");

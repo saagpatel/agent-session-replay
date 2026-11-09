@@ -6,13 +6,14 @@ import { stepLabel } from "./operations.ts";
 
 type Validation = ReturnType<typeof validateExport>;
 interface EvidenceStep { id: string; label: string; status: string; index: number; timestamp: string; lane?: string }
+interface CaptionRef { role?: "cause" | "effect"; id: string; step: EvidenceStep | null }
 export interface Sidecar {
 	version: 1; sourceDigest: string; verdict: "VALID" | "INVALID";
 	counts: { sourceSteps: number; exportedSteps: number; scenes: number; captions: number };
 	failures: string[];
 	scenes: Array<{ id: string; positionMs: number; durationMs: number;
 		range: { from: EvidenceStep | null; to: EvidenceStep | null }; steps: EvidenceStep[];
-		captions: Array<{ id: string; kind: "shows" | "because"; text: string; refs: EvidenceStep[];
+		captions: Array<{ id: string; kind: "shows" | "because"; text: string; refs: CaptionRef[];
 			path: EvidenceStep[]; ok: boolean; reasons: string[] }> }>;
 }
 
@@ -44,7 +45,9 @@ export function buildSidecar(manifest: Manifest, trace: Trace, validation: Valid
 				const unevaluated = validation.failures.some((failure) => ["source-mismatch", "invalid-manifest", "unknown-step", "invalid-range"].includes(failure.reason));
 				const ids = caption.kind === "shows" ? caption.refs : [caption.cause, caption.effect];
 				const path = caption.kind === "because" ? findPath(graph, caption.cause, caption.effect) ?? [] : [];
-				return { id: caption.id, kind: caption.kind, text: caption.text, refs: evidence(ids), path: evidence(path),
+				const refs: CaptionRef[] = ids.map((id, index) => ({ id, step: lookup.get(id) ?? null,
+					...(caption.kind === "because" ? { role: index === 0 ? "cause" as const : "effect" as const } : {}) }));
+				return { id: caption.id, kind: caption.kind, text: caption.text, refs, path: evidence(path),
 					ok: failures.length === 0 && !unevaluated, reasons: [...failures.map((failure) => `${failure.reason}: ${failure.message}`), ...(unevaluated ? ["validation-incomplete: Caption validation could not be completed."] : [])] };
 			}),
 		};
@@ -84,7 +87,23 @@ export function validateSidecar(value: unknown, trace: Trace, manifest: Manifest
 			if (!obj(caption) || typeof caption.id !== "string" || !["shows", "because"].includes(String(caption.kind)) ||
 				typeof caption.text !== "string" || typeof caption.ok !== "boolean" || !strings(caption.reasons) ||
 				!Array.isArray(caption.refs) || !Array.isArray(caption.path)) { errors.push("Invalid caption structure."); continue; }
-			caption.refs.forEach((s) => step(s, true)); caption.path.forEach((s) => step(s, false));
+			const source = manifest.captions.find((item) => item.id === caption.id && item.sceneId === scene.id);
+			const ids = source?.kind === "because" ? [source.cause, source.effect] : source?.refs;
+			if (!source || source.kind !== caption.kind || ids?.length !== caption.refs.length) errors.push("Mismatched caption references.");
+			caption.refs.forEach((ref, index) => {
+				const role = caption.kind === "because" ? (index === 0 ? "cause" : "effect") : undefined;
+				if (!obj(ref) || typeof ref.id !== "string" || ref.id !== ids?.[index] || ref.role !== role) {
+					errors.push("Invalid caption reference."); return;
+				}
+				if (ref.step === null) {
+					if (indices.has(ref.id)) errors.push(`Missing source step evidence: ${ref.id}`);
+					if (caption.ok) errors.push(`Unknown caption reference marked valid: ${ref.id}`);
+				} else {
+					step(ref.step, true);
+					if (!obj(ref.step) || ref.step.id !== ref.id) errors.push(`Mismatched caption step: ${ref.id}`);
+				}
+			});
+			caption.path.forEach((s) => step(s, false));
 		}
 	}
 	return { ok: errors.length === 0, errors };
@@ -100,6 +119,11 @@ function wrap(text: string): string {
 	if (line) lines.push(line);
 	return lines.join("\n");
 }
+/** Shared by Markdown and video cards so unknown references retain their role and ID. */
+export function formatCaptionRefs(caption: Sidecar["scenes"][number]["captions"][number]): string {
+	return caption.refs.map((ref) => `${ref.role ? `${ref.role}: ` : ""}${ref.step ? `#${ref.step.index + 1}` : `unknown (id ${ref.id})`}`)
+		.join(caption.kind === "because" ? " → " : ", ") || "unknown";
+}
 export function renderSidecarMarkdown(sidecar: Sidecar): string {
 	const number = (step: EvidenceStep | null) => step ? `#${step.index + 1}` : "unknown";
 	const time = (ms: number) => `${Math.floor(ms / 60000)}:${(ms % 60000 / 1000).toFixed(1).padStart(4, "0")}`;
@@ -113,8 +137,8 @@ export function renderSidecarMarkdown(sidecar: Sidecar): string {
 		for (const step of scene.steps) lines.push(wrap(`- ${number(step)} ${step.label} · ${step.status}${step.lane ? ` · ${step.lane.replaceAll("-", " ")}` : ""}`));
 		for (const caption of scene.captions) {
 			lines.push(wrap(`> “${caption.text}”`));
-			if (caption.kind === "shows") lines.push(wrap(`shows ${caption.refs.map(number).join(", ") || "unknown"}`));
-			else lines.push(wrap(`because ${number(caption.refs[0] ?? null)} → ${number(caption.refs[1] ?? null)} (path: ${caption.path.map(number).join(" → ") || "unknown"})`));
+			if (caption.kind === "shows") lines.push(wrap(`shows ${formatCaptionRefs(caption)}`));
+			else lines.push(wrap(`because ${formatCaptionRefs(caption)} (path: ${caption.path.map(number).join(" → ") || "unknown"})`));
 			for (const reason of caption.reasons.length ? caption.reasons : [""]) lines.push(wrap(`${caption.ok ? "✓" : "✗"} ${reason}`));
 		}
 	}
