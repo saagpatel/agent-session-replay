@@ -128,31 +128,34 @@ const pathValue = (v: unknown): v is string => typeof v === "string" && v.length
 const hasParent = (path: string) => path.replace(/^\.\//, "").split("/").includes("..");
 
 /** Extract only path positions, not search patterns or arbitrary command arguments. */
-function unresolvedPath(source: Step, cwd?: string | null): boolean {
+function pathIssue(source: Step, cwd?: string | null, execution = false): string | undefined {
 	const args = source.attributes[ATTR.TOOL_ARGS];
-	if (!plainObject(args)) return false;
+	if (!plainObject(args)) return execution && !fileIdentity(cwd ?? "") ? "unresolved-root" : undefined;
 	const name = source.attributes[ATTR.TOOL_NAME];
 	let paths: unknown[] = [];
 	if (["Read", "read_file", "Edit", "MultiEdit", "Write", "write_file"].includes(String(name))) {
-		paths = [args.file_path, args.path];
+		paths = [args.path ?? args.file_path];
 	} else if (name === "Grep" || name === "Glob") {
-		paths = [args.path];
+		paths = [args.path ?? "."];
 	} else if (["Bash", "shell", "shell_command", "exec_command"].includes(String(name))) {
 		const { workdir: _workdir, cwd: _cwd, ...command } = args;
 		const cmd = literalCommand(command);
 		if (cmd !== undefined) {
 			const read = /^(?:cat |head -n [0-9]+ |sed -n '[0-9]+(?:,[0-9]+)?p' )(.+)$/.exec(cmd);
-			if (read) paths = (read[1] as string).split(" ").filter(plainToken);
+			if (read) paths = (read[1] as string).split(" ").filter(plainToken).map(unquote);
+			else if (/^(?:cat|head -n [0-9]+|sed -n '[0-9]+(?:,[0-9]+)?p')$/.test(cmd)) paths = ["."];
 			else {
 				const words = cmd.split(" ");
 				if (words.shift() === "rg") {
-					while (words[0] && RG_FLAGS.has(words[0])) words.shift();
-					if (words[0] && plainToken(words[0])) paths = words.slice(1).filter(plainToken);
-				} else if (cmd.startsWith("grep -rn ")) paths = words.slice(2).filter(plainToken);
+					while (words[0] && RG_FLAGS.has(unquote(words[0]))) words.shift();
+					if (words[0] && plainToken(words[0])) paths = words.length === 1 ? ["."] : words.slice(1).filter(plainToken).map(unquote);
+				} else if (cmd.startsWith("grep -rn ")) paths = words.length === 2 ? ["."] : words.slice(2).filter(plainToken).map(unquote);
 			}
 		}
 	}
-	return paths.some((path) => typeof path === "string" && (hasParent(path) || !path.startsWith("/") && !!cwd && hasParent(cwd)));
+	if (paths.some((path) => typeof path === "string" && (hasParent(path) || !path.startsWith("/") && !!cwd && hasParent(cwd)))) return "unresolved-path";
+	if (!fileIdentity(cwd ?? "") && (execution || paths.some((path) => typeof path !== "string" || !path.startsWith("/")))) return "unresolved-root";
+	return undefined;
 }
 
 /** Fixed Claude search schemas: unknown options are unsupported, not equality data. */
@@ -169,7 +172,9 @@ function nativeSearch(name: unknown, args: Json, cwd?: string | null): Evidence 
 		!["content", "files_with_matches", "count"].includes(args.output_mode))) return undefined;
 	const { path, ...options } = args;
 	if (path !== undefined && !pathValue(path)) return undefined;
-	return { action: "search", key: key("search", name, typeof path === "string" ? fileKey(path, cwd) : ".", options) };
+	const scope = typeof path === "string" ? path : cwd;
+	if (!scope || !fileIdentity(scope, cwd)) return undefined;
+	return { action: "search", key: key("search", name, fileKey(scope, cwd), options) };
 }
 
 /** No string wrappers or arbitrary argv joins: unwrap exactly these three shells. */
@@ -189,16 +194,23 @@ function executionEvidence(args: Json, cwd?: string | null): Evidence | undefine
 		if (option in args && (typeof args[option] !== "string" || !cwd || args[option] !== cwd)) return undefined;
 	}
 	const cmd = literalCommand(command);
-	// Match the read allowlist's narrow literal alphabet, allowing option words.
-	// No shell parsing, expansion, quoting, assignments, or stage splitting.
-	if (cmd === undefined || cmd.trim() !== cmd || !/^[A-Za-z0-9_./:@%+,-]+(?: [A-Za-z0-9_./:@%+,=-]+)*$/.test(cmd)) return undefined;
-	if (["cd", "export", "env", "sh", "bash", "zsh", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac"].includes(cmd.split(" ")[0] as string)) return undefined;
+	if (cmd === undefined) return undefined;
+	const words = cmd.split(" ");
+	if (!plainToken(words[0] as string)) return undefined;
+	for (const word of words.slice(1)) {
+		const literal = unquote(word);
+		if (literal !== "--" && !plainToken(word) &&
+			!(literal.startsWith("-") && LITERAL_TOKEN.test(literal.replace(/^--?/, "")))) return undefined;
+	}
+	if (["cd", "export", "env", "sh", "bash", "zsh", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac"].includes(unquote(words[0] as string))) return undefined;
 	return { key: key("execution", command.cmd ?? command.command) };
 }
 
-// An intentionally narrow token alphabet excludes expansion, quoting, comments,
-// shell operators and globbing. Paths cannot start with an option or tilde.
-const plainToken = (v: string) => /^[A-Za-z0-9_./:@%+,=-]+$/.test(v) && !v.startsWith("-");
+// Remove exactly one single-quote pair, then require the same narrow alphabet
+// even for quoted data. Option prefixes are allowed only in flag positions.
+const unquote = (v: string) => v.startsWith("'") && v.endsWith("'") ? v.slice(1, -1) : v;
+const LITERAL_TOKEN = /^[A-Za-z0-9_./][A-Za-z0-9_./:@+,-]*$/;
+const plainToken = (v: string) => LITERAL_TOKEN.test(unquote(v));
 const RG_FLAGS = new Set(["-n", "-i", "-w", "-l", "-F", "--no-heading"]);
 
 /** Recognize entire literal read/search commands; never split shell stages. */
@@ -221,20 +233,27 @@ function shellEvidence(args: Json, cwd?: string | null): Evidence | undefined {
 	} else if (cat) file = cat[1];
 	if (file !== undefined) {
 		if (!plainToken(file)) return undefined;
+		file = unquote(file);
 		const target = fileIdentity(file, cwd);
 		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-shell", fileKey(file, cwd)) };
 	}
 	const words = cmd.split(" ");
 	const name = words.shift();
+	const flags: string[] = [];
 	if (name === "rg") {
-		while (words[0]?.startsWith("-")) {
-			if (!RG_FLAGS.has(words.shift() as string)) return undefined;
+		while (words[0] && unquote(words[0]).startsWith("-")) {
+			const flag = unquote(words.shift() as string);
+			if (!RG_FLAGS.has(flag)) return undefined;
+			flags.push(flag);
 		}
 	} else if (name === "grep" && words.shift() === "-rn") {
 		// grep has exactly one supported option spelling.
 	} else return undefined;
 	if (words.length === 0 || !words.every(plainToken)) return undefined;
-	return { action: "search", key: key("search-shell", cmd) };
+	const pattern = unquote(words[0] as string);
+	const scopes = words.length === 1 ? [cwd] : words.slice(1).map(unquote);
+	if (!scopes.every((path) => typeof path === "string" && fileIdentity(path, cwd) !== null)) return undefined;
+	return { action: "search", key: key("search-shell", name, flags, pattern, scopes.map((path) => fileKey(path as string, cwd))) };
 }
 
 /** The only sources eligible for enrichment and subsequent merging. */
@@ -391,16 +410,17 @@ export function normalizeEquivalent(
 	for (const [id, source] of sources) {
 		if (source.subagent_id || source.kind !== "tool_call") continue;
 		const members = grouped.get(id) ?? [];
-		if (unresolvedPath(source, cwd)) {
+		const normalizedRun = members.length > 0 && members.every((step) => step.action === "test" || step.action === "run") &&
+			!["exec", "write_stdin"].includes(String(source.attributes[ATTR.TOOL_NAME]));
+		const issue = pathIssue(source, cwd, normalizedRun);
+		if (issue) {
 			unresolved.add(id);
-			reasons.add("unresolved-path");
+			reasons.add(issue);
 			if (members.length === 0) segment++;
 		}
 		if (sourceNormalizationTruncated(source, cwd)) reasons.add("normalizer-cap-or-unsupported-shape");
 		const member = members[0];
 		let evidence = allowlistedEvidence(source, cwd, member?.status === "ok");
-		const normalizedRun = members.length > 0 && members.every((step) => step.action === "test" || step.action === "run") &&
-			!["exec", "write_stdin"].includes(String(source.attributes[ATTR.TOOL_NAME]));
 		if (normalizedRun) normalizedRuns.add(id);
 		// Test classification alone is not source evidence. Generic run sources
 		// retain their existing unsupported accounting even when plainly literal.

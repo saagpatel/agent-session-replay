@@ -696,6 +696,8 @@ test("test sources fail closed on shell syntax and execution scope options", () 
 		"pnpm test\n",
 		"pnpm test # comment",
 		"pnpm test *.ts",
+		"pnpm test --grep=x",
+		"pnpm test =node",
 		"bash -lc 'pnpm test'",
 		"if pnpm test",
 		"then pnpm test",
@@ -756,7 +758,7 @@ test("accepted tests retain exact literal arguments and argv wrappers in their k
 			}
 		}
 	}
-	for (const command of ["pnpm test -- --grep x", "pnpm run test", "pnpm test --grep=x"]) {
+	for (const command of ["pnpm test -- --grep x", "pnpm run test"]) {
 		const result = alignEquivalent(trace([shell("pnpm test")]), trace([shell(command)]));
 		assert.equal(result.incomplete, false, command);
 		assert.equal(result.equivalent, false, command);
@@ -874,6 +876,137 @@ test("retained steps without allowlist evidence cannot bypass incomplete account
 	assert.equal(n.incomplete, true);
 	assert.equal(n.events[1]?.action, "other");
 	assert.equal(n.events.length, 3);
+});
+
+test("zsh executable expansion is never evidence of a literal workspace read", () => {
+	const expanded = trace([["shell", { cmd: ["zsh", "-c", "head -n 5 =node"] }]]);
+	const literal = trace([read(1, 5, "=node")]);
+	const result = alignEquivalent(expanded, literal);
+	assert.equal(result.incomplete, true);
+	assert.equal(result.equivalent, false);
+	assert.ok(result.incompleteReasons.includes("unsupported-source"));
+	assert.equal(result.left.events[0]?.action, "other");
+});
+
+test("shell literal token table covers operands, patterns, execution arguments and flag bodies", () => {
+	const accepted = ["a.ts", "_token", "0", "./src/a.ts", "/work/external/a.ts", "a:b@c+d,e-f", "a-b"];
+	const rejected = ["=node", "a=b", "~", "~user/a", "!token", "a!b", "{a,b}", "a%b", "%1", "é.ts", "a\\b", "a\"b", "a'b", "a$b", "a`b", "a*b", "a?b", "a[b]", "a#b", ":a", "@a", "+a", ",a", "", "''", "''a''", "a b", "a\tb", "a\nb", "a\n", "a\r"];
+	for (const [tokens, complete] of [[accepted, true], [rejected, false]] as const) {
+		for (const token of tokens) {
+			// Bare whitespace separates valid arguments, and absence is a valid
+			// default search scope; only quoted forms represent these as tokens.
+			for (const word of token === "" || /\s/.test(token) ? [`'${token}'`] : [token, `'${token}'`]) {
+				for (const command of [
+					`cat ${word}`, `head -n 5 ${word}`, `sed -n '1,5p' ${word}`,
+					`rg token ${word}`, `grep -rn token ${word}`, `rg ${word} src`, `grep -rn ${word} src`,
+					`pnpm test ${word}`,
+				]) {
+					const t = trace([shell(command)]);
+					const result = alignEquivalent(t, t);
+					assert.equal(result.incomplete, !complete, command);
+					assert.equal(result.equivalent, complete, command);
+					if (!complete) assert.ok(result.incompleteReasons.includes("unsupported-source"), command);
+				}
+			}
+		}
+	}
+	for (const token of ["-n", "--no-heading", "--", "-"]) {
+		for (const word of [token, `'${token}'`]) {
+			for (const command of [`cat ${word}`, `head -n 5 ${word}`, `sed -n '1,5p' ${word}`, `rg token ${word}`, `grep -rn token ${word}`]) {
+				const t = trace([shell(command)]);
+				assert.equal(alignEquivalent(t, t).incomplete, true, command);
+			}
+		}
+	}
+	for (const flag of ["--grep=x", "--=node", "-~", "--!x", "--{a,b}", "--%1", "--é", "---grep", "--'grep'"]) {
+		for (const word of [flag, `'${flag}'`]) {
+			const t = trace([shell(`pnpm test ${word}`)]);
+			assert.equal(alignEquivalent(t, t).incomplete, true, word);
+		}
+	}
+	assert.equal(alignEquivalent(trace([shell("head -n 5 'a.ts'")]), trace([read(1, 5)])).equivalent, true);
+	// The sed script retains its exact syntax check rather than the token rule.
+	const sed = trace([shell("sed -n '1,5p;d' a.ts")]);
+	assert.equal(alignEquivalent(sed, sed).incomplete, true);
+});
+
+test("missing workspace roots fail closed for relative and omitted paths in every evidence class", () => {
+	const tools: Tool[] = [
+		["Read", { file_path: "a.ts", offset: 1, limit: 5 }],
+		["read_file", { path: "a.ts" }],
+		["Edit", { file_path: "a.ts", old_string: "a", new_string: "b" }],
+		["MultiEdit", { file_path: "a.ts", edits: [{ old_string: "a", new_string: "b" }] }],
+		["Write", { file_path: "a.ts", content: "b" }],
+		["write_file", { path: "a.ts", content: "b" }],
+		["Read", {}], ["read_file", {}],
+		["Edit", { old_string: "a", new_string: "b" }],
+		["Write", { content: "b" }], ["write_file", { content: "b" }],
+	];
+	for (const name of ["Grep", "Glob"]) {
+		for (const path of [undefined, "src", ".", "./src"]) tools.push([name, { pattern: "token", ...(path === undefined ? {} : { path }) }]);
+	}
+	for (const command of [
+		"cat a.ts", "head -n 5 a.ts", "sed -n '1,5p' a.ts", "rg token src", "rg -n token src", "rg token",
+		"grep -rn token src", "grep -rn token", "rg token /work/external/src src",
+		"pnpm test", "node --test /work/external/a.test.ts", "node build.js", "cat", "head -n 5",
+	]) {
+		tools.push(shell(command));
+		for (const name of ["shell", "shell_command", "exec_command"]) tools.push([name, { cmd: ["zsh", "-c", command] }]);
+	}
+	for (const tool of tools) {
+		for (const cwd of [undefined, "relative/root", ""]) {
+			const left = trace([tool]);
+			const right = trace([tool]);
+			left.run.workspace = right.run.workspace = cwd === undefined ? undefined : { cwd };
+			const result = alignEquivalent(left, right);
+			const label = JSON.stringify({ tool, cwd });
+			assert.equal(result.incomplete, true, label);
+			assert.equal(result.equivalent, false, label);
+			assert.ok(result.left.incompleteReasons.includes("unresolved-root"), label);
+			assert.ok(result.right.incompleteReasons.includes("unresolved-root"), label);
+			assert.deepEqual(expandAll(result.left), normalizeTrace(left));
+		}
+	}
+});
+
+test("omitted search scopes resolve only to known workspace roots", () => {
+	for (const name of ["Grep", "Glob"]) {
+		const omitted = trace([[name, { pattern: "token" }]]);
+		for (const path of [".", "/work/equiv"]) {
+			assert.equal(alignEquivalent(omitted, trace([[name, { pattern: "token", path }]])).equivalent, true, name);
+		}
+	}
+	for (const command of ["rg token", "rg -n token", "grep -rn token"]) {
+		const omitted = trace([shell(command)]);
+		for (const path of [".", "/work/equiv"]) {
+			assert.equal(alignEquivalent(omitted, trace([shell(`${command} ${path}`)])).equivalent, true, command);
+		}
+	}
+});
+
+test("absolute paths remain usable without a root and external search identities stay distinct", () => {
+	for (const build of [
+		(path: string): Tool => ["Read", { file_path: path, offset: 1, limit: 5 }],
+		(path: string): Tool => ["Edit", { file_path: path, old_string: "a", new_string: "b" }],
+		(path: string): Tool => ["Write", { file_path: path, content: "b" }],
+		(path: string): Tool => ["write_file", { path, content: "b" }],
+		(path: string): Tool => ["Grep", { pattern: "token", path }],
+		(path: string): Tool => ["Glob", { pattern: "*.ts", path }],
+		(path: string): Tool => shell(`head -n 5 ${path}`),
+		(path: string): Tool => shell(`rg token ${path}`),
+		(path: string): Tool => shell(`grep -rn token ${path}`),
+	]) {
+		for (const knownRoot of [true, false]) {
+			const left = trace([build("/work/external/a.ts")]);
+			const right = trace([build("/work/other/a.ts")]);
+			if (!knownRoot) delete left.run.workspace;
+			if (!knownRoot) delete right.run.workspace;
+			assert.equal(alignEquivalent(left, left).equivalent, true, JSON.stringify(left.steps[0]?.attributes));
+			const result = alignEquivalent(left, right);
+			assert.equal(result.incomplete, false);
+			assert.equal(result.equivalent, false);
+		}
+	}
 });
 
 test("expand round-trips every synthetic case and every existing fixture builder variant", () => {
