@@ -14,9 +14,10 @@ export interface Edge {
 
 /** Invalid source graphs and evidence gaps; unresolved operations are scoped by the validator. */
 export interface GraphDiagnostic {
-	reason: "dangling-parent" | "external-parent" | "causal-cycle" | "unlinked-subagent-result" | "ambiguous-subagent-invocation" | "unresolved-operation";
+	reason: "dangling-parent" | "external-parent" | "causal-cycle" | "unlinked-subagent-result" | "ambiguous-subagent-invocation" | "unresolved-operation" | "uncertain-access";
 	message: string;
 	step?: string;
+	writer?: string;
 	parent?: string;
 	subagentId?: string;
 	path?: string[];
@@ -269,6 +270,7 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	// Unknown starts stay eligible; known future starts can be skipped per path.
 	for (const writers of writes.values()) writers.sort((a, b) =>
 		(Number.isFinite(a.start) ? a.start : -Infinity) - (Number.isFinite(b.start) ? b.start : -Infinity));
+	const uncertainAccesses = new Set<string>();
 	const observe = (writers: Writer[], step: Step, kind: "file-read" | "test-write", evidence: string) => {
 		const { start, end } = interval(step);
 		const possible: Writer[] = [];
@@ -277,6 +279,19 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		for (const writer of writers) {
 			if (Number.isFinite(end) && Number.isFinite(writer.start) && writer.start > end) break;
 			if (writer.id === step.step_id) continue;
+			if ([writer.start, writer.end, start, end].every(Number.isFinite) && writer.start < end && start < writer.end) {
+				const key = JSON.stringify([writer.id, step.step_id, evidence]);
+				if (!uncertainAccesses.has(key)) {
+					uncertainAccesses.add(key);
+					diagnostics.push({
+						reason: "uncertain-access",
+						message: `${label(writer.id)} overlaps ${label(step.step_id)}; access order is uncertain (${evidence}).`,
+						step: step.step_id,
+						writer: writer.id,
+					});
+				}
+				continue;
+			}
 			possible.push(writer);
 			if (!writer.confirmed || !Number.isFinite(writer.start) || !Number.isFinite(writer.end) ||
 				!Number.isFinite(start) || writer.end > start) continue;

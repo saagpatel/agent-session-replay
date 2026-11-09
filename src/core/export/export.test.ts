@@ -224,7 +224,10 @@ test("builds evidenced links for interleaved sidechains and a parallel tool pair
 	assert.ok(happensBefore(graph, "b-last", "consume-b"));
 	assert.equal(happensBefore(graph, "parallel-left", "parallel-right"), false);
 	assert.equal(happensBefore(graph, "parallel-right", "parallel-left"), false);
-	assert.deepEqual(graph.diagnostics, []);
+	assert.deepEqual(graph.diagnostics.map(({ reason, step, writer }) => ({ reason, step, writer })), [
+		{ reason: "uncertain-access", step: "b-first", writer: "a-first" },
+	]);
+	assert.equal(happensBefore(graph, "a-first", "b-first"), false);
 });
 
 test("links only the first explicit parent-context consumer of a subagent result", () => {
@@ -947,9 +950,11 @@ test("reads and tests overlapping a replacement retain the original writer regar
 			const edges = graph.edges.filter((edge) => edge.to === "observer");
 			assert.deepEqual(edges.map(({ from, kind }) => [from, kind]), [
 				["original", kind === "read" ? "file-read" : "test-write"],
-				["replacement", kind === "read" ? "file-read" : "test-write"],
 			]);
+			assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.reason === "uncertain-access" &&
+				diagnostic.writer === "replacement" && diagnostic.step === "observer"));
 			assert.equal(validateExport(oneScene(trace, ["original", "replacement", "observer"]), trace).ok, true);
+			assert.equal(validateExport(oneScene(trace, ["original", "observer", "replacement"]), trace).ok, true);
 			const result = validateExport(oneScene(trace, ["replacement", "observer", "original"]), trace);
 			assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "original" && failure.b === "observer"));
 			// Once the replacement finishes, only it can supply the observed contents.
@@ -957,6 +962,32 @@ test("reads and tests overlapping a replacement retain the original writer regar
 			observer.ended_at = "2026-01-01T00:00:12Z";
 			assert.deepEqual(buildCausalGraph(trace).edges.filter((edge) => edge.to === "observer").map((edge) => edge.from), ["replacement"]);
 			assert.equal(validateExport(oneScene(trace, ["replacement", "observer", "original"]), trace).ok, true);
+		}
+	}
+});
+
+test("overlapping accesses allow either playback order but cannot prove a because caption", () => {
+	for (const nested of [false, true]) for (const writerFirst of [false, true]) {
+		const writer = nested ? nestedStep("Write", { file_path: "src/a.ts" }) : toolStep("write", "Write", { file_path: "src/a.ts" });
+		writer.step_id = "write";
+		writer.started_at = "2026-01-01T00:00:01Z";
+		writer.ended_at = "2026-01-01T00:00:04Z";
+		const read = toolStep("read", "Read", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:03Z" });
+		const trace = makeTrace(writerFirst ? [writer, read] : [read, writer]);
+		const graph = buildCausalGraph(trace);
+		assert.deepEqual(graph.edges, []);
+		for (const played of [["read", "write"], ["write", "read"]]) {
+			const manifest = oneScene(trace, played);
+			const result = validateExport(manifest, trace);
+			assert.equal(result.ok, true);
+			assert.deepEqual(result.failures, []);
+			assert.equal(result.warnings.length, 1);
+			assert.equal(result.warnings[0]!.reason, "uncertain-access");
+			assert.equal(result.warnings[0]!.writer, "write");
+			assert.equal(result.warnings[0]!.step, "read");
+			assert.match(result.warnings[0]!.message, nested ? /exec.*Read/ : /Write.*Read/);
+			manifest.captions.push({ id: "claim", sceneId: "scene-main", kind: "because", text: "The write supplied the read.", cause: "write", effect: "read" });
+			assert.ok(validateExport(manifest, trace).failures.some((failure) => failure.reason === "caption-unsupported-claim"));
 		}
 	}
 });
@@ -1013,7 +1044,8 @@ test("the explicit file-tool and literal shell allowlist extracts direct and nes
 		["write_file", { path: "src/a.ts", content: "new" }, "write"],
 		["Bash", { command: "cat src/a.ts" }, "read"],
 		["exec_command", { cmd: "sed -n '1,4p' src/a.ts" }, "read"],
-		["shell", { command: "head -n 4 src/a.ts" }, "read"],
+		["shell", { command: ["bash", "-lc", "head -n 4 src/a.ts"] }, "read"],
+		["local_shell", { command: ["sh", "-c", "cat src/a.ts"] }, "read"],
 		["exec_command", { cmd: "cat a.ts", workdir: "/work/project/src" }, "read"],
 		["Bash", { command: "pnpm test" }, "test"],
 	];
@@ -1024,6 +1056,70 @@ test("the explicit file-tool and literal shell allowlist extracts direct and nes
 				kind === "test" ? { kind } : { kind, path: "src/a.ts" },
 			], unresolved: false,
 		}, `${name}: ${JSON.stringify(args)}`);
+	}
+});
+
+test("shell argument keys and command fields are allowlisted in direct and nested calls", () => {
+	const commands: Array<[string, Record<string, unknown>]> = [
+		["Bash", { command: "cat a.ts" }],
+		["exec_command", { cmd: "cat a.ts" }],
+		["shell", { command: ["bash", "-lc", "cat a.ts"] }],
+		["local_shell", { command: ["zsh", "-c", "cat a.ts"] }],
+	];
+	for (const [name, command] of commands) {
+		const allowed = { ...command, workdir: "/work/project/src", description: "Read a file", timeout: 1000, timeout_ms: 1000, yield_time_ms: 100, max_output_tokens: 200 };
+		for (const step of [toolStep("operation", name, allowed), nestedStep(name, allowed)]) {
+			assert.deepEqual(operationEvidence(step, "/work/project"), {
+				operations: [{ kind: "read", path: "src/a.ts" }], unresolved: false,
+			});
+		}
+		const unsupported: Record<string, unknown> = {
+			shell: "/work/mutator", login: false, env: { MODE: "mutate" }, tty: false,
+			sandbox: false, sandbox_permissions: "custom", run_in_background: false, unknown: null,
+			working_directory: "/work/project/src", cwd: "/work/project/src",
+		};
+		const invalid = Object.entries(unsupported).map(([key, value]) => ({ ...command, [key]: value }));
+		// Even an identical alias is not the command field this tool accepts.
+		invalid.push({ ...command, [name === "exec_command" ? "command" : "cmd"]: command[name === "exec_command" ? "cmd" : "command"] });
+		for (const args of invalid) for (const step of [toolStep("operation", name, args), nestedStep(name, args)]) {
+			const context = `${name} ${JSON.stringify(args)} (${step.attributes[ATTR.TOOL_NAME]})`;
+			assert.equal(operationEvidence(step).unresolved, true, context);
+			assert.deepEqual(operationEvidence(step).operations, [], context);
+			const trace = makeTrace([step, toolStep("read-b", "Read", { file_path: "src/b.ts" })]);
+			assert.equal(validateExport(oneScene(trace, ["operation", "read-b"]), trace).ok, true, context);
+			const reversed = validateExport(oneScene(trace, ["read-b", "operation"]), trace);
+			assert.equal(reversed.ok, false, context);
+			assert.ok(reversed.failures.some((failure) => failure.reason === "unresolved-operation"), context);
+			assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order"), context);
+		}
+	}
+	for (const [name, args] of [
+		["Bash", { cmd: "cat a.ts" }], ["exec_command", { command: "cat a.ts" }],
+		["Bash", { command: ["bash", "-lc", "cat a.ts"] }], ["exec_command", { cmd: ["bash", "-lc", "cat a.ts"] }],
+		["shell", { command: "cat a.ts" }], ["local_shell", { cmd: "cat a.ts" }],
+		["shell", { command: ["/work/mutator", "-c", "cat a.ts"] }],
+		["local_shell", { command: ["bash", "-lc", "cat a.ts", "extra"] }],
+	] as Array<[string, Record<string, unknown>]>) for (const step of [toolStep("operation", name, args), nestedStep(name, args)]) {
+		assert.equal(operationEvidence(step).unresolved, true, `${name} ${JSON.stringify(args)}`);
+	}
+});
+
+test("parsed Codex direct and nested shell overrides remain global barriers", () => {
+	const args = { cmd: "cat src/a.ts", shell: "/work/mutator" };
+	const direct = parseCodexTranscript([
+		{ type: "session_meta", payload: { id: "shell-override", cwd: "/work/project" } },
+		{ type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "override", arguments: JSON.stringify(args) } },
+		{ type: "response_item", payload: { type: "function_call_output", call_id: "override", output: "Process exited with code 0" } },
+	].map((line) => JSON.stringify(line)).join("\n"));
+	const nested = rollout([`text(await tools.exec_command(${JSON.stringify(args)}));`]);
+	for (const parsed of [direct, nested]) {
+		assert.equal(parsed.steps.length, 1);
+		assert.equal(operationEvidence(parsed.steps[0]!).unresolved, true);
+		const trace = makeTrace([...parsed.steps, toolStep("read-b", "Read", { file_path: "src/b.ts" })]);
+		const id = parsed.steps[0]!.step_id;
+		const result = validateExport(oneScene(trace, ["read-b", id]), trace);
+		assert.equal(result.ok, false);
+		assert.ok(result.failures.some((failure) => failure.reason === "unresolved-operation"));
 	}
 });
 

@@ -54,7 +54,10 @@ const PATH_TOOLS: Record<string, { kind: "read" | "write"; keys: string[] }> = {
 	read_file: { kind: "read", keys: ["path", "file_path"] },
 	write_file: { kind: "write", keys: ["path", "file_path"] },
 };
-const SHELL_TOOLS = new Set(["Bash", "exec_command", "shell"]);
+const SHELL_TOOLS = new Set(["Bash", "exec_command", "shell", "local_shell"]);
+const SHELL_KEYS = new Set([
+	"command", "cmd", "workdir", "description", "timeout", "timeout_ms", "yield_time_ms", "max_output_tokens",
+]);
 const CONTENT_EDITS = new Set(["Edit", "MultiEdit", "NotebookEdit"]);
 
 export interface OperationEvidence {
@@ -130,10 +133,16 @@ export function operationEvidence(step: Step, cwd?: string | null): OperationEvi
 	const operations: FileOperation[] = [];
 	const reasons: string[] = [];
 	for (const call of calls) {
+		if (SHELL_TOOLS.has(call.tool)) {
+			const args = call.arguments();
+			const evidence = args ? directOperations(call.tool, args, cwd) : unknown("Nested shell arguments are not fully literal.");
+			operations.push(...evidence.operations);
+			if (evidence.unresolved) reasons.push(evidence.reason!);
+			continue;
+		}
 		const nested: Record<string, unknown> = {};
 		const keys = call.tool === "apply_patch" ? [null]
-			: Object.hasOwn(PATH_TOOLS, call.tool) ? PATH_TOOLS[call.tool]!.keys
-			: SHELL_TOOLS.has(call.tool) ? ["cmd", "command", "workdir", "working_directory", "cwd"] : [];
+			: Object.hasOwn(PATH_TOOLS, call.tool) ? PATH_TOOLS[call.tool]!.keys : [];
 		let dynamic = false;
 		for (const key of keys) {
 			const arg = call.argument(key);
@@ -184,9 +193,18 @@ function directOperations(name: string, args: Record<string, unknown>, cwd?: str
 		return unresolved || !operations.length ? unknown("Patch is missing targets or contains unsupported directives.", operations) : known(operations);
 	}
 	if (!SHELL_TOOLS.has(name)) return unknown("Tool is outside the operation allowlist.");
-	const command = literalArgument(args, ["command", "cmd"]);
+	if (Object.keys(args).some((key) => !SHELL_KEYS.has(key))) return unknown("Shell arguments contain a key outside the allowlist.");
+	const commandKey = name === "exec_command" ? "cmd" : "command";
+	if (Object.hasOwn(args, commandKey === "cmd" ? "command" : "cmd")) return unknown("Shell command field does not match the tool.");
+	const value = args[commandKey];
+	// Codex shell tools take argv. Only an exact known shell wrapper is unwrapped;
+	// joining arbitrary argv could turn an unknown executable into an apparent read.
+	const command = name === "shell" || name === "local_shell"
+		? Array.isArray(value) && value.length === 3 && value.every((part) => typeof part === "string") &&
+			/^(?:sh|bash|zsh)$/.test(value[0]!) && /^-l?c$/.test(value[1]!) ? string(value[2]) : undefined
+		: string(value);
 	if (!command || /[\0\r\n]/.test(command)) return unknown("Shell command is missing or is not a single literal stage.");
-	const directoryKeys = ["workdir", "working_directory", "cwd"];
+	const directoryKeys = ["workdir"];
 	const workdir = literalArgument(args, directoryKeys);
 	if (directoryKeys.some((key) => Object.hasOwn(args, key)) && (!workdir || /[\0\r\n]/.test(workdir))) {
 		return unknown("Shell working directory is not an unambiguous literal path.");
