@@ -1,0 +1,15 @@
+{
+  "repo": "sidechain-tool",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "9e513e8"
+  },
+  "notes": "A Claude sidechain read remains represented in the branch graph."
+}

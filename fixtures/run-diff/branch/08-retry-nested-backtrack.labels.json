@@ -1,0 +1,20 @@
+{
+  "repo": "retry-nested-backtrack",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0",
+      "toolu_1",
+      "toolu_2"
+    ],
+    "retained": [
+      "toolu_3",
+      "toolu_4",
+      "toolu_5"
+    ]
+  },
+  "claim": {
+    "commitShort": "ad7791a"
+  },
+  "notes": "The retry has an edit hypothesis that is reverted; both the original and intermediate hypothesis are removed."
+}

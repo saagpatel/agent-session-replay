@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "multiedit-parts base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "11663039475e6abaacc8c46725747f711c244f33",
+      "message": "multiedit-parts final",
+      "files": {
+        "src/value.ts": "const result = 1;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

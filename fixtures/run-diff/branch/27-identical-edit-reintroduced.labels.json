@@ -1,0 +1,18 @@
+{
+  "repo": "identical-edit-reintroduced",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0",
+      "toolu_1"
+    ],
+    "retained": [
+      "toolu_2",
+      "toolu_3"
+    ]
+  },
+  "claim": {
+    "commitShort": "ddc1825"
+  },
+  "notes": "The same text is removed and reintroduced; origin belongs only to the later edit."
+}

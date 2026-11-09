@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "codex-superseded base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "34417452697e9545edacfc7d339cdf644e06926f",
+      "message": "codex-superseded final",
+      "files": {
+        "src/value.ts": "const value = 2;",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}
