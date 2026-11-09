@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The replacement order changes the sequential composition and is not commutative.",
+  "category": "adversarial-near-miss"
+}

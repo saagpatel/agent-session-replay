@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Overlapping ranges have the same union as the single bounded read.",
+  "category": "chunked-vs-bulk-reads"
+}

@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Read and search observations are both read-only and commute across the pair.",
+  "category": "read-order-permuted-across-files"
+}

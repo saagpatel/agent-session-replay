@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Adjacent Codex sed ranges coalesce to the same read as the Claude Code request.",
+  "category": "chunked-vs-bulk-reads"
+}

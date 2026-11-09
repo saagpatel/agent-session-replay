@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Identical unknown-range Read arguments remain comparable and are deduplicated as one event.",
+  "category": "unknown-range-reads"
+}

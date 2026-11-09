@@ -17,6 +17,8 @@
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"test:branch": "node --test --experimental-strip-types \"src/core/diff/branch/*.test.ts\"",
 		"run-diff:branches": "node --experimental-strip-types scripts/run-diff-branches.ts",
+		"test:equiv": "node --test --experimental-strip-types \"src/core/diff/equiv/*.test.ts\"",
+		"run-diff:equiv": "node --experimental-strip-types scripts/run-diff-equiv.ts",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",

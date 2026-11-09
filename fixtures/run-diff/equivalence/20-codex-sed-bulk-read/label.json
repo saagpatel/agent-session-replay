@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Equivalent inclusive sed and offset/limit ranges cover the same lines.",
+  "category": "codex-sed-vs-cc-read-offsets"
+}

@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The repeated searches differ by one query character.",
+  "category": "adversarial-near-miss"
+}

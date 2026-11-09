@@ -10,6 +10,9 @@ import { normalizeTrace } from "./normalize.ts";
 import { explainDivergence, rankDivergences } from "./rank.ts";
 import { clipForDisplay, type DiffStep, isFailure, type RunDiff, type RunSide, type RunVerdict } from "./types.ts";
 
+/** Opt-in work equivalence; the existing Run Diff path remains unchanged. */
+export { alignEquivalent as diffRunsEquivalent } from "./equiv/align.ts";
+
 const HARNESS_LABEL: Record<string, string> = {
 	"claude-code": "Claude Code",
 	codex: "Codex",

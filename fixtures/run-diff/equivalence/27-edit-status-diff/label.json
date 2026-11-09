@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The same edit has an observed failure on the left and success on the right.",
+  "category": "adversarial-near-miss"
+}

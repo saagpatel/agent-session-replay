@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The file matches but the replacement result differs.",
+  "category": "same-edits-different-file"
+}

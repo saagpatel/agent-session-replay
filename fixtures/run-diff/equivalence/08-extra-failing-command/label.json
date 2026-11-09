@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "Only the left run contains a command with an observed failure.",
+  "category": "extra-failing-command"
+}

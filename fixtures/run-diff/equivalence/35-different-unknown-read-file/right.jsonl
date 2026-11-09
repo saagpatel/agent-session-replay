@@ -1,0 +1,4 @@
+{"sessionId":"fixture-cc","cwd":"/work/equiv","type":"user","uuid":"u","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"Inspect the synthetic workspace."}}
+{"sessionId":"fixture-cc","cwd":"/work/equiv","type":"assistant","uuid":"a-0","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"call-0","name":"Read","input":{"file_path":"/work/equiv/src/b.ts"}}]}}
+{"sessionId":"fixture-cc","cwd":"/work/equiv","type":"user","uuid":"r-0","timestamp":"2026-01-01T00:01:01Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-0","is_error":false,"content":"synthetic result"}]}}
+{"sessionId":"fixture-cc","cwd":"/work/equiv","type":"assistant","uuid":"done","timestamp":"2026-01-01T00:02:00Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}
