@@ -445,6 +445,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	let modeSeq = 0;
 
 	events.forEach((ev, idx) => {
+		const firstStep = steps.length;
 		const ts = str(ev["timestamp"]) ?? lastTs;
 		if (str(ev["timestamp"])) lastTs = ev["timestamp"] as string;
 		const subId = ev["isSidechain"] ? (str(ev["agentId"]) ?? null) : null;
@@ -468,6 +469,11 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 			const { step, to } = modeStep(ev, etype, lastMode, modeSeq, ts);
 			lastMode = to;
 			steps.push(step);
+		}
+		if (str(ev["timestamp"]) === undefined) {
+			for (let index = firstStep; index < steps.length; index++) {
+				steps[index]!.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] = true;
+			}
 		}
 	});
 

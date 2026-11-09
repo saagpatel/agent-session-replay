@@ -114,6 +114,8 @@ export const ATTR = {
 	CLAUDE_AGENT_RESULT_KIND: "claude.agent_result_kind",
 	/** Kind of a parser-observed parent event omitted from steps. */
 	CLAUDE_PARENT_EVENT_KIND: "claude.parent_event_kind",
+	/** The source event lacked a timestamp; started_at uses the parser fallback. */
+	CLAUDE_TIMESTAMP_INFERRED: "claude.timestamp_inferred",
 	TOOL_ERROR: "tool.error.message",
 	/** The tool output reports failing tests, whatever the exit code said. */
 	TEST_FAILURES: "tool.output.test_failures",

@@ -14,7 +14,7 @@ export interface Edge {
 
 /** Invalid source graphs and evidence gaps; unresolved operations are scoped by the validator. */
 export interface GraphDiagnostic {
-	reason: "dangling-parent" | "external-parent" | "causal-cycle" | "unlinked-subagent-result" | "unresolved-operation";
+	reason: "dangling-parent" | "external-parent" | "causal-cycle" | "unlinked-subagent-result" | "ambiguous-subagent-invocation" | "unresolved-operation";
 	message: string;
 	step?: string;
 	parent?: string;
@@ -30,9 +30,12 @@ export interface CausalGraph {
 	adjacency: Map<string, string[]>;
 }
 
-/** Exclude conservative barriers when proving a dependency from evidence. */
+/** Exclude conservative barriers and unassigned child steps from causal proofs. */
 export function evidencedOnly(graph: CausalGraph): CausalGraph {
-	const edges = graph.edges.filter((edge) => edge.kind !== "unresolved-write");
+	const ambiguous = new Set(graph.diagnostics.filter((diagnostic) => diagnostic.reason === "ambiguous-subagent-invocation")
+		.map((diagnostic) => diagnostic.step));
+	const edges = graph.edges.filter((edge) => edge.kind !== "unresolved-write" &&
+		!ambiguous.has(edge.from) && !ambiguous.has(edge.to));
 	const adjacency = new Map<string, string[]>();
 	for (const edge of edges) {
 		const neighbors = adjacency.get(edge.from) ?? [];
@@ -113,6 +116,65 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		sidechains.set(step.subagent_id, chain);
 	}
 	const indices = new Map(trace.steps.map((step, index) => [step.step_id, index]));
+	const invocations = new Map<string, Step[]>();
+	for (const spawn of trace.steps) {
+		const child = spawn.attributes[ATTR.AGENT_SPAWNS];
+		if (typeof child !== "string") continue;
+		const calls = invocations.get(child) ?? [];
+		calls.push(spawn);
+		invocations.set(child, calls);
+	}
+	const segments = new Map<string, Step[]>();
+	const incompleteInvocations = new Set<string>();
+	for (const [child, chain] of sidechains) {
+		const calls = invocations.get(child) ?? [];
+		const start = (step: Step) => step.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] === true
+			? NaN : Date.parse(step.started_at);
+		const ordered = [...calls].sort((a, b) => start(a) - start(b));
+		const knownStarts = ordered.every((call) => Number.isFinite(start(call)));
+		for (const step of chain) {
+			const time = start(step);
+			// Equal invocation starts cannot be disambiguated by source order.
+			let index = -1;
+			if (knownStarts && Number.isFinite(time)) {
+				for (let candidate = ordered.length - 1; candidate >= 0; candidate--) {
+					if (start(ordered[candidate]!) <= time) {
+						index = candidate;
+						break;
+					}
+				}
+			}
+			const call = ordered[index];
+			const next = ordered[index + 1];
+			const resultTime = Date.parse(call?.ended_at ?? "");
+			const hasResult = call && (call.ended_at != null ||
+				Array.isArray(call.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS]) ||
+				["completed", "launched"].includes(String(call.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND])));
+			const end = Date.parse(step.ended_at ?? "");
+			if (!call || (index > 0 && start(ordered[index - 1]!) === start(call)) ||
+				(hasResult && (!Number.isFinite(resultTime) || time > resultTime)) ||
+				(next && Number.isFinite(end) && end > start(next))) {
+				// Dropping ambiguous work must not turn a partial segment into
+				// evidence of completion. Only the affected invocations lose it.
+				for (const candidate of ordered) {
+					if (!knownStarts || !Number.isFinite(time) || (call && start(candidate) === start(call)) ||
+						(next && candidate === next && Number.isFinite(end) && end > start(next))) {
+						incompleteInvocations.add(candidate.step_id);
+					}
+				}
+				diagnostics.push({
+					reason: "ambiguous-subagent-invocation",
+					message: `${label(step.step_id)} cannot be assigned to one subagent invocation from recorded timestamps.`,
+					step: step.step_id,
+					subagentId: child,
+				});
+				continue;
+			}
+			const segment = segments.get(call.step_id) ?? [];
+			segment.push(step);
+			segments.set(call.step_id, segment);
+		}
+	}
 	for (const spawn of trace.steps) {
 		const child = spawn.attributes[ATTR.AGENT_SPAWNS];
 		if (typeof child !== "string") continue;
@@ -126,12 +188,22 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			});
 			continue;
 		}
-		for (const step of chain) add(spawn.step_id, step.step_id, "spawn", ATTR.AGENT_SPAWNS);
-		const last = chain.at(-1)!;
+		const segment = segments.get(spawn.step_id) ?? [];
+		for (const step of segment) add(spawn.step_id, step.step_id, "spawn", ATTR.AGENT_SPAWNS);
+		const last = segment.at(-1);
+		if (!last) {
+			diagnostics.push({
+				reason: "unlinked-subagent-result",
+				message: `${label(spawn.step_id)} has no assigned child steps proving a completed result.`,
+				step: spawn.step_id,
+				subagentId: child,
+			});
+			continue;
+		}
 		const lastIndex = indices.get(last.step_id)!;
 		const resultTime = Date.parse(spawn.ended_at ?? "");
 		const completed = spawn.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] === "completed" &&
-			Number.isFinite(resultTime) && chain.every((step) => {
+			!incompleteInvocations.has(spawn.step_id) && Number.isFinite(resultTime) && segment.every((step) => {
 				const end = Date.parse(step.ended_at ?? "");
 				return Number.isFinite(end) && end <= resultTime;
 			});
@@ -148,7 +220,7 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 				// A completed result covers every child step, including parallel
 				// tools with no dependency on the final step in source order.
 				const resultReference = referencesResult(consumer);
-				for (const step of resultReference ? chain : [last]) add(step.step_id, consumer.step_id, "consumer", resultReference
+				for (const step of resultReference ? segment : [last]) add(step.step_id, consumer.step_id, "consumer", resultReference
 					? "parent references Agent result-event"
 					: "first later parent-context step explicitly referencing subagent endpoint");
 			}

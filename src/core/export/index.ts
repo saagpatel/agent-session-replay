@@ -27,7 +27,8 @@ export function validateExport(input: unknown, trace: Trace): { ok: boolean; fai
 	}
 	const warnings: GraphDiagnostic[] = [];
 	const diagnostics = graph.diagnostics.filter((diagnostic) => {
-		if (diagnostic.reason === "external-parent" || diagnostic.reason === "unlinked-subagent-result") {
+		if (diagnostic.reason === "external-parent" || diagnostic.reason === "unlinked-subagent-result" ||
+			diagnostic.reason === "ambiguous-subagent-invocation") {
 			warnings.push(diagnostic);
 			return false;
 		}
