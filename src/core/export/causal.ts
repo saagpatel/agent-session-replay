@@ -179,7 +179,14 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 				// A completed exec proves invocation, not its individual write results.
 				const confirmed = step.status === "ok" && Boolean(step.ended_at) && !evidence.unresolved &&
 					name !== "exec" && (name !== "apply_patch" || step.attributes[ATTR.PATCH_CONFIRMED] === true);
-				const writers = confirmed ? new Set<string>() : (writes.get(operation.path) ?? new Set<string>());
+				const writers = writes.get(operation.path) ?? new Set<string>();
+				if (confirmed) {
+					const start = Date.parse(step.started_at);
+					for (const writer of writers) {
+						const end = Date.parse(steps.get(writer)?.ended_at ?? "");
+						if (Number.isFinite(start) && Number.isFinite(end) && end <= start) writers.delete(writer);
+					}
+				}
 				writers.add(step.step_id);
 				writes.set(operation.path, writers);
 				allWrites.add(step.step_id);

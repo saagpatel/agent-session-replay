@@ -535,8 +535,8 @@ test("keeps distinct outside-workspace absolute paths from aliasing by tail", ()
 
 test("stops file read dependencies at a confirmed content-independent write to that path", () => {
 	const trace = makeTrace([
-		toolStep("first-write", "Write", { file_path: "src/a.ts" }),
-		toolStep("second-write", "Write", { file_path: "src/a.ts" }, { status: "ok", ended_at: "2026-01-01T00:00:01Z" }),
+		toolStep("first-write", "Write", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:01Z" }),
+		toolStep("second-write", "Write", { file_path: "src/a.ts" }, { status: "ok", started_at: "2026-01-01T00:00:01Z", ended_at: "2026-01-01T00:00:02Z" }),
 		toolStep("read", "Read", { file_path: "src/a.ts" }),
 	]);
 	const graph = buildCausalGraph(trace);
@@ -826,8 +826,8 @@ test("only confirmed successful direct overwrites retire earlier possible writer
 	const confirmed = { status: "ok" as const, ended_at: "2026-01-01T00:00:01Z" };
 	const trace = makeTrace([
 		toolStep("first", "Write", args, confirmed),
-		toolStep("uncertain", "Write", args, { status: "error" }),
-		toolStep("replacement", "Write", args, confirmed),
+		toolStep("uncertain", "Write", args, { status: "error", ended_at: "2026-01-01T00:00:01Z" }),
+		toolStep("replacement", "Write", args, { ...confirmed, started_at: "2026-01-01T00:00:01Z" }),
 		toolStep("read", "Read", { file_path: "src/a.ts" }),
 		toolStep("test", "Bash", { command: "pnpm test" }),
 	]);
@@ -835,14 +835,38 @@ test("only confirmed successful direct overwrites retire earlier possible writer
 	assert.deepEqual(edges.map(({ from, to }) => [from, to]), [["replacement", "read"], ["replacement", "test"]]);
 });
 
+test("confirmed overwrites retain overlapping and unordered writers for reads and tests", () => {
+	const args = { file_path: "src/a.ts", content: "new" };
+	for (const nested of [false, true]) for (const end of ["2026-01-01T00:00:10Z", undefined, "invalid"]) {
+		const first = nested ? nestedStep("Write", args) : toolStep("first", "Write", args);
+		first.step_id = "first";
+		first.status = "ok";
+		first.ended_at = end;
+		const trace = makeTrace([
+			first,
+			toolStep("replacement", "Write", args, {
+				status: "ok", started_at: "2026-01-01T00:00:01Z", ended_at: "2026-01-01T00:00:02Z",
+			}),
+			toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:11Z" }),
+			toolStep("test", "Bash", { command: "pnpm test" }, { started_at: "2026-01-01T00:00:12Z" }),
+		]);
+		const edges = buildCausalGraph(trace).edges;
+		for (const from of ["first", "replacement"]) for (const [to, kind] of [["read", "file-read"], ["test", "test-write"]]) {
+			assert.ok(edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), `${nested} ${end} ${from} ${to}`);
+		}
+		const result = validateExport(oneScene(trace, ["replacement", "read", "first", "test"]), trace);
+		assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "first" && failure.b === "read"));
+	}
+});
+
 test("a direct patch retires earlier writers only when its own result confirms application", () => {
 	for (const confirmed of [false, true]) {
 		const patch = toolStep("patch", "apply_patch", { input: "*** Begin Patch\n*** Add File: src/a.ts\n+new\n*** End Patch" }, {
-			status: "ok", ended_at: "2026-01-01T00:00:02Z",
+			status: "ok", started_at: "2026-01-01T00:00:01Z", ended_at: "2026-01-01T00:00:02Z",
 		});
 		if (confirmed) patch.attributes[ATTR.PATCH_CONFIRMED] = true;
 		const graph = buildCausalGraph(makeTrace([
-			toolStep("first", "Write", { file_path: "src/a.ts" }), patch,
+			toolStep("first", "Write", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:01Z" }), patch,
 			toolStep("read", "Read", { file_path: "src/a.ts" }),
 		]));
 		assert.equal(happensBefore(graph, "first", "read"), !confirmed);
