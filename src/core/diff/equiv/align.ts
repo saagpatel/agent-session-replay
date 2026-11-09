@@ -9,7 +9,11 @@ import type { CanonicalEvent, EquivalentAlignment, EquivalentNormalization } fro
 function alignmentSteps(normalized: EquivalentNormalization): DiffStep[] {
 	return normalized.events.map((event, index) => ({
 		...(normalized.steps[event.members[0] as number] as DiffStep),
-		index, action: event.action, target: event.target, status: event.status, signature: event.key,
+		index,
+		action: event.action,
+		target: event.target,
+		status: event.status,
+		signature: event.key,
 	}));
 }
 
@@ -43,8 +47,13 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 	}
 	const divergences = rows.filter((row) => row.relation !== "same" || row.statusDiffers);
 	return {
-		left, right, rows, divergences, truncated: aligned.truncated,
-		incomplete: reasons.size > 0, incompleteReasons: [...reasons],
+		left,
+		right,
+		rows,
+		divergences,
+		truncated: aligned.truncated,
+		incomplete: reasons.size > 0,
+		incompleteReasons: [...reasons],
 		equivalent: reasons.size === 0 && divergences.length === 0,
 	};
 }

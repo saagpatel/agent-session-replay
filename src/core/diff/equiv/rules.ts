@@ -1,7 +1,11 @@
 import type { CanonicalEvent, RuleId } from "./types.ts";
 
 /** Public documentation: every original member is retained; there is no noise-drop. */
-export const RULES: ReadonlyArray<{ id: RuleId; description: string; example: string }> = [
+export const RULES: ReadonlyArray<{
+	id: RuleId;
+	description: string;
+	example: string;
+}> = [
 	{
 		id: "read-coalesce",
 		description: "Union overlapping or adjacent reads of the same file across commuting reads/searches or unrelated known file edits. Whole-file-or-unknown reads merge only with identical source arguments. Keep the first member's position.",
