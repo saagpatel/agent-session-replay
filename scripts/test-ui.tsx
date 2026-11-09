@@ -145,6 +145,122 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	const unknownHtml = renderToStaticMarkup(<RunDiffView diff={unknownRead} leftFile="a" rightFile="b" />);
 	assert.match(unknownHtml, /rd-cell__unknown/);
 	assert.match(loader, /codex\.jsonl/);
+
+	// Without raw traces the new modes stay unavailable.
+	assert.match(html, /Work Equivalence/);
+	assert.match(html, /Branch Preservation/);
+	assert.match(html, /Load both transcripts to use this mode/);
+
+	// Work Equivalence shows a merged search, its rule, and the original steps.
+	const bulkSearch = parseTranscript(
+		toJsonl(
+			ccEvents("look", [
+				{ name: "Grep", pattern: "token" },
+				{ name: "Read", file: "src/b.ts" },
+				{ name: "Grep", pattern: "token" },
+			]),
+		),
+	).trace;
+	const oneSearch = parseTranscript(
+		toJsonl(
+			ccEvents("look", [
+				{ name: "Grep", pattern: "token" },
+				{ name: "Read", file: "src/b.ts" },
+			]),
+		),
+	).trace;
+	const equivHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(bulkSearch, oneSearch)}
+			leftFile="bulk.jsonl"
+			rightFile="one.jsonl"
+			leftTrace={bulkSearch}
+			rightTrace={oneSearch}
+			mode="equivalence"
+		/>,
+	);
+	assert.match(equivHtml, /rd-verdict-banner--equivalent/);
+	assert.match(equivHtml, />Equivalent</);
+	assert.match(equivHtml, /class="rd-rule">search-dedupe/);
+	assert.match(equivHtml, /rd-rule__count">2/);
+	assert.match(equivHtml, /rd-eq-original__label">search \(grep\)/);
+	assert.match(equivHtml, /rd-eq-original__id">toolu_0/);
+	assert.match(equivHtml, /rd-eq-original__id">toolu_2/);
+	assert.match(equivHtml, /rd-eq-original__status">ok/);
+	assert.match(equivHtml, /read-coalesce/);
+	assert.match(equivHtml, /edit-batch/);
+
+	// Incomplete evidence is named in plain words, and divergent rows use the linear highlight.
+	const incompleteHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diff}
+			leftFile="cc.jsonl"
+			rightFile="codex.jsonl"
+			leftTrace={left}
+			rightTrace={right}
+			mode="equivalence"
+		/>,
+	);
+	assert.match(incompleteHtml, /rd-verdict-banner--incomplete/);
+	assert.match(incompleteHtml, />Incomplete</);
+	assert.match(incompleteHtml, /A Codex exec cell may hide steps, so coverage is not proven/);
+	assert.match(incompleteHtml, /rd-row--(?:changed|left-only|right-only)/);
+
+	// Branch Preservation lists the retained path and the dropped retry.
+	const retry = parseTranscript(
+		toJsonl(
+			ccEvents("retry the tests", [
+				{ name: "Bash", command: "npm test", error: "fixture failure" },
+				{ name: "Bash", command: "npm test" },
+			]),
+		),
+	).trace;
+	const branchHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(retry, oneSearch)}
+			leftFile="retry.jsonl"
+			rightFile="one.jsonl"
+			leftTrace={retry}
+			rightTrace={oneSearch}
+			mode="preservation"
+		/>,
+	);
+	assert.match(branchHtml, /Commit link not checked: no repository snapshot loaded/);
+	assert.match(branchHtml, />Retained</);
+	assert.match(branchHtml, />Attempted and dropped</);
+	assert.match(branchHtml, /rd-branch-drop__kind">retry/);
+	assert.match(branchHtml, /rd-branch-drop__file">npm test/);
+	assert.match(branchHtml, /rd-branch-drop__count">1 step/);
+	assert.match(branchHtml, /Repeated signature after failed or unknown attempt/);
+	assert.match(branchHtml, /<details class="rd-branch-drop" open="">/);
+
+	// More than six dropped branches stay collapsed so the lane can still be scanned.
+	const crowded = parseTranscript(
+		toJsonl(
+			ccEvents(
+				"several retries",
+				["npm test", "npm run build", "npm run lint", "node build.js", "node lint.js", "node check.js", "make check"].flatMap(
+					(command) => [
+						{ name: "Bash" as const, command, error: "fixture failure" },
+						{ name: "Bash" as const, command },
+					],
+				),
+			),
+		),
+	).trace;
+	const crowdedHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(crowded, crowded)}
+			leftFile="crowded.jsonl"
+			rightFile="crowded.jsonl"
+			leftTrace={crowded}
+			rightTrace={crowded}
+			mode="preservation"
+		/>,
+	);
+	const droppedGroups = crowdedHtml.match(/<details class="rd-branch-drop"/g) ?? [];
+	assert.ok(droppedGroups.length > 6, `expected collapsed groups, saw ${droppedGroups.length}`);
+	assert.equal(crowdedHtml.includes('<details class="rd-branch-drop" open="">'), false);
 }
 
 console.log("UI SSR replay checks passed");
