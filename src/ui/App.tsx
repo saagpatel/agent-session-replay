@@ -42,6 +42,8 @@ interface LoadedDiff {
 	leftFile: string;
 	rightFile: string;
 	diff: RunDiff;
+	leftTrace: Trace;
+	rightTrace: Trace;
 }
 
 type Loaded = LoadedSession | LoadedControl | LoadedDiff;
@@ -104,6 +106,8 @@ export function App() {
 				leftFile: left.fileName,
 				rightFile: right.fileName,
 				diff,
+				leftTrace: left.trace,
+				rightTrace: right.trace,
 			});
 			setComparing(false);
 			setError(null);
@@ -236,6 +240,8 @@ export function App() {
 					diff={loaded.diff}
 					leftFile={loaded.leftFile}
 					rightFile={loaded.rightFile}
+					leftTrace={loaded.leftTrace}
+					rightTrace={loaded.rightTrace}
 				/>
 			) : comparing ? (
 				<RunDiffLoader

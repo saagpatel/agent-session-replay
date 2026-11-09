@@ -145,6 +145,195 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	const unknownHtml = renderToStaticMarkup(<RunDiffView diff={unknownRead} leftFile="a" rightFile="b" />);
 	assert.match(unknownHtml, /rd-cell__unknown/);
 	assert.match(loader, /codex\.jsonl/);
+
+	// Without raw traces the new modes stay unavailable.
+	assert.match(html, /Work Equivalence/);
+	assert.match(html, /Branch Preservation/);
+	assert.match(html, /Load both transcripts to use this mode/);
+
+	// Work Equivalence shows a merged search, its rule, and the original steps.
+	const bulkSearch = parseTranscript(
+		toJsonl(
+			ccEvents("look", [
+				{ name: "Grep", pattern: "token" },
+				{ name: "Read", file: "src/b.ts" },
+				{ name: "Grep", pattern: "token" },
+			]),
+		),
+	).trace;
+	const oneSearch = parseTranscript(
+		toJsonl(
+			ccEvents("look", [
+				{ name: "Grep", pattern: "token" },
+				{ name: "Read", file: "src/b.ts" },
+			]),
+		),
+	).trace;
+	const equivHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(bulkSearch, oneSearch)}
+			leftFile="bulk.jsonl"
+			rightFile="one.jsonl"
+			leftTrace={bulkSearch}
+			rightTrace={oneSearch}
+			mode="equivalence"
+		/>,
+	);
+	assert.match(equivHtml, /rd-verdict-banner--equivalent/);
+	assert.match(equivHtml, />Equivalent</);
+	assert.match(equivHtml, /class="rd-rule">search-dedupe/);
+	assert.match(equivHtml, /rd-rule__count">2/);
+	assert.match(equivHtml, /rd-eq-original__label">search \(grep\)/);
+	assert.match(equivHtml, /rd-eq-original__id">toolu_0/);
+	assert.match(equivHtml, /rd-eq-original__id">toolu_2/);
+	assert.match(equivHtml, /rd-eq-original__status">ok/);
+	assert.match(equivHtml, /read-coalesce/);
+	assert.match(equivHtml, /edit-batch/);
+
+	// Unsupported patches retain their identifying labels and source details on both sides.
+	const patchA = parseTranscript(toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/a.ts" }]))).trace;
+	const patchB = parseTranscript(toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }]))).trace;
+	const patchHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(patchA, patchB)} leftFile="a" rightFile="b" leftTrace={patchA} rightTrace={patchB} mode="equivalence" />,
+	);
+	const patchRow = patchHtml.match(/<div class="rd-row rd-row--changed">[\s\S]*?(?=<\/div><\/div><\/section>)/)?.[0];
+	assert.ok(patchRow, "patches should appear in a changed row");
+	assert.match(patchRow, /src\/a\.ts/);
+	assert.match(patchRow, /src\/b\.ts/);
+	assert.equal((patchRow.match(/<details class="rd-eq-originals">/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/>unsupported<\/span>/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/rd-eq-original__id/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/rd-eq-original__status/g) ?? []).length, 2);
+
+	// Distinct canonical evidence is visible and marked on both sides.
+	const { ATTR } = await import("../src/core/types.ts");
+	const evidenceTrace = (name: "Grep" | "Read" | "Write", args: Record<string, unknown>) => {
+		const tool = name === "Grep" ? { name, pattern: "placeholder" } as const : { name, file: "src/a.ts" } as const;
+		const trace = parseTranscript(toJsonl(ccEvents("look", [tool]))).trace;
+		const source = trace.steps.find((step) => step.attributes[ATTR.TOOL_NAME] === name);
+		assert.ok(source);
+		source.attributes[ATTR.TOOL_ARGS] = args;
+		return trace;
+	};
+	const renderEvidence = (a: typeof left, b: typeof left) => renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(a, b)} leftFile="a" rightFile="b" leftTrace={a} rightTrace={b} mode="equivalence" />,
+	);
+	const searchEvidence = renderEvidence(
+		evidenceTrace("Grep", { pattern: "alpha", path: "/work/a/fixture-repo/src" }),
+		evidenceTrace("Grep", { pattern: "beta", path: "/work/a/fixture-repo/src" }),
+	);
+	assert.match(searchEvidence, /pattern &quot;alpha&quot;/);
+	assert.match(searchEvidence, /pattern &quot;beta&quot;/);
+	assert.equal((searchEvidence.match(/rd-eq-evidence--changed/g) ?? []).length, 2);
+	const readEvidence = renderEvidence(
+		evidenceTrace("Read", { file_path: "/work/a/fixture-repo/src/a.ts", offset: 1, limit: 10 }),
+		evidenceTrace("Read", { file_path: "/work/a/fixture-repo/src/a.ts", offset: 20, limit: 10 }),
+	);
+	assert.match(readEvidence, /lines 1–10/);
+	assert.match(readEvidence, /lines 20–29/);
+	assert.equal((readEvidence.match(/rd-eq-evidence--changed/g) ?? []).length, 2);
+	const writeEvidence = renderEvidence(
+		evidenceTrace("Write", { file_path: "/work/a/fixture-repo/src/a.ts", content: "alpha\nsecond\nthird\nfourth" }),
+		evidenceTrace("Write", { file_path: "/work/a/fixture-repo/src/a.ts", content: "beta\nsecond\nthird\nfourth" }),
+	);
+	assert.match(writeEvidence, /rd-verdict-banner--divergent/);
+	const fingerprints = [...writeEvidence.matchAll(/content fingerprint ([0-9a-f]{8})/g)].map((match) => match[1]);
+	assert.equal(fingerprints.length, 2);
+	assert.notEqual(fingerprints[0], fingerprints[1]);
+	assert.match(writeEvidence, /<pre>alpha\nsecond\nthird\n…<\/pre>/);
+	assert.match(writeEvidence, /<pre>beta\nsecond\nthird\n…<\/pre>/);
+	assert.equal((writeEvidence.match(/rd-eq-evidence rd-eq-evidence--changed/g) ?? []).length, 2);
+
+	// Incomplete evidence is named in plain words, and divergent rows use the linear highlight.
+	const incompleteHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diff}
+			leftFile="cc.jsonl"
+			rightFile="codex.jsonl"
+			leftTrace={left}
+			rightTrace={right}
+			mode="equivalence"
+		/>,
+	);
+	assert.match(incompleteHtml, /rd-verdict-banner--incomplete/);
+	assert.match(incompleteHtml, />Incomplete</);
+	assert.match(incompleteHtml, /A Codex exec cell may hide steps, so coverage is not proven/);
+	assert.match(incompleteHtml, /rd-row--(?:changed|left-only|right-only)/);
+
+	// Branch Preservation lists the retained path and the dropped retry.
+	const retry = parseTranscript(
+		toJsonl(
+			ccEvents("retry the tests", [
+				{ name: "Bash", command: "npm test", error: "fixture failure" },
+				{ name: "Bash", command: "npm test" },
+			]),
+		),
+	).trace;
+	const branchHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(retry, oneSearch)}
+			leftFile="retry.jsonl"
+			rightFile="one.jsonl"
+			leftTrace={retry}
+			rightTrace={oneSearch}
+			mode="preservation"
+		/>,
+	);
+	assert.match(branchHtml, /Commit link not checked: no repository snapshot loaded/);
+	assert.match(branchHtml, />Retained</);
+	assert.match(branchHtml, />Attempted and dropped</);
+	assert.match(branchHtml, /rd-branch-drop__kind">retry/);
+	assert.match(branchHtml, /rd-branch-drop__file">npm test/);
+	assert.match(branchHtml, /rd-branch-drop__count">1 step/);
+	assert.match(branchHtml, /Repeated signature after failed or unknown attempt/);
+	assert.match(branchHtml, /<details class="rd-branch-drop" open="">/);
+
+	const shellWrite = parseTranscript(toJsonl(ccEvents("write", [{ name: "Bash", command: "echo hello > src/a.ts" }]))).trace;
+	const shellWriteHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(shellWrite, shellWrite)} leftFile="a" rightFile="b" leftTrace={shellWrite} rightTrace={shellWrite} mode="preservation" />,
+	);
+	const lane = shellWriteHtml.split('<section class="rd-branch__lane"')[1]!;
+	const retained = lane.split("<h3>Retained</h3>")[1]!.split("<h3>Attempted and dropped</h3>")[0]!;
+	const unknown = lane.split("<h3>Unknown</h3>")[1]!;
+	assert.doesNotMatch(retained, /src\/a\.ts/);
+	assert.match(unknown, /src\/a\.ts/);
+	assert.match(unknown, /end state is incomplete|lineage was proven/);
+
+	// More than six dropped branches stay collapsed so the lane can still be scanned.
+	const crowded = parseTranscript(
+		toJsonl(
+			ccEvents(
+				"several retries",
+				["npm test", "npm run build", "npm run lint", "node build.js", "node lint.js", "node check.js", "make check"].flatMap(
+					(command) => [
+						{ name: "Bash" as const, command, error: "fixture failure" },
+						{ name: "Bash" as const, command },
+					],
+				),
+			),
+		),
+	).trace;
+	const crowdedHtml = renderToStaticMarkup(
+		<RunDiffView
+			diff={diffRuns(crowded, crowded)}
+			leftFile="crowded.jsonl"
+			rightFile="crowded.jsonl"
+			leftTrace={crowded}
+			rightTrace={crowded}
+			mode="preservation"
+		/>,
+	);
+	const droppedGroups = crowdedHtml.match(/<details class="rd-branch-drop"/g) ?? [];
+	assert.ok(droppedGroups.length > 6, `expected collapsed groups, saw ${droppedGroups.length}`);
+	assert.equal(crowdedHtml.includes('<details class="rd-branch-drop" open="">'), false);
+}
+
+{
+	// Long diffs must never squeeze the mode switch out of view (it lives in a height-limited column).
+	const { readFileSync } = await import("node:fs");
+	const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+	const rule = css.match(/\.rd-modes\s*\{([^}]*)\}/)?.[1] ?? "";
+	assert.match(rule, /flex-shrink:\s*0/);
 }
 
 console.log("UI SSR replay checks passed");
