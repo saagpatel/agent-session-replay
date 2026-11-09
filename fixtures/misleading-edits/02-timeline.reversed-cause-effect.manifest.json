@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "source": {
+    "runId": "fixture-02-timeline",
+    "stepCount": 37,
+    "digest": "4d42f4545b2c3f5c"
+  },
+  "title": "Replay timeline",
+  "scenes": [
+    {
+      "id": "dispatch",
+      "range": {
+        "from": "spawn-a",
+        "to": "consume-a"
+      },
+      "steps": [
+        "spawn-a",
+        "spawn-b"
+      ]
+    },
+    {
+      "id": "worker-a",
+      "range": {
+        "from": "a-read",
+        "to": "b-done"
+      },
+      "steps": [
+        "a-read",
+        "a-plan",
+        "a-done"
+      ]
+    },
+    {
+      "id": "worker-b",
+      "range": {
+        "from": "a-read",
+        "to": "b-done"
+      },
+      "steps": [
+        "b-read",
+        "b-plan",
+        "b-done"
+      ]
+    },
+    {
+      "id": "test",
+      "range": {
+        "from": "test",
+        "to": "test"
+      },
+      "steps": [
+        "test"
+      ]
+    },
+    {
+      "id": "work",
+      "range": {
+        "from": "consume-a",
+        "to": "edit-b"
+      },
+      "steps": [
+        "consume-a",
+        "consume-b",
+        "gate",
+        "edit-a",
+        "edit-b"
+      ]
+    },
+    {
+      "id": "finish",
+      "range": {
+        "from": "review",
+        "to": "parallel-b"
+      },
+      "steps": [
+        "review",
+        "result",
+        "compact",
+        "parallel-a",
+        "parallel-b"
+      ]
+    }
+  ],
+  "captions": [
+    {
+      "id": "dispatch-caption",
+      "sceneId": "dispatch",
+      "kind": "shows",
+      "text": "Two workers start.",
+      "refs": [
+        "spawn-a",
+        "spawn-b"
+      ]
+    },
+    {
+      "id": "work-caption",
+      "sceneId": "work",
+      "kind": "because",
+      "text": "The recorded edits precede the test invocation.",
+      "cause": "edit-a",
+      "effect": "test"
+    },
+    {
+      "id": "finish-caption",
+      "sceneId": "finish",
+      "kind": "shows",
+      "text": "The context is compacted.",
+      "refs": [
+        "compact"
+      ]
+    }
+  ],
+  "expect": {
+    "reason": "reversed-causal-order"
+  }
+}
