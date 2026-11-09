@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
 import { validateExport } from "../src/core/export/index.ts";
 import { buildSidecar } from "../src/core/export/sidecar.ts";
-import { planScenePages } from "./export-replay.ts";
+import { planScenePages, promoteBundle } from "./export-replay.ts";
 
 function crowdedScene() {
 	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
@@ -39,6 +39,77 @@ test("a 401-character caption is rejected before rendering", () => {
 });
 
 const bundleFiles = ["evidence.json", "evidence.md", "replay.mp4"];
+for (const fault of ["rename-out second", "rename-in third", "undo previous", "undo new"] as const) {
+	test(`bundle promotion preserves every previous file: ${fault}`, () => {
+		const out = mkdtempSync(resolve(tmpdir(), "asr-promotion-test-"));
+		const staging = mkdtempSync(resolve(out, ".staging-"));
+		let previous = "";
+		const cleanup: string[] = [];
+		const attempts: Array<[string, string]> = [];
+		try {
+			for (const name of bundleFiles) {
+				writeFileSync(resolve(out, name), `previous ${name}`);
+				writeFileSync(resolve(staging, name), `new ${name}`);
+			}
+			let reported = "";
+			assert.throws(() => promoteBundle(staging, out, {
+				mkdir(path) { previous = path; mkdirSync(path); },
+				exists: existsSync,
+				rm(path, options) { cleanup.push(path); rmSync(path, options); },
+				rename(from, to) {
+					attempts.push([from, to]);
+					if ((fault === "rename-out second" && from === resolve(out, "evidence.md") && to === resolve(previous, "evidence.md")) ||
+						(fault !== "rename-out second" && from === resolve(staging, "replay.mp4")) ||
+						(fault === "undo previous" && from === resolve(previous, "evidence.md")) ||
+						(fault === "undo new" && from === resolve(out, "evidence.md") && to === resolve(staging, "evidence.md"))) {
+						throw new Error(`Injected EPERM: ${fault}`);
+					}
+					renameSync(from, to);
+				},
+			}), (error: unknown) => {
+				assert.ok(error instanceof Error);
+				reported = error.message;
+				return true;
+			});
+			const incomplete = fault.startsWith("undo");
+			assert.equal(existsSync(previous), incomplete);
+			assert.equal(existsSync(staging), incomplete);
+			assert.deepEqual(cleanup, incomplete ? [] : [previous, staging]);
+			for (const name of bundleFiles) {
+				const copies = [resolve(out, name), resolve(previous, name)].filter(existsSync);
+				assert.ok(copies.some((path) => readFileSync(path, "utf8") === `previous ${name}`), `Lost previous ${name}`);
+			}
+			if (incomplete) {
+				assert.ok(reported.includes(previous), reported);
+				assert.ok(reported.includes(staging), reported);
+				assert.ok(reported.includes(`${resolve(previous, "evidence.md")} -> ${resolve(out, "evidence.md")}`), reported);
+				assert.match(reported, /Manual restore required/);
+				// Restoring evidence.json follows the failed undo; rollback must continue.
+				assert.deepEqual(attempts.at(-1), [resolve(previous, "evidence.json"), resolve(out, "evidence.json")]);
+				assert.equal(readFileSync(resolve(out, "evidence.json"), "utf8"), "previous evidence.json");
+				if (fault === "undo new") {
+					assert.equal(readFileSync(resolve(out, "evidence.md"), "utf8"), "new evidence.md");
+					assert.equal(readFileSync(resolve(previous, "evidence.md"), "utf8"), "previous evidence.md");
+				}
+			} else assert.match(reported, /Injected EPERM/);
+		} finally { rmSync(out, { recursive: true, force: true }); }
+	});
+}
+
+test("promotion installs a bundle and cleans recovery directories with or without a previous bundle", () => {
+	for (const oldFiles of [[], bundleFiles]) {
+		const out = mkdtempSync(resolve(tmpdir(), "asr-promotion-test-"));
+		const staging = mkdtempSync(resolve(out, ".staging-"));
+		try {
+			for (const name of oldFiles) writeFileSync(resolve(out, name), `previous ${name}`);
+			for (const name of bundleFiles) writeFileSync(resolve(staging, name), `new ${name}`);
+			promoteBundle(staging, out);
+			assert.deepEqual(readdirSync(out).sort(), [...bundleFiles].sort());
+			for (const name of bundleFiles) assert.equal(readFileSync(resolve(out, name), "utf8"), `new ${name}`);
+		} finally { rmSync(out, { recursive: true, force: true }); }
+	}
+});
+
 for (const failure of ["invalid manifest", "malformed manifest", "missing Chrome", "missing ffmpeg", "layout failure", "long caption"] as const) {
 	test(`failed rerun preserves the existing bundle: ${failure}`, () => {
 		const dir = mkdtempSync(resolve(tmpdir(), "asr-bundle-test-"));

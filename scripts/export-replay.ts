@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
@@ -27,17 +27,46 @@ export function planScenePages(scene: EvidenceScene): ScenePage[] {
 }
 
 const bundleFiles = ["evidence.json", "evidence.md", "replay.mp4"];
-function promoteBundle(staging: string, out: string): void {
-	const previous = bundleFiles.filter((name) => existsSync(resolve(out, name)));
-	for (const name of previous) copyFileSync(resolve(out, name), resolve(staging, `previous-${name}`));
+export interface PromotionFs {
+	rename(from: string, to: string): void;
+	rm(path: string, options: { recursive: boolean; force: boolean }): void;
+	mkdir(path: string): void;
+	exists(path: string): boolean;
+}
+const promotionFs: PromotionFs = { rename: renameSync, rm: rmSync, mkdir: mkdirSync, exists: existsSync };
+class BundleRecoveryError extends Error {}
+
+/** Promotion owns cleanup; incomplete rollback keeps both directories for manual recovery. */
+export function promoteBundle(staging: string, out: string, fs: PromotionFs = promotionFs): void {
+	const previous = resolve(out, `.previous-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	fs.mkdir(previous);
+	const moves: Array<{ from: string; to: string }> = [];
+	const move = (from: string, to: string) => { fs.rename(from, to); moves.push({ from, to }); };
 	try {
-		for (const name of bundleFiles) rmSync(resolve(out, name), { force: true });
-		for (const name of bundleFiles) renameSync(resolve(staging, name), resolve(out, name));
+		for (const name of bundleFiles) {
+			if (fs.exists(resolve(out, name))) move(resolve(out, name), resolve(previous, name));
+		}
+		for (const name of bundleFiles) move(resolve(staging, name), resolve(out, name));
 	} catch (error) {
-		for (const name of bundleFiles) rmSync(resolve(out, name), { force: true });
-		for (const name of previous) renameSync(resolve(staging, `previous-${name}`), resolve(out, name));
+		const failures: string[] = [];
+		for (const { from, to } of moves.reverse()) {
+			try {
+				// A failed undo may leave a new file here; never overwrite that recovery copy.
+				if (fs.exists(from)) throw new Error(`Destination already exists: ${from}`);
+				fs.rename(to, from);
+			} catch (undoError) {
+				failures.push(`${to} -> ${from}: ${undoError instanceof Error ? undoError.message : String(undoError)}`);
+			}
+		}
+		if (failures.length) {
+			throw new BundleRecoveryError(`Promotion failed; rollback incomplete. Kept previous bundle: ${previous}\nKept staging: ${staging}\nManual restore required:\n${failures.join("\n")}`, { cause: error });
+		}
+		fs.rm(previous, { recursive: true, force: true });
+		fs.rm(staging, { recursive: true, force: true });
 		throw error;
 	}
+	fs.rm(previous, { recursive: true, force: true });
+	fs.rm(staging, { recursive: true, force: true });
 }
 
 export function main(args = process.argv.slice(2)): void {
@@ -59,6 +88,7 @@ export function main(args = process.argv.slice(2)): void {
 	const staging = mkdtempSync(resolve(out, ".staging-"));
 	let evidence: unknown;
 	let markdown = "";
+	let preserveStaging = false;
 	try {
 		const session = slug ? generateReplayFixtures().sessions.find((s) => s.slug === slug) : undefined;
 		if (slug && !session) throw new Error(`Unknown session: ${slug}`);
@@ -158,6 +188,7 @@ document.head.append(marker);
 		} finally { rmSync(temp, { recursive: true, force: true }); }
 		promoteBundle(staging, out);
 	} catch (error) {
+		preserveStaging = error instanceof BundleRecoveryError;
 		const message = error instanceof Error ? error.message : String(error);
 		const failed = mkdtempSync(resolve(out, `failed-${new Date().toISOString().replaceAll(":", "-")}-`));
 		writeFileSync(resolve(failed, "evidence.json"), `${JSON.stringify(evidence ?? { verdict: "INVALID", failures: [message] }, null, 2)}\n`);
@@ -165,7 +196,7 @@ document.head.append(marker);
 		writeFileSync(resolve(failed, "error.txt"), `${message}\n`);
 		console.error(`Export failed; evidence saved to ${failed}`);
 		throw error;
-	} finally { rmSync(staging, { recursive: true, force: true }); }
+	} finally { if (!preserveStaging) rmSync(staging, { recursive: true, force: true }); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
