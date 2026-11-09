@@ -113,6 +113,8 @@ export const ATTR = {
 	TEST_PASSES: "tool.output.test_passes",
 	/** Minimal identity reported by a successful `git commit` shell result. */
 	GIT_COMMIT: "tool.output.git_commit",
+	/** Zero-based exec-cell call ordinal that produced the commit evidence. */
+	GIT_COMMIT_CALL: "tool.output.git_commit_call",
 	/**
 	 * Codex command results (`ExecResult[]`): one per inner command of an `exec`
 	 * cell, in call order, or one for a plain-format command that yielded. A

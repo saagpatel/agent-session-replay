@@ -125,7 +125,8 @@ test("MultiEdit, sidechains, and every shell stage keep unique operation identit
 		new Set(graph.nodes.map((n) => `${n.stepId}:${n.part}`)).size,
 		graph.nodes.length,
 	);
-	assert.equal(graph.endState["src/a.ts"], "two\n");
+	assert.equal(graph.endState["src/a.ts"], null);
+	assert.equal(graph.endStateComplete, false);
 	for (const step of normalizeTrace(input))
 		assert.equal(
 			graph.nodes.filter(
@@ -310,13 +311,14 @@ test("retry supporting edits and nested backtracks preserve parent lineage", () 
 	assert.equal(first?.branchId, retry.id);
 });
 
-test("shell noise and directories preserve normalized targets without inventing edits", () => {
+test("shell noise and directories keep labels but cannot preserve lineage", () => {
 	const input = trace(
 		edit("known", "base", "idea"),
 		shell("read", "pwd; cd src && cat a.ts"),
 	);
 	const graph = buildBranchGraph(input, base);
-	assert.equal(graph.editEffects[0]?.lineage, "retained");
+	assert.equal(graph.editEffects[0]?.lineage, "unknown");
+	assert.equal(graph.endStateComplete, false);
 	assert.equal(
 		graph.nodes.filter(
 			(n) =>
@@ -331,7 +333,8 @@ test("shell noise and directories preserve normalized targets without inventing 
 		),
 		base,
 	);
-	assert.equal(moved.endState["src/a.ts"], "base\n");
+	assert.equal(moved.endState["src/a.ts"], null);
+	assert.equal(moved.endStateComplete, false);
 });
 
 test("empty file creation is distinct from an absent file", () => {
@@ -354,7 +357,6 @@ test("restore directories are explicit and staged-only options never imply a wor
 	for (const command of [
 		"git restore -- src",
 		"git checkout -- .",
-		"cd src && git stash",
 	]) {
 		const graph = buildBranchGraph(
 			trace(edit("change", "base", "idea"), shell("restore", command)),
@@ -391,7 +393,7 @@ test("a failed edit is not evidence of a superseded insertion", () => {
 	assert.ok(!graph.branches.some((branch) => branch.kind === "superseded"));
 });
 
-test("redirects from reads, searches and tests invalidate their output destinations", () => {
+test("redirects from reads, searches and tests invalidate the whole tree", () => {
 	for (const command of [
 		"git diff > src/a.ts",
 		"pnpm test > src/a.ts",
@@ -408,19 +410,18 @@ test("redirects from reads, searches and tests invalidate their output destinati
 		);
 		assert.equal(graph.endState["src/a.ts"], null, command);
 		assert.equal(graph.editEffects[0]?.lineage, "unknown", command);
-		if (graph.nodes.at(-1)?.action !== "run")
-			assert.equal(graph.endState["src/b.ts"], "other\n", command);
-		if (command.includes("src/new.ts")) assert.equal(graph.endState["src/new.ts"], null);
+		assert.equal(graph.endState["src/b.ts"], null, command);
+		assert.equal(graph.endStateComplete, false, command);
 	}
 });
 
-test("dynamic redirects fail closed while quoted redirect text and descriptors preserve content", () => {
-	for (const command of ["git diff > $OUTPUT", 'pnpm test > "$OUTPUT"', 'git diff "$(pnpm test > src/a.ts)"']) {
+test("all redirects fail closed while quoted redirect text stays literal", () => {
+	for (const command of ["pnpm test 2>&1", "git diff > $OUTPUT", 'pnpm test > "$OUTPUT"', 'git diff "$(pnpm test > src/a.ts)"']) {
 		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("redirect", command)), base);
 		assert.equal(graph.endStateComplete, false, command);
 		assert.equal(graph.endState["src/a.ts"], null, command);
 	}
-	for (const command of ["rg '>' src/a.ts", "pnpm test 2>&1", 'git diff -- ">"']) {
+	for (const command of ["rg '>' src/a.ts", 'git diff -- ">"']) {
 		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), shell("read", command)), base);
 		assert.equal(graph.endState["src/a.ts"], "idea\n", command);
 		assert.equal(graph.editEffects[0]?.lineage, "retained", command);
@@ -441,4 +442,129 @@ test("whole-tree reset and stash invalidate staged additions absent from the bas
 		assert.equal(graph.editEffects[0]?.lineage, "unknown", command);
 		assert.ok(!graph.branches.some((branch) => branch.kind === "backtrack"), command);
 	}
+});
+
+const unparsedCommands = [
+	'cat src/a.ts | python3 -c \'open("src/a.ts","w").write("gone")\'',
+	"find src -type f -delete", "find src -exec rm {} +", "rg idea src | xargs rm",
+	"tee src/a.ts", 'python3 -c \'open("src/a.ts","w").write("gone")\'',
+	'node -e \'require("fs").writeFileSync("src/a.ts","gone")\'',
+	"sed -i 's/idea/gone/' src/a.ts", "sed -n '1p' -i src/a.ts",
+	"sed -n '1p' src/a.ts --in-place", "sed -f script.sed src/a.ts",
+	"cd src && cat a.ts", "cd src && git restore a.ts", "cd src && git stash",
+	"MODE=test pnpm test", "env MODE=test pnpm test", "export MODE=test; cat src/a.ts",
+	"git diff > src/a.ts", "pnpm test >> src/a.ts", "pnpm test 2>&1",
+	"cat < src/a.ts", "cat <<< text", "cat <<EOF\ntext\nEOF",
+	'cat "$(node mutate.js)"', "cat `node mutate.js`", "cat src/a.ts; pnpm test",
+	"cat src/a.ts && cat src/b.ts", "pnpm test || true", "pnpm test &",
+	"git diff --output=src/a.ts", "git log --output src/a.ts", "git show -osrc/a.ts",
+	"rg --pre mutate idea src", "grep --exclude-from=src/a.ts idea src",
+	"head -c 10 src/a.ts", "ls -l src", "cat src/a.ts src/b.ts", "tail src/a.ts",
+	"git add src/a.ts && git commit -m fixture && cat src/a.ts", "git status; git commit -m fixture",
+	"git restore --staged src/a.ts", "printf fixture", "npm run build", "pwd",
+];
+
+function cell(input: string, parts = [{ kind: "chunk", result: { exit_code: 0, session_id: null, test_failures: false, test_passes: false } }]): Step {
+	const step = tool("cell", "exec", { input });
+	step.attributes[ATTR.EXEC_COMPLETED] = true;
+	step.attributes[ATTR.EXEC_PARTS] = parts;
+	return step;
+}
+
+test("only the explicit shell allowlist preserves lineage, directly and in exec cells", () => {
+	for (const command of unparsedCommands) {
+		for (const operation of [shell("command", command), cell(`text(await tools.exec_command(${JSON.stringify({ cmd: command, workdir: "/work/fixture" })}))`)]) {
+			const graph = buildBranchGraph(trace(edit("change", "base", "idea"), operation, tool("later", "Write", { path: "src/new.ts", content: "new" })), base);
+			assert.equal(graph.endStateComplete, false, command);
+			assert.equal(graph.endState["src/a.ts"], null, command);
+			assert.equal(graph.endState["src/b.ts"], null, command);
+			assert.equal(graph.endState["src/new.ts"], null, command);
+			assert.deepEqual(lineages(graph), ["unknown", "unknown"], command);
+			assert.ok(graph.branches.some((branch) => branch.reasons.some((reason) => reason.includes(command))), command);
+		}
+	}
+});
+
+test("literal reads, tests, tool reads and shell argv wrappers preserve lineage", () => {
+	for (const command of [
+		"cat src/a.ts", "sed -n '1,20p' src/a.ts", "sed -n '1,$p' src/a.ts", "head -n 5 src/a.ts",
+		"ls", "ls src", "rg -n -i -w -l -F -r --no-heading idea src", "grep -n idea src/a.ts",
+		"git status --short", "git diff -- src/a.ts", "git log --oneline", "git show HEAD", "pnpm test", "node --test test.ts",
+	]) {
+		for (const operation of [shell("read", command), tool("argv", "shell", { command: ["bash", "-lc", command] }), cell(`text(await tools.exec_command(${JSON.stringify({ cmd: command })}))`)]) {
+			const graph = buildBranchGraph(trace(edit("change", "base", "idea"), operation), base);
+			assert.equal(graph.endStateComplete, true, command);
+			assert.deepEqual(lineages(graph), ["retained"], command);
+		}
+	}
+	for (const name of ["Read", "Grep", "Glob", "TodoWrite", "read_file"]) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), tool("read", name, { path: "src/a.ts" })), base);
+		assert.deepEqual(lineages(graph), ["retained"], name);
+		assert.equal(graph.endStateComplete, true, name);
+	}
+});
+
+test("exec workdirs resolve restore paths and distinct calls keep their own commands", () => {
+	const input = 'text(await tools.exec_command({cmd:"git restore a.ts",workdir:"/work/fixture/src"})); text(await tools.exec_command({cmd:"cat src/b.ts"}));';
+	const operation = cell(input);
+	const parts = operation.attributes[ATTR.EXEC_PARTS] as unknown[];
+	operation.attributes[ATTR.EXEC_PARTS] = [...parts, ...parts];
+	const graph = buildBranchGraph(trace(edit("change", "base", "idea"), operation), base);
+	assert.equal(graph.endState["src/a.ts"], "base\n");
+	assert.deepEqual(lineages(graph), ["abandoned"]);
+	assert.equal(graph.nodes.find((node) => node.stepId === "cell")?.target, "git restore a.ts");
+	assert.equal(new Set(graph.nodes.map((node) => `${node.stepId}:${node.part}`)).size, graph.nodes.length);
+});
+
+test("nonliteral, non-straight-line cells and unlisted tools are unparsed writers", () => {
+	for (const input of [
+		'if (true) text(await tools.exec_command({cmd:"cat src/a.ts"}))',
+		'await tools.exec_command({cmd:"cat src/a.ts"})',
+		'text(await tools.exec_command({cmd:"cat src/a.ts",workdir}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts",...options}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts",cmd:"pnpm test"}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts",foo:mutate()}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts"})); mutate();',
+		'text(await tools.exec_command({cmd:command}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts" + suffix}))',
+		'text(await tools.exec_command({cmd:`cat ${target}`}))',
+		'text(await tools.exec_command({cmd:"cat src/a.ts\\u003b node mutate.js"}))',
+		"text(await tools.exec_command({cmd:'cat src/a.ts\\x3b node mutate.js'}))",
+	]) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), cell(input)), base);
+		assert.equal(graph.endStateComplete, false, input);
+		assert.deepEqual(lineages(graph), ["unknown"], input);
+	}
+	for (const name of ["update_plan", "ExitPlanMode", "WebSearch", "unknown_tool"]) {
+		const graph = buildBranchGraph(trace(edit("change", "base", "idea"), tool("unknown", name, { cmd: "cat src/a.ts" })), base);
+		assert.equal(graph.endStateComplete, false, name);
+	}
+});
+
+test("exec cells reconstruct confirmed patch and write_file payloads", () => {
+	const patch = "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-base\n+idea\n*** End Patch";
+	const operation = cell(`text(await tools.apply_patch(${JSON.stringify(patch)})); text(await tools.write_file({path:"src/b.ts",content:"next\\n"}));`);
+	operation.attributes[ATTR.EXEC_PARTS] = [{ kind: "empty-object" }, { kind: "empty-object" }];
+	const graph = buildBranchGraph(trace(operation), base);
+	assert.equal(graph.endStateComplete, true);
+	assert.deepEqual(lineages(graph), ["retained", "retained"]);
+	assert.deepEqual(graph.endState, { "src/a.ts": "idea\n", "src/b.ts": "next\n" });
+});
+
+test("confirmed patch moves track both source and destination", () => {
+	const operation = tool("move", "apply_patch", { input: "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/moved.ts\n@@\n-base\n+idea\n*** End Patch" });
+	operation.attributes[ATTR.PATCH_CONFIRMED] = true;
+	const graph = buildBranchGraph(trace(operation), base);
+	assert.equal(graph.endStateComplete, true);
+	assert.equal(Object.hasOwn(graph.endState, "src/a.ts"), false);
+	assert.equal(graph.endState["src/moved.ts"], "idea\n");
+	assert.deepEqual(lineages(graph), ["retained"]);
+	const pureMove = tool("pure-move", "apply_patch", { input: "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/moved.ts\n*** End Patch" });
+	pureMove.attributes[ATTR.PATCH_CONFIRMED] = true;
+	const moved = buildBranchGraph(trace(edit("change", "base", "idea"), pureMove), base);
+	assert.equal(moved.editEffects[0]?.lineage, "retained");
+	assert.equal(moved.endState["src/moved.ts"], "idea\n");
+	const uncertain = buildBranchGraph(trace(edit("change", "base", "idea"), pureMove, tool("pending", "write_file", { path: "src/moved.ts", content: "next" }, { ended_at: null })), base);
+	assert.equal(uncertain.editEffects[0]?.lineage, "unknown");
+	assert.equal(uncertain.endState["src/moved.ts"], null);
 });

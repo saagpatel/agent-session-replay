@@ -1,7 +1,9 @@
 /** Evidence-only branch reconstruction; no filesystem access or execution. */
-import { ATTR, type Trace } from "../../types.ts";
+import { ATTR, type ExecPart, type Trace } from "../../types.ts";
+import { shellCommand, shellEvidence, type ShellEvidence } from "../../shell-evidence.ts";
 import {
 	classifyCommand,
+	literalExecCalls,
 	normalizeTrace,
 	relPath,
 	splitStages,
@@ -17,6 +19,8 @@ import type {
 } from "./types.ts";
 
 type Json = Record<string, unknown>;
+const READ_TOOLS = new Set(["Read", "Grep", "Glob", "TodoWrite", "read_file"]);
+const SHELL_TOOLS = new Set(["Bash", "bash", "shell", "local_shell", "local_shell_call", "exec_command"]);
 const obj = (v: unknown): Json =>
 	typeof v === "object" && v !== null ? (v as Json) : {};
 const str = (v: unknown): string | undefined =>
@@ -28,6 +32,9 @@ interface Operation {
 	args: Json;
 	name: string;
 	command?: string;
+	evidence?: ShellEvidence;
+	call?: number;
+	unparsed?: string;
 	directoryStages?: string[];
 	patch?: string;
 }
@@ -38,62 +45,6 @@ interface FileState {
 interface Effect extends EditEffect {
 	total: number;
 	applied: boolean;
-}
-
-function shellCommand(args: Json): string | undefined {
-	const v = args["command"] ?? args["cmd"];
-	if (typeof v === "string") return v;
-	if (!Array.isArray(v) || !v.every((x) => typeof x === "string"))
-		return undefined;
-	return /sh$/.test(v[0] ?? "") && /^-l?c$/.test(v[1] ?? "")
-		? v.slice(2).join(" ")
-		: v.join(" ");
-}
-
-/** Output redirects write independently of the command's normalized action.
- * A null destination means shell expansion or syntax prevents naming the file.
- */
-function redirectTargets(command: string): Array<string | null> {
-	const wrapped = /^(?:\/bin\/)?(?:ba|z)?sh\s+-l?c\s+(['"])([\s\S]*)\1$/.exec(command.trim());
-	if (wrapped) return redirectTargets(wrapped[2]!);
-	const targets: Array<string | null> = [];
-	let quote = "";
-	for (let i = 0; i < command.length; i++) {
-		const ch = command[i]!;
-		if (ch === "\\" && quote !== "'") { i++; continue; }
-		if (quote !== "'" && (ch === "`" || (ch === "$" && command[i + 1] === "("))) {
-			// Substitutions execute shell code, including writes hidden inside quotes.
-			targets.push(null);
-		}
-		if (quote) { if (ch === quote) quote = ""; continue; }
-		if (ch === "'" || ch === '"') { quote = ch; continue; }
-		if (ch !== ">") continue;
-		if (command[i + 1] === ">" || command[i + 1] === "|") i++;
-		const descriptor = command[i + 1] === "&";
-		if (descriptor) i++;
-		while (/\s/.test(command[i + 1] ?? "") && i + 1 < command.length) i++;
-		let word = "";
-		let dynamic = false;
-		let operandQuote = "";
-		while (i + 1 < command.length) {
-			const next = command[i + 1]!;
-			if (!operandQuote && /[\s;|&<>]/.test(next)) break;
-			i++;
-			if (next === "\\" && operandQuote !== "'") {
-				word += command[++i] ?? "";
-				continue;
-			}
-			if (next === operandQuote) { operandQuote = ""; continue; }
-			if (!operandQuote && (next === "'" || next === '"')) { operandQuote = next; continue; }
-			if (operandQuote !== "'" && /[$`]/.test(next)) dynamic = true;
-			if (!operandQuote && /[*?\[~(){}]/.test(next)) dynamic = true;
-			word += next;
-		}
-		// Descriptor duplication/closure writes no filesystem destination.
-		if (descriptor && /^(?:\d+|-)$/.test(word)) continue;
-		targets.push(!word || dynamic || operandQuote ? null : word);
-	}
-	return targets;
 }
 
 function operations(trace: Trace): Operation[] {
@@ -145,6 +96,39 @@ function operations(trace: Trace): Operation[] {
 				},
 			});
 		};
+		if (name === "exec") {
+			const calls = literalExecCalls(str(args["input"]) ?? "");
+			if (!calls) {
+				for (const label of own.length ? own : [{ action: "run" as const, target: "exec", status }])
+					add(label.action, label.target, { unparsed: "exec cell" }, label.status);
+			} else {
+				const parts = step.attributes[ATTR.EXEC_PARTS] as ExecPart[] | undefined;
+				const complete = step.attributes[ATTR.EXEC_COMPLETED] === true && parts?.length === calls.length;
+				for (const [i, call] of calls.entries()) {
+					const result = complete ? parts?.[i] : undefined;
+					const chunk = result?.kind === "chunk" ? result.result : undefined;
+					const known = chunk?.exit_code !== null && chunk?.exit_code !== undefined;
+					const patchOK = call.name === "apply_patch" && result?.kind === "empty-object";
+					const toolOK = !["exec_command", "apply_patch"].includes(call.name) && result && !(result.kind === "other" && result.error);
+					const child = operations({ ...trace, steps: [{
+						...step,
+						ended_at: known || patchOK || toolOK ? step.ended_at : null,
+						status: known && chunk?.exit_code !== 0 ? "error" : "ok",
+						attributes: {
+							[ATTR.TOOL_NAME]: call.name,
+							[ATTR.TOOL_ARGS]: call.name === "exec_command"
+								? { cmd: call.command, ...(call.workdir === undefined ? {} : { workdir: call.workdir }) }
+								: call.name === "apply_patch" ? { input: call.patch } : { path: call.path, content: call.content },
+							[ATTR.PATCH_CONFIRMED]: patchOK,
+							...(chunk ? { [ATTR.EXEC_RESULTS]: [chunk] } : {}),
+						},
+					}] });
+					for (const op of child)
+						out.push({ ...op, call: i, node: { ...op.node, part: part++, index: out.length } });
+				}
+			}
+			continue;
+		}
 		const file = str(args["file_path"]) ?? str(args["path"]);
 		if (name === "MultiEdit") {
 			const edits =
@@ -179,7 +163,13 @@ function operations(trace: Trace): Operation[] {
 				);
 			}
 		} else if (shellCommand(args) !== undefined) {
-			const stages = splitStages(shellCommand(args) as string);
+			const fullCommand = shellCommand(args) as string;
+			const allowed = shellEvidence(fullCommand);
+			const invalidArgs = (args["env"] && Object.keys(Object(args["env"])).length) ||
+				["workdir", "working_directory", "cwd"].some((key) => key in args && typeof args[key] !== "string");
+			const unparsed = !SHELL_TOOLS.has(name) || !allowed || invalidArgs ? fullCommand || name || "empty shell command" : undefined;
+			const stages = splitStages(fullCommand);
+			if (!stages.length) stages.push(fullCommand);
 			const consumed = new Set<number>();
 			const directoryStages: string[] = [];
 			const workdir =
@@ -213,7 +203,7 @@ function operations(trace: Trace): Operation[] {
 					add(
 						own[at]?.action ?? c.action,
 						at >= 0 ? (own[at]?.target ?? null) : c.target,
-						{ command: stage, directoryStages: [...directoryStages] },
+						{ command: stage, evidence: shellEvidence(stage) ?? undefined, unparsed, directoryStages: [...directoryStages] },
 						own[at]?.status ?? (stages.length === 1 ? status : "unknown"),
 					);
 				}
@@ -222,13 +212,13 @@ function operations(trace: Trace): Operation[] {
 			for (let i = 0; i < own.length; i++) {
 				const label = own[i];
 				if (!consumed.has(i) && label)
-					add(label.action, label.target, {}, label.status);
+					add(label.action, label.target, { unparsed }, label.status);
 			}
 		} else if (own.length) {
 			for (const label of own)
-				add(label.action, label.target, {}, label.status);
+				add(label.action, label.target, { unparsed: READ_TOOLS.has(name) ? undefined : name || "unknown tool" }, label.status);
 		} else if (step.kind === "tool_call" || step.kind === "agent") {
-			add("other", name || null);
+			add("other", name || null, { unparsed: READ_TOOLS.has(name) ? undefined : name || "unknown tool" });
 		}
 	}
 	return out;
@@ -257,12 +247,14 @@ export function buildBranchGraph(
 	let headChanged = false;
 	let indexChanged = false;
 	let endStateComplete = true;
+	const unparsedReasons = new Set<string>();
 	let claim: BranchGraph["claim"] = {
 		commitShort: null,
 		stepId: null,
 		files: [],
 	};
 	const touched = new Set<string>();
+	const claimedSteps = new Set<string>();
 	const invalidate = (file: string) => {
 		unknown.add(file);
 		touched.add(file);
@@ -336,7 +328,7 @@ export function buildBranchGraph(
 			effect.lineage = "abandoned";
 			return;
 		}
-		if (op.node.status !== "ok" || unknown.has(file)) {
+		if (op.node.status !== "ok" || unknown.has(file) || !endStateComplete) {
 			invalidate(file);
 			return;
 		}
@@ -379,24 +371,29 @@ export function buildBranchGraph(
 	};
 	const applyPatch = (op: Operation, file: string): void => {
 		const effect = effectFor(op, file);
+		const movePath = /^\*\*\* Move to: (.+)$/m.exec(op.patch ?? "")?.[1];
+		const move = movePath ? relPath(movePath, trace.run.workspace?.cwd) : undefined;
 		if (op.node.status === "error" || op.node.status === "interrupted") {
 			effect.lineage = "abandoned";
 			return;
 		}
-		if (op.node.status !== "ok" || unknown.has(file)) {
+		if (op.node.status !== "ok" || unknown.has(file) || !endStateComplete) {
 			invalidate(file);
+			if (move) invalidate(move);
 			return;
 		}
 		const patch = op.patch as string;
 		const body = patch
 			.split("\n")
 			.slice(1)
-			.filter((l) => !l.startsWith("*** End Patch"));
-		if (/^\*\*\* Move to:/m.test(patch)) {
-			endStateComplete = false;
+			.filter((l) => !l.startsWith("*** End Patch") && !l.startsWith("*** Move to:"));
+		if (move && (files.has(move) || unknown.has(move))) {
 			invalidate(file);
+			invalidate(move);
 			return;
 		}
+		// Keep both destinations uncertain if any hunk cannot be reconstructed.
+		if (move) invalidate(move);
 		if (patch.startsWith("*** Add File:")) {
 			if (files.has(file) || body.some((l) => l && !l.startsWith("+"))) {
 				invalidate(file);
@@ -466,41 +463,39 @@ export function buildBranchGraph(
 			}
 			cursor = pos;
 		}
-		if (!hunks.length) {
+		if (!hunks.length && !move) {
 			invalidate(file);
 			return;
 		}
-		files.set(file, state);
+		if (move) {
+			files.delete(file);
+			unknown.delete(move);
+			effect.file = move;
+		}
+		files.set(move ?? file, state);
 	};
 	for (const op of ops) {
 		const { node, name } = op;
 		const file = node.target;
 		const before = file ? files.get(file)?.text : undefined;
 		const beforeOwners = file ? (files.get(file)?.owners ?? []) : [];
-		if (op.patch !== undefined && file) applyPatch(op, file);
+		if (op.unparsed) {
+			unparsedReasons.add(`Unparsed writer: ${op.unparsed}.`);
+			invalidateTree();
+		} else if (op.patch !== undefined && file) applyPatch(op, file);
 		else if (
 			["Edit", "MultiEdit", "Write", "write_file"].includes(name) &&
 			file
 		)
 			applyEdit(op, file);
 		else if (op.command) {
-			const command = op.command.trim();
-			for (const destination of redirectTargets(command)) {
-				const target = destination === null ? null : classifyCommand(
-					[...(op.directoryStages ?? []), `cat ${JSON.stringify(destination)}`].join(" && "),
-					trace.run.workspace?.cwd,
-				)[0]?.target;
-				if (target) invalidate(target);
-				else invalidateTree();
-			}
-			const restore =
-				/^git (?:checkout --|restore(?: --)?) ((?!-)[\w./-]+(?: (?!-)[\w./-]+)*)$/.exec(
-					command,
-				);
-			const whole = /^git (?:stash(?: push)?|reset --hard)$/.test(command);
+			const evidence = op.evidence;
+			if (evidence?.staged) indexChanged = true;
+			const restore = evidence?.kind === "restore" ? evidence.paths : undefined;
+			const whole = evidence?.kind === "whole-restore";
 			if (restore || whole) {
 				const paths = restore
-					? (restore[1] ?? "").split(/\s+/)
+					? restore
 					: [...new Set([...Object.keys(base), ...files.keys(), ...touched])];
 				const undone = new Set<string>();
 				const resolved: string[] = [];
@@ -556,29 +551,12 @@ export function buildBranchGraph(
 					!indexChanged
 				)
 					backtracks.push({ at: node, undone });
-			} else if (/^git add\b/.test(command)) indexChanged = true;
-			else if (
-				node.action === "write" ||
-				node.action === "edit" ||
-				(node.action === "run" && !/^git commit\b/.test(command))
-			) {
-				if (node.action === "run" || !file) invalidateTree();
-				if ((node.action === "write" || node.action === "edit") && file)
-					invalidate(file);
-			}
-		} else if ((node.action === "edit" || node.action === "write") && file) {
-			// E.g. a Codex JS cell: classified target, but no proven edit payload.
-			effectFor(op, file);
-			invalidate(file);
-		} else if (node.action === "edit" || node.action === "write") {
-			invalidateTree();
-		} else if (
-			node.action === "run" &&
-			!/^git (?:add|commit)\b/.test(node.target ?? "")
-		) {
-			// Dynamic or complex exec cells can hide writes to unnamed files too.
+			} else if (evidence?.kind === "add") indexChanged = true;
+		} else if (!READ_TOOLS.has(name)) {
+			unparsedReasons.add(`Unparsed writer: ${name || "unknown tool"}.`);
 			invalidateTree();
 		}
+
 		if (file && before !== undefined && !unknown.has(file)) {
 			const prior = oldTexts.get(file) ?? new Set<string>();
 			const after = files.get(file)?.text;
@@ -597,26 +575,35 @@ export function buildBranchGraph(
 		}
 		const step = trace.steps.find((s) => s.step_id === node.stepId);
 		const git = obj(step?.attributes[ATTR.GIT_COMMIT]);
-		if (typeof git["short"] === "string") {
+		if (typeof git["short"] === "string" && !claimedSteps.has(node.stepId) &&
+			op.evidence?.kind === "commit" && !op.unparsed && node.status === "ok" &&
+			(op.call === undefined || op.call === step?.attributes[ATTR.GIT_COMMIT_CALL])) {
 			claim = {
 				commitShort: git["short"],
 				stepId: node.stepId,
 				files: [...touched].sort(),
 			};
 			headChanged = true;
+			claimedSteps.add(node.stepId);
 		}
-		if (op.command && /^git commit\b/.test(op.command.trim()))
+		if (op.evidence?.kind === "commit" && !op.unparsed)
 			headChanged = true;
 	}
 	const endState: FileSnapshot = Object.fromEntries([
 		...[...files].map(([file, state]) => [file, state.text]),
 		...[...unknown].map((file) => [file, null]),
 	]);
+	const survivors = new Map<string, number>();
+	const uncertainOwners = new Set<string>();
+	for (const [file, state] of files)
+		for (const owner of state.owners) {
+			if (!owner) continue;
+			if (unknown.has(file)) uncertainOwners.add(owner);
+			else survivors.set(owner, (survivors.get(owner) ?? 0) + 1);
+		}
 	for (const effect of effects) {
-		const surviving = (files.get(effect.file)?.owners ?? []).filter(
-			(o) => o === key(effect.node),
-		).length;
-		if (unknown.has(effect.file)) effect.lineage = "unknown";
+		const surviving = survivors.get(key(effect.node)) ?? 0;
+		if (unknown.has(effect.file) || uncertainOwners.has(key(effect.node))) effect.lineage = "unknown";
 		else if (effect.applied)
 			effect.lineage =
 				effect.total === 0
@@ -639,7 +626,7 @@ export function buildBranchGraph(
 			rejoinAtStepId: null,
 			nodes: [],
 			structuralStatus: "retained",
-			reasons: ["Run end-state lineage; artifact claim not checked."],
+			reasons: ["Run end-state lineage; artifact claim not checked.", ...unparsedReasons],
 		},
 	];
 	const byKey = new Map(ops.map((op) => [key(op.node), op.node]));
@@ -755,7 +742,7 @@ export function buildBranchGraph(
 				[n],
 				null,
 				effect.lineage === "unknown"
-					? "Edit lineage cannot be reconstructed from recorded evidence."
+					? ["Edit lineage cannot be reconstructed from recorded evidence.", ...unparsedReasons].join(" ")
 					: "The failed edit introduced no proven text.",
 			);
 			b.structuralStatus = effect.lineage;
