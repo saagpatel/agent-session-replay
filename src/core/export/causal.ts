@@ -288,7 +288,8 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			// after this writer finishes. Keep two candidates to avoid self-retirement
 			// for zero-duration writes. Missing timestamps cannot prove either bound.
 			const later = replacement?.id === writer.id ? previous : replacement;
-			if (later && Number.isFinite(writer.end) && writer.end <= later.start) continue;
+			// Tied starts cannot establish which overwrite landed last, so both stay possible.
+			if (later && Number.isFinite(writer.end) && writer.end <= later.start && writer.start < later.start) continue;
 			add(writer.id, step.step_id, kind, evidence);
 		}
 	};

@@ -870,6 +870,23 @@ test("only confirmed successful direct overwrites retire earlier possible writer
 	assert.deepEqual(edges.map(({ from, to }) => [from, to]), [["replacement", "read"], ["replacement", "test"]]);
 });
 
+test("confirmed writes with tied zero-duration intervals never retire each other", () => {
+	const args = { file_path: "src/a.ts", content: "new" };
+	const at = { status: "ok" as const, started_at: "2026-01-01T00:00:00Z", ended_at: "2026-01-01T00:00:00Z" };
+	const trace = makeTrace([
+		toolStep("write1", "Write", args, at),
+		toolStep("write2", "Write", args, at),
+		toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:01Z" }),
+		toolStep("test", "Bash", { command: "pnpm test" }, { started_at: "2026-01-01T00:00:02Z" }),
+	]);
+	const edges = buildCausalGraph(trace).edges;
+	for (const from of ["write1", "write2"]) for (const [to, kind] of [["read", "file-read"], ["test", "test-write"]]) {
+		assert.ok(edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), `${from} ${to}`);
+	}
+	assert.ok(validateExport(oneScene(trace, ["read", "write1", "write2", "test"]), trace).failures.some((failure) => failure.reason === "reversed-causal-order"));
+	assert.ok(validateExport(oneScene(trace, ["write2", "read", "write1", "test"]), trace).failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "write1"));
+});
+
 test("confirmed overwrites retain overlapping and unordered writers for reads and tests", () => {
 	const args = { file_path: "src/a.ts", content: "new" };
 	for (const nested of [false, true]) for (const end of ["2026-01-01T00:00:10Z", undefined, "invalid"]) {
