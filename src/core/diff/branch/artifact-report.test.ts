@@ -54,8 +54,8 @@ test("the dense fixture keeps control steps and all dead ends visible", async ()
 	for (const step of report.retained) assert.ok(rendered.includes(`#${orderedIds.indexOf(step.id) + 1} `));
 	const dropped = rendered.split("Attempted and dropped\n")[1]!.split("\nUnknown")[0]!.split("\n");
 	assert.deepEqual(dropped, [
-		"11 superseded edits to src/value.ts (#2–#22 (11 steps)), each replaced by the next",
-		"12 backtracks on src/value.ts (#24–#46 (12 steps)), each restored by the next edit",
+		"11 superseded edits to src/value.ts (#2–#22, 11 steps), each replaced by the next",
+		"12 backtracks on src/value.ts (#24–#46, 12 steps), each restored by the next edit",
 	]);
 	assert.equal(report.control.length, 27);
 	assert.ok(rendered.includes("Control steps: 27 — not work, listed in the JSON report"));

@@ -146,7 +146,7 @@ export function renderBranchReport(report: BranchReport, options: { width?: numb
 			const stepNumbers = group.flatMap(branchSteps);
 			const first = stepNumbers[0] ?? 0;
 			const last = stepNumbers.at(-1) ?? first;
-			const range = first === last ? `#${first}` : `#${first}–#${last}${last - first + 1 === stepNumbers.length ? "" : ` (${stepNumbers.length} steps)`}`;
+			const range = first === last ? `#${first}` : `#${first}–#${last}${last - first + 1 === stepNumbers.length ? "" : `, ${stepNumbers.length} steps`}`;
 			const allRejoinAsNextEdit = group.every((item) => rejoinIsNext(item, "edit"));
 			const allRejoinAsNextRun = group.every((item) => rejoinIsNext(item, "run"));
 			const restore = allRejoinAsNextEdit ? "restored by the next edit" : allRejoinAsNextRun ? "restored by the next command" : "restored at its recorded rejoin";
