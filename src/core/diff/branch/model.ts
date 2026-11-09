@@ -235,6 +235,7 @@ export function buildBranchGraph(
 			node: ref(op.node),
 			file,
 			introducedSpans: [],
+			payload: null,
 			lineage: "unknown",
 			endState: {},
 			total: 0,
@@ -251,6 +252,10 @@ export function buildBranchGraph(
 		text: string,
 		effect: Effect,
 	): Set<string> => {
+		const removed = state.text.slice(at, at + length);
+		if (!effect.payload) effect.payload = { inserted: [], removed: [] };
+		if (removed) effect.payload.removed.push(removed);
+		if (text) effect.payload.inserted.push(text);
 		const undone = new Set(
 			state.owners
 				.slice(at, at + length)

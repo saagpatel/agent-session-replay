@@ -35,6 +35,8 @@ export interface EditEffect {
 	node: NodeRef;
 	file: string;
 	introducedSpans: IntroducedSpan[];
+	/** Recorded payload; null means the operation could not be reconstructed. */
+	payload: { inserted: string[]; removed: string[] } | null;
 	lineage: Lineage;
 	/** Only this file at run end; an absent key means deletion. */
 	endState: FileSnapshot;
