@@ -17,7 +17,7 @@ else if (arg === "--all" || (arg && slugs.includes(arg))) {
 		const raw = await readFile(join(dir, `${slug}.jsonl`), "utf8");
 		const trace = labels.harness === "codex" ? parseCodexTranscript(raw) : parseClaudeCodeTranscript(raw);
 		const graph = buildBranchGraph(trace, repo.commits[0].files);
-		const report = branchReport(graph, checkArtifacts(graph, repo));
+		const report = branchReport(graph, checkArtifacts(graph, repo), trace);
 		if (arg === "--all") console.log(`${slug}: ${report.claim.status} · ${report.retained.length} retained · ${report.abandoned.reduce((n, b) => n + b.steps.length, 0)} dropped · ${report.unknown.length} unknown`);
 		else console.log(renderBranchReport(report, { dense: true }));
 	}

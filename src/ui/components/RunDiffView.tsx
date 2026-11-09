@@ -492,7 +492,7 @@ function BranchLane({
 }) {
 	const report = useMemo(() => {
 		const graph = buildBranchGraph(trace, {});
-		return branchReport(graph, structuralCheck(graph));
+		return branchReport(graph, structuralCheck(graph), trace);
 	}, [trace]);
 	const collapseDropped = report.abandoned.length > 6;
 	return (
