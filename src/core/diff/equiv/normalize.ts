@@ -46,13 +46,13 @@ function contentHash(content: string): string {
 /** Full lexical identity for order guards; unknown relative roots stay unknown. */
 function fileIdentity(path: string, cwd?: string | null): string | null {
 	if (!path) return null;
-	const full = path.startsWith("/") ? path : cwd?.startsWith("/") ? `${cwd}/${path}` : null;
+	const full = path.startsWith("/") ? path : cwd?.startsWith("/") ? `${cwd}/${path.replace(/^\.\//, "")}` : null;
 	if (full === null) return null;
+	if (hasParent(full)) return null;
 	const parts: string[] = [];
 	for (const part of full.split("/")) {
-		if (!part || part === ".") continue;
-		if (part === "..") parts.pop();
-		else parts.push(part);
+		if (!part) continue;
+		parts.push(part);
 	}
 	return `/${parts.join("/")}`;
 }
@@ -125,6 +125,35 @@ function bounds(start: unknown, count: unknown): ReadRange | null {
 
 const positiveInteger = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 const pathValue = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+const hasParent = (path: string) => path.replace(/^\.\//, "").split("/").includes("..");
+
+/** Extract only path positions, not search patterns or arbitrary command arguments. */
+function unresolvedPath(source: Step, cwd?: string | null): boolean {
+	const args = source.attributes[ATTR.TOOL_ARGS];
+	if (!plainObject(args)) return false;
+	const name = source.attributes[ATTR.TOOL_NAME];
+	let paths: unknown[] = [];
+	if (["Read", "read_file", "Edit", "MultiEdit", "Write", "write_file"].includes(String(name))) {
+		paths = [args.file_path, args.path];
+	} else if (name === "Grep" || name === "Glob") {
+		paths = [args.path];
+	} else if (["Bash", "shell", "shell_command", "exec_command"].includes(String(name))) {
+		const { workdir: _workdir, cwd: _cwd, ...command } = args;
+		const cmd = literalCommand(command);
+		if (cmd !== undefined) {
+			const read = /^(?:cat |head -n [0-9]+ |sed -n '[0-9]+(?:,[0-9]+)?p' )(.+)$/.exec(cmd);
+			if (read) paths = (read[1] as string).split(" ").filter(plainToken);
+			else {
+				const words = cmd.split(" ");
+				if (words.shift() === "rg") {
+					while (words[0] && RG_FLAGS.has(words[0])) words.shift();
+					if (words[0] && plainToken(words[0])) paths = words.slice(1).filter(plainToken);
+				} else if (cmd.startsWith("grep -rn ")) paths = words.slice(2).filter(plainToken);
+			}
+		}
+	}
+	return paths.some((path) => typeof path === "string" && (hasParent(path) || !path.startsWith("/") && !!cwd && hasParent(cwd)));
+}
 
 /** Fixed Claude search schemas: unknown options are unsupported, not equality data. */
 function nativeSearch(name: unknown, args: Json, cwd?: string | null): Evidence | undefined {
@@ -353,6 +382,7 @@ export function normalizeEquivalent(
 	const edits = new Map<string, Replacement[]>();
 	const reasons = new Set<string>();
 	const normalizedRuns = new Set<string>();
+	const unresolved = new Set<string>();
 	const segments = new Map<string, number>();
 	let segment = 0;
 	// Map iteration follows source trace order, including calls with no DiffSteps.
@@ -361,6 +391,11 @@ export function normalizeEquivalent(
 	for (const [id, source] of sources) {
 		if (source.subagent_id || source.kind !== "tool_call") continue;
 		const members = grouped.get(id) ?? [];
+		if (unresolvedPath(source, cwd)) {
+			unresolved.add(id);
+			reasons.add("unresolved-path");
+			if (members.length === 0) segment++;
+		}
 		if (sourceNormalizationTruncated(source, cwd)) reasons.add("normalizer-cap-or-unsupported-shape");
 		const member = members[0];
 		let evidence = allowlistedEvidence(source, cwd, member?.status === "ok");
@@ -399,10 +434,12 @@ export function normalizeEquivalent(
 		// sources skipped above and polls that normally produce no DiffSteps.
 		if (!allowed) reasons.add(!source ? "missing-source" : delegate ? "unsupported-delegate" : "unsupported-source");
 		const opaque = !allowed && !normalizedRuns.has(step.stepId);
-		const action = opaque ? "other" : allowed?.action ?? step.action;
+		const action = opaque || unresolved.has(step.stepId) ? "other" : allowed?.action ?? step.action;
 		if ((action === "read" || action === "edit" || action === "write") && allowed?.target === null) reasons.add("unclassified-step");
 		if (["edit", "write", "test", "run", "delegate", "blocked"].includes(action) && step.status === "unknown") reasons.add("unknown-mutator-status");
-		const evidence: Evidence = opaque
+		const evidence: Evidence = unresolved.has(step.stepId)
+			? { target: null, key: key("unresolved-path", source?.attributes[ATTR.TOOL_NAME], source?.attributes[ATTR.TOOL_ARGS]) }
+			: opaque
 			? { target: null, range: null, key: delegate
 				// Retain a position, never an agent-type signature as work evidence.
 				? key("unsupported-delegate", index)

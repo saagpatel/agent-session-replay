@@ -303,9 +303,6 @@ test("multi-file sed ranges are not independent per-file reads", () => {
 test("shell reads retain lexical file identities and never commute across edits", () => {
 	for (const [command, path] of [
 		["cat /work/external/shared/a.ts", "/work/external/shared/a.ts"],
-		["cat /work/equiv/src/../a.ts", "/work/equiv/a.ts"],
-		["cat a.ts", "/work/equiv/src/../a.ts"],
-		["head -n 5 /work/equiv/src/../a.ts", "/work/equiv/a.ts"],
 	]) {
 		const mutation: Tool = ["Edit", { file_path: path, old_string: "a", new_string: "b" }];
 		const repeated = trace([shell(command), mutation, shell(command)]);
@@ -333,6 +330,35 @@ test("shell reads retain lexical file identities and never commute across edits"
 		assert.equal(normalized(left).events[0]?.target, null);
 		assert.equal(alignEquivalent(left, right).equivalent, false, name);
 	}
+});
+
+test("parent path segments remain unresolved global barriers", () => {
+	for (const [name, args, field] of [
+		["Read", { offset: 1, limit: 5 }, "file_path"],
+		["read_file", { offset: 1, limit: 5 }, "path"],
+		["Edit", { old_string: "a", new_string: "b" }, "file_path"],
+		["Write", { content: "b" }, "file_path"],
+		["write_file", { content: "b" }, "path"],
+		["Grep", { pattern: "token" }, "path"],
+	] as const) {
+		const unresolved: Tool = [name, { ...args, [field]: "./link/../a.ts" }];
+		const direct: Tool = [name, { ...args, [field]: "a.ts" }];
+		const comparison = alignEquivalent(trace([unresolved]), trace([direct]));
+		assert.equal(comparison.incomplete, true, name);
+		assert.ok(comparison.incompleteReasons.includes("unresolved-path"), name);
+		assert.equal(comparison.equivalent, false, name);
+		assert.ok(comparison.left.events[0]?.key.includes("./link/../a.ts"), name);
+		const barrier = normalized(trace([read(1, 5), unresolved, read(6, 5)]));
+		assert.equal(barrier.events.length, 3, name);
+	}
+	for (const command of ["cat link/../a.ts", "head -n 5 link/../a.ts", "rg token link/../a.ts", "grep -rn token link/../a.ts"]) {
+		const n = normalized(trace([read(1, 5), shell(command), read(6, 5)]));
+		assert.ok(n.incompleteReasons.includes("unresolved-path"), command);
+		assert.equal(n.events.length, 3, command);
+		assert.ok(n.events[1]?.key.includes("link/../a.ts"), command);
+	}
+	assert.equal(alignEquivalent(trace([["Read", { file_path: "./src//a.ts", offset: 1, limit: 5 }]]),
+		trace([["Read", { file_path: "src/a.ts", offset: 1, limit: 5 }]])).equivalent, true);
 });
 
 test("possible symlink aliases keep reads on opposite sides of a mutation distinct", () => {
