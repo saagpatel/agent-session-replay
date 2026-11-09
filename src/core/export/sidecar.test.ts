@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { ATTR, type Trace } from "../types.ts";
+import { buildCausalGraph, findPath } from "./causal.ts";
 import { generateReplayFixtures } from "./fixtures/generate.ts";
 import { validateExport } from "./index.ts";
+import { traceDigest } from "./manifest.ts";
 import { buildSidecar, renderSidecarMarkdown, validateSidecar } from "./sidecar.ts";
 
 test("all generated sidecars retain scene and caption evidence", () => {
@@ -26,6 +29,37 @@ test("all generated sidecars retain scene and caption evidence", () => {
 		assert.match(markdown, /✓ because #\d+ → #\d+ \(path: #\d+/);
 		assert.match(markdown, /- #\d+ Read .* · ok · worker a/);
 	}
+});
+
+test("sidecar because paths use the evidenced path when a competing route is ambiguous", () => {
+	const step = (step_id: string, extra: Partial<Trace["steps"][number]> = {}) => ({
+		step_id, kind: "agent" as const, started_at: "2026-01-01T00:00:00Z", ended_at: "2026-01-01T00:00:10Z",
+		status: "ok" as const, attributes: {}, ...extra,
+	});
+	const trace: Trace = {
+		plumbline_version: "1",
+		run: { run_id: "synthetic-ambiguous-path", harness: { name: "synthetic" }, started_at: "2026-01-01T00:00:00Z" },
+		steps: [
+			step("cause", { attributes: { [ATTR.AGENT_SPAWNS]: "worker" } }),
+			step("duplicate-spawn", { attributes: { [ATTR.AGENT_SPAWNS]: "worker" } }),
+			step("ambiguous", { subagent_id: "worker", caused_by: "cause", started_at: "2026-01-01T00:00:02Z" }),
+			step("supported", { kind: "decision", caused_by: "cause" }),
+			step("effect", { kind: "decision", caused_by: "ambiguous", parent_step_id: "supported" }),
+		],
+	};
+	const manifest = {
+		version: 1 as const,
+		source: { runId: trace.run.run_id, stepCount: trace.steps.length, digest: traceDigest(trace) },
+		title: "Synthetic competing paths",
+		scenes: [{ id: "scene", range: { from: "cause", to: "effect" }, steps: trace.steps.map((item) => item.step_id) }],
+		captions: [{ id: "claim", sceneId: "scene", kind: "because" as const, text: "The cause supports the effect.", cause: "cause", effect: "effect" }],
+	};
+	const validation = validateExport(manifest, trace);
+	assert.equal(validation.ok, true);
+	assert.ok(validation.warnings.some((warning) => warning.reason === "ambiguous-subagent-invocation"));
+	assert.deepEqual(findPath(buildCausalGraph(trace), "cause", "effect"), ["cause", "ambiguous", "effect"]);
+	const sidecar = buildSidecar(manifest, trace, validation);
+	assert.deepEqual(sidecar.scenes[0]!.captions[0]!.path.map((item) => item.id), ["cause", "supported", "effect"]);
 });
 
 test("sidecar validator rejects a reference outside the export", () => {

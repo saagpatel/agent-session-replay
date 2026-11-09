@@ -1,5 +1,5 @@
 import { ATTR, type Step, type Trace } from "../types.ts";
-import { buildCausalGraph, findPath } from "./causal.ts";
+import { buildCausalGraph, evidencedOnly, findPath } from "./causal.ts";
 import type { Manifest } from "./manifest.ts";
 import type { validateExport } from "./index.ts";
 import { stepLabel } from "./operations.ts";
@@ -30,7 +30,7 @@ export function buildSidecar(manifest: Manifest, trace: Trace, validation: Valid
 		id: step.step_id, label: presentationLabel(step, trace.run.workspace?.cwd), ...(step.subagent_id ? { lane: step.subagent_id } : {}), status: step.status ?? "unknown",
 		index, timestamp: step.started_at,
 	}]));
-	const graph = buildCausalGraph(trace);
+	const graph = evidencedOnly(buildCausalGraph(trace));
 	const evidence = (ids: string[]) => ids.flatMap((id) => lookup.has(id) ? [lookup.get(id)!] : []);
 	let positionMs = 3500;
 	const scenes = manifest.scenes.map((scene) => {
