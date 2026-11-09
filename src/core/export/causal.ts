@@ -1,63 +1,187 @@
 import { ATTR, type Step, type Trace } from "../types.ts";
+import { fileOperations, stepLabel } from "./operations.ts";
 
+/** The source evidence supporting an edge's direction. */
 export type EdgeKind = "caused-by" | "parent" | "spawn" | "consumer" | "file-read" | "test-write";
-export interface Edge { from: string; to: string; kind: EdgeKind; evidence: string }
-export interface GraphDiagnostic { reason: "dangling-parent" | "causal-cycle"; message: string }
-export interface CausalGraph { edges: Edge[]; diagnostics: GraphDiagnostic[]; steps: Map<string, Step> }
 
-/** Parsers merge results into calls; Claude emits hook causes and possibly
- * dangling event parents, while Codex emits neither parents nor result steps. */
-export function fileOperation(step: Step): { kind: "write" | "read" | "test"; path?: string } | undefined {
-	if (step.kind !== "tool_call") return;
-	const name = step.attributes[ATTR.TOOL_NAME], args = step.attributes[ATTR.TOOL_ARGS];
-	if (typeof name !== "string" || !args || typeof args !== "object" || Array.isArray(args)) return;
-	const a = args as Record<string, unknown>;
-	const path = typeof a.file_path === "string" ? a.file_path : typeof a.path === "string" ? a.path : undefined;
-	if (/^(write|write_file|edit|edit_file|multiedit)$/i.test(name) && path) return { kind: "write", path };
-	if (/^(read|read_file)$/i.test(name) && path) return { kind: "read", path };
-	if (/^(test|run_tests)$/i.test(name)) return { kind: "test" };
-	if (/^(bash|shell|exec_command)$/i.test(name)) {
-		const command = typeof a.command === "string" ? a.command : a.cmd;
-		if (typeof command === "string" && /^(?:npm test|pnpm test|yarn test|pytest|cargo test)(?:\s+[\w./-]+)*\s*$/.test(command)) return { kind: "test" };
-	}
+/** An evidenced dependency between two source steps. */
+export interface Edge {
+	from: string;
+	to: string;
+	kind: EdgeKind;
+	evidence: string;
 }
+
+/** Missing evidence and invalid source graphs prevent an equivalence verdict. */
+export interface GraphDiagnostic {
+	reason: "dangling-parent" | "causal-cycle" | "unlinked-subagent-result";
+	message: string;
+	step?: string;
+	parent?: string;
+	subagentId?: string;
+	path?: string[];
+}
+
+/** Source nodes and a once-built adjacency index in deterministic edge order. */
+export interface CausalGraph {
+	edges: Edge[];
+	diagnostics: GraphDiagnostic[];
+	steps: Map<string, Step>;
+	adjacency: Map<string, string[]>;
+}
+
+/**
+ * Build only evidenced dependencies, never timestamp or source adjacency.
+ * Parsers merge a tool call/result pair into one Step, so no separate result
+ * edge is needed. Claude parents can reference non-Step user events; only hooks
+ * set caused_by. Codex sets neither. Synthetic traces may explicitly supply both.
+ * Data edges describe recorded accesses/invocations, not successful file contents.
+ */
 export function buildCausalGraph(trace: Trace): CausalGraph {
-	const steps = new Map(trace.steps.map(s => [s.step_id, s]));
-	const edges: Edge[] = [], diagnostics: GraphDiagnostic[] = [];
+	const steps = new Map(trace.steps.map((step) => [step.step_id, step]));
+	const edges: Edge[] = [];
+	const diagnostics: GraphDiagnostic[] = [];
+	const adjacency = new Map<string, string[]>();
+	const edgeKeys = new Set<string>();
+	const cwd = trace.run.workspace?.cwd;
+	const label = (id: string) => stepLabel(steps.get(id), cwd);
 	const add = (from: string, to: string, kind: EdgeKind, evidence: string) => {
-		if (!steps.has(from) || !steps.has(to)) { diagnostics.push({ reason: "dangling-parent", message: `Step ${to} references missing step ${from}.` }); return; }
-		if (!edges.some(e => e.from === from && e.to === to && e.kind === kind)) edges.push({ from, to, kind, evidence });
+		if (!steps.has(from) || !steps.has(to)) {
+			diagnostics.push({
+				reason: "dangling-parent",
+				message: `${label(to)} references a parent absent from the source trace.`,
+				step: to,
+				parent: from,
+			});
+			return;
+		}
+		const key = JSON.stringify([from, to, kind]);
+		if (edgeKeys.has(key)) return;
+		edgeKeys.add(key);
+		edges.push({ from, to, kind, evidence });
+		const neighbors = adjacency.get(from) ?? [];
+		if (!neighbors.includes(to)) neighbors.push(to);
+		adjacency.set(from, neighbors);
 	};
-	for (const s of trace.steps) {
-		if (s.parent_step_id) add(s.parent_step_id, s.step_id, "parent", "parent_step_id");
-		if (s.caused_by) add(s.caused_by, s.step_id, "caused-by", "caused_by");
+
+	for (const step of trace.steps) {
+		if (step.parent_step_id) add(step.parent_step_id, step.step_id, "parent", "parent_step_id");
+		if (step.caused_by) add(step.caused_by, step.step_id, "caused-by", "caused_by");
 	}
+
+	const sidechains = new Map<string, Step[]>();
+	for (const step of trace.steps) {
+		if (step.subagent_id == null) continue;
+		const chain = sidechains.get(step.subagent_id) ?? [];
+		chain.push(step);
+		sidechains.set(step.subagent_id, chain);
+	}
+	const indices = new Map(trace.steps.map((step, index) => [step.step_id, index]));
 	for (const spawn of trace.steps) {
 		const child = spawn.attributes[ATTR.AGENT_SPAWNS];
 		if (typeof child !== "string") continue;
-		const chain = trace.steps.filter(s => s.subagent_id === child);
-		if (!chain.length) { diagnostics.push({ reason: "dangling-parent", message: `Step ${spawn.step_id} references missing subagent ${child}.` }); continue; }
+		const chain = sidechains.get(child);
+		if (!chain?.length) {
+			diagnostics.push({
+				reason: "dangling-parent",
+				message: `${label(spawn.step_id)} references a subagent absent from the source trace.`,
+				step: spawn.step_id,
+				subagentId: child,
+			});
+			continue;
+		}
 		add(spawn.step_id, chain[0]!.step_id, "spawn", ATTR.AGENT_SPAWNS);
-		const last = chain[chain.length - 1]!;
-		for (const consumer of trace.steps) if (consumer.step_id !== last.step_id && (consumer.caused_by === last.step_id || consumer.parent_step_id === last.step_id)) add(last.step_id, consumer.step_id, "consumer", "explicit child endpoint reference");
+		const last = chain.at(-1)!;
+		const lastIndex = indices.get(last.step_id)!;
+		const consumer = trace.steps.find((step, index) =>
+			index > lastIndex &&
+			(step.subagent_id ?? null) === (spawn.subagent_id ?? null) &&
+			(step.caused_by === last.step_id || step.parent_step_id === last.step_id),
+		);
+		if (consumer) {
+			add(last.step_id, consumer.step_id, "consumer", "first later parent-context step explicitly referencing subagent endpoint");
+		} else {
+			diagnostics.push({
+				reason: "unlinked-subagent-result",
+				message: `${label(last.step_id)} has no evidenced later consumer in its parent context.`,
+				step: last.step_id,
+				subagentId: child,
+			});
+		}
 	}
-	const writes = new Map<string, Step>(), pending = new Map<string, Step>();
-	for (const s of trace.steps) {
-		const op = fileOperation(s);
-		if (op?.kind === "write" && op.path) { writes.set(op.path, s); pending.set(s.step_id, s); }
-		if (op?.kind === "read" && op.path) { const w = writes.get(op.path); if (w) add(w.step_id, s.step_id, "file-read", `matching tool argument ${op.path}`); }
-		if (op?.kind === "test") { for (const w of pending.values()) add(w.step_id, s.step_id, "test-write", "write before next test"); pending.clear(); }
+
+	const writes = new Map<string, string>();
+	const pendingWrites = new Set<string>();
+	for (const step of trace.steps) {
+		for (const operation of fileOperations(step, cwd)) {
+			if (operation.kind === "write" && operation.path) {
+				writes.set(operation.path, step.step_id);
+				pendingWrites.add(step.step_id);
+			}
+			if (operation.kind === "read" && operation.path) {
+				const writer = writes.get(operation.path);
+				if (writer) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
+			}
+			if (operation.kind === "test") {
+				for (const writer of pendingWrites) add(writer, step.step_id, "test-write", "recorded write before next test invocation");
+				pendingWrites.clear();
+			}
+		}
 	}
-	const graph = { edges, diagnostics, steps };
-	for (const s of trace.steps) if (findPath(graph, s.step_id, s.step_id)) { diagnostics.push({ reason: "causal-cycle", message: `Causal cycle includes step ${s.step_id}.` }); break; }
+
+	const graph = { edges, diagnostics, steps, adjacency };
+	// Kahn's algorithm keeps acyclic validation linear; BFS produces a witness
+	// only if the source graph contains a cycle.
+	const indegree = new Map(trace.steps.map((step) => [step.step_id, 0]));
+	for (const neighbors of adjacency.values()) {
+		for (const id of neighbors) indegree.set(id, indegree.get(id)! + 1);
+	}
+	const ready = [...indegree].filter(([, degree]) => degree === 0).map(([id]) => id);
+	for (let index = 0; index < ready.length; index++) {
+		for (const id of adjacency.get(ready[index]!) ?? []) {
+			const degree = indegree.get(id)! - 1;
+			indegree.set(id, degree);
+			if (degree === 0) ready.push(id);
+		}
+	}
+	if (ready.length !== steps.size) {
+		for (const [id, degree] of indegree) {
+			if (degree === 0) continue;
+			const path = findPath(graph, id, id);
+			if (!path) continue;
+			diagnostics.push({ reason: "causal-cycle", message: `Causal cycle includes ${label(id)}.`, step: id, path });
+			break;
+		}
+	}
 	return graph;
 }
+
+/** Find a shortest nonempty path by BFS, breaking ties by stable adjacency order. */
 export function findPath(graph: CausalGraph, from: string, to: string): string[] | undefined {
-	const queue: string[][] = [[from]], seen = new Set([from]);
-	for (let i = 0; i < queue.length; i++) for (const edge of graph.edges) if (edge.from === queue[i]![queue[i]!.length - 1]) {
-		const path = [...queue[i]!, edge.to];
-		if (edge.to === to) return path;
-		if (!seen.has(edge.to)) { seen.add(edge.to); queue.push(path); }
+	if (!graph.steps.has(from) || !graph.steps.has(to)) return undefined;
+	const queue = [from];
+	const parents = new Map<string, string | undefined>([[from, undefined]]);
+	for (let index = 0; index < queue.length; index++) {
+		const current = queue[index]!;
+		for (const next of graph.adjacency.get(current) ?? []) {
+			if (next === to) {
+				const path = [current];
+				let parent = parents.get(current);
+				while (parent !== undefined) {
+					path.push(parent);
+					parent = parents.get(parent);
+				}
+				return [...path.reverse(), to];
+			}
+			if (parents.has(next)) continue;
+			parents.set(next, current);
+			queue.push(next);
+		}
 	}
+	return undefined;
 }
-export function happensBefore(graph: CausalGraph, a: string, b: string): boolean { return !!findPath(graph, a, b); }
+
+/** Whether a nonempty causal path proves that a precedes b. */
+export function happensBefore(graph: CausalGraph, a: string, b: string): boolean {
+	return findPath(graph, a, b) !== undefined;
+}
