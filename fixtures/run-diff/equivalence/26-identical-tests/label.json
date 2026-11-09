@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Both runs execute the same test command with successful results.",
+  "category": "test-command"
+}

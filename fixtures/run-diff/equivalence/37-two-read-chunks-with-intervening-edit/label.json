@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The read chunks straddle a same-file mutation and cannot be treated as one bulk read.",
+  "category": "order-guard"
+}

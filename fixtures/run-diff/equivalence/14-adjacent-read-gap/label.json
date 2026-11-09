@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The bounded reads leave a line uncovered, so they cannot merge into the bulk range.",
+  "category": "adversarial-near-miss"
+}

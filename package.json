@@ -17,6 +17,8 @@
 		"test:core": "node --test --experimental-strip-types \"src/core/**/*.test.ts\"",
 		"test:export": "node --test --experimental-strip-types \"src/core/export/*.test.ts\"",
 		"gen:replay-fixtures": "node --experimental-strip-types scripts/gen-replay-fixtures.ts",
+		"test:equiv": "node --test --experimental-strip-types \"src/core/diff/equiv/*.test.ts\"",
+		"run-diff:equiv": "node --experimental-strip-types scripts/run-diff-equiv.ts",
 		"afr:archives": "node --experimental-strip-types scripts/afr-archives.ts",
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",

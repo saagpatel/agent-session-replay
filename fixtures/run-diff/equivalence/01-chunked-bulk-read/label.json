@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Adjacent bounded reads cover the same lines as one bulk read.",
+  "category": "chunked-vs-bulk-reads"
+}

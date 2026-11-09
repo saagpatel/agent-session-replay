@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "The same search is repeated with no intervening mutation.",
+  "category": "repeated-searches"
+}

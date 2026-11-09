@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The read crosses the same potentially mutating command across harnesses.",
+  "category": "interleaved-reads-across-mutating-run"
+}

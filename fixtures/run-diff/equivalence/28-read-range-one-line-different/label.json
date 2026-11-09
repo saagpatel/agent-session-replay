@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The ranges overlap but the right run also reads a line not covered on the left.",
+  "category": "adversarial-near-miss"
+}

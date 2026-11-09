@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "The Codex literal sed range and Claude Code offset/limit identify the same lines.",
+  "category": "codex-sed-vs-cc-read-offsets"
+}

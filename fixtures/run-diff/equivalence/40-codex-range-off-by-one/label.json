@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The sed range ends one line earlier than the Claude Code read.",
+  "category": "codex-sed-vs-cc-read-offsets"
+}

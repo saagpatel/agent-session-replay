@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Convention: an additional successful read of an untouched file counts as exploratory.",
+  "category": "extra-exploratory-reads"
+}

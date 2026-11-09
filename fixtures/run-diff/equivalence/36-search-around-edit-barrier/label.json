@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "Identical searches on opposite sides of an edit are not deduplicated across the mutation.",
+  "category": "order-guard"
+}

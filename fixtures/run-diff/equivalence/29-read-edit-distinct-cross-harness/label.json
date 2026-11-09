@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Both runs read the same range using different tools before editing another file.",
+  "category": "order-guard"
+}
