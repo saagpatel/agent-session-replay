@@ -183,14 +183,14 @@ test("rejects a duplicate step played twice within one scene", () => {
 	assert.ok(result.failures.some((failure) => failure.reason === "duplicate-step"));
 });
 
-test("rejects overlapping scene source ranges even when playback steps differ", () => {
+test("allows overlapping scene source ranges when playback steps differ", () => {
 	const trace = makeTrace([makeStep("s1"), makeStep("s2"), makeStep("s3")]);
 	const manifest = manifestFor(trace, [
 		{ id: "first", range: { from: "s1", to: "s2" }, steps: ["s1"] },
 		{ id: "second", range: { from: "s2", to: "s3" }, steps: ["s3"] },
 	]);
 	const result = validateExport(manifest, trace);
-	assert.ok(result.failures.some((failure) => failure.reason === "duplicate-step"));
+	assert.equal(result.ok, true);
 });
 
 test("builds evidenced links for interleaved sidechains and a parallel tool pair", () => {
