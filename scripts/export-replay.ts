@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
@@ -171,7 +171,14 @@ document.head.append(marker);
 				// headless screenshots occasionally hang under load, so retry once before failing.
 				const shoot = (attempt: number) => spawnSync(chrome, ["--headless=new", `--user-data-dir=${resolve(temp, `chrome-profile-${i}-${attempt}`)}`, "--no-first-run", "--no-default-browser-check", "--disable-gpu", "--hide-scrollbars", "--window-size=1280,720", `--screenshot=${png}`, pathToFileURL(html).href], { encoding: "utf8", timeout: 30000, killSignal: "SIGKILL" });
 				// Headless Chrome sometimes writes the screenshot and then fails to exit; a complete PNG is the evidence.
-				const written = () => existsSync(png) && statSync(png).size > 12 && readFileSync(png).subarray(-12).includes("IEND");
+				const written = () => {
+					try {
+						const bytes = readFileSync(png);
+						return bytes.length > 12 && bytes.subarray(-12).includes("IEND");
+					} catch {
+						return false; // not written (yet)
+					}
+				};
 				let result = shoot(1);
 				if (!written()) result = shoot(2);
 				if (!written()) throw new Error(`Chrome screenshot failed: ${result.error?.message ?? result.stderr}`);
