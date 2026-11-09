@@ -1,0 +1,15 @@
+{
+  "repo": "codex-unparsed",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "call_0",
+      "call_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "52cb2e7"
+  },
+  "notes": "Codex command may write the path but does not expose its payload."
+}

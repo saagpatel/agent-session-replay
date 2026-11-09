@@ -1,0 +1,17 @@
+{
+  "repo": "reset-hard",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0"
+    ],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "07b3238"
+  },
+  "notes": "Reset hard marks the preceding edit branch abandoned."
+}

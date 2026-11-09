@@ -1,0 +1,17 @@
+{
+  "repo": "codex-superseded",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [
+      "call_0"
+    ],
+    "retained": [
+      "call_1",
+      "call_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "cedbe1a"
+  },
+  "notes": "Codex write_file steps replace the earlier contents."
+}

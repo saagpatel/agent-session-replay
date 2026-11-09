@@ -1,0 +1,15 @@
+{
+  "repo": "codex-seven-file-patch",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "call_0",
+      "call_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "6807953"
+  },
+  "notes": "One Codex patch call contains seven added files."
+}

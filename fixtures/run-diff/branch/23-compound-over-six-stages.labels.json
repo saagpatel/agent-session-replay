@@ -1,0 +1,15 @@
+{
+  "repo": "compound-over-six-stages",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "e2f85ee"
+  },
+  "notes": "A compound shell command has more than six stages and retains its final commit claim."
+}

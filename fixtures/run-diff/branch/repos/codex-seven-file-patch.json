@@ -1,0 +1,27 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "codex-seven-file-patch base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "cfc90d4e7a1bd015dc5357482fd87b6179b0f8e6",
+      "message": "codex-seven-file-patch final",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n",
+        "src/new0.ts": "export const new0 = 0;\n",
+        "src/new1.ts": "export const new1 = 1;\n",
+        "src/new2.ts": "export const new2 = 2;\n",
+        "src/new3.ts": "export const new3 = 3;\n",
+        "src/new4.ts": "export const new4 = 4;\n",
+        "src/new5.ts": "export const new5 = 5;\n",
+        "src/new6.ts": "export const new6 = 6;\n"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "repo": "claim-outside-repo",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "14a7f98"
+  },
+  "notes": "Claim short SHA is absent from fixture repository."
+}
