@@ -32,4 +32,3 @@ test("missing run end and deep links are noted", () => {
 	assert.ok(notes.some((n) => n.includes("Run end is missing")));
 	assert.ok(notes.some((n) => n.includes("too-deep")));
 });
-

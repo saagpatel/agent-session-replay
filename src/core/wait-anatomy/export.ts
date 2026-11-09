@@ -65,4 +65,3 @@ export function toWaitTrace(trace: Trace): { waitTrace: WaitTrace; notes: string
 	});
 	return { waitTrace: { format: "traceglass-wait/0.1", origin: "agent-session-replay", trace_id: trace.run.run_id, window_ns: [0, offset(latest)], spans, declared_gaps: [], notes }, notes };
 }
-

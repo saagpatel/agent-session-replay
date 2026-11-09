@@ -53,4 +53,3 @@ export function parseWaitAnalysis(json: unknown): WaitAnalysis {
 	if (root.notes !== undefined) arr(root.notes).forEach(str);
 	return json as WaitAnalysis;
 }
-

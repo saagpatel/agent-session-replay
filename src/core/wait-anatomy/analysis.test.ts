@@ -19,4 +19,3 @@ test("rejects broken tiling, bucket and fractional time", () => {
 	const fraction = sample(); fraction.spans[0].end_ns = 1.5;
 	assert.throws(() => parseWaitAnalysis(fraction), /integer/);
 });
-

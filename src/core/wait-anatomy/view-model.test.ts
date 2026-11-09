@@ -15,4 +15,3 @@ test("calculates percentages and carries unattributed reasons", () => {
 	assert.equal(view.segments[0]?.end, 0.2);
 	assert.equal(view.sentence, "Naive span sum 10 ms vs wall clock 10 ms: overlapping work is not double counted.");
 });
-

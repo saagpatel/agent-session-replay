@@ -34,4 +34,3 @@ if (!root) {
 		if (result.status !== 0) throw new Error(`Traceglass ${engineArgs[0]} failed (status ${result.status ?? "unknown"})`);
 	}
 }
-

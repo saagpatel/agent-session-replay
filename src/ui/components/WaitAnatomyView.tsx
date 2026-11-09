@@ -26,4 +26,3 @@ export function WaitAnatomyView({ analysis }: { analysis: WaitAnalysis }) {
 		<ul>{view.limits.map((limit, i) => <li key={i}>{limit}</li>)}</ul>
 	</section>;
 }
-

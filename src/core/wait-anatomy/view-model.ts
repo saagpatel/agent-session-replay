@@ -17,4 +17,3 @@ export function waitAnatomyView(analysis: WaitAnalysis) {
 		limits: analysis.limits,
 	};
 }
-
