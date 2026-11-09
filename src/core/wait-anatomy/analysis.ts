@@ -25,20 +25,26 @@ export function parseWaitAnalysis(json: unknown): WaitAnalysis {
 	const start = integer(window[0]), end = integer(window[1]);
 	const wall = integer(root.wall_clock_ns);
 	if (end < start || end - start !== wall) fail("Invalid wall clock");
-	integer(root.naive_span_sum_ns); integer(root.attributed_ns);
+	integer(root.naive_span_sum_ns);
+	const attributed = integer(root.attributed_ns);
 	let cursor = start;
+	const recomputedTotals = Object.fromEntries(BUCKETS.map((bucket) => [bucket, 0])) as Record<Bucket, number>;
 	for (const value of arr(root.critical_path)) {
 		const segment = obj(value);
 		nullableString(segment.span_id);
 		if (!BUCKETS.includes(segment.bucket as Bucket)) fail("Invalid bucket");
 		const a = integer(segment.start_ns), b = integer(segment.end_ns);
 		if (a !== cursor || b <= a || b > end) fail("Critical path does not tile window");
+		recomputedTotals[segment.bucket as Bucket] += b - a;
 		cursor = b;
 	}
 	if (cursor !== end) fail("Critical path does not tile window");
 	const totals = obj(root.totals_ns);
 	if (Object.keys(totals).length !== BUCKETS.length || BUCKETS.some((key) => !(key in totals))) fail("Invalid buckets");
-	if (BUCKETS.reduce((sum, key) => sum + integer(totals[key]), 0) !== wall) fail("Totals do not sum to wall clock");
+	for (const bucket of BUCKETS) {
+		if (integer(totals[bucket]) !== recomputedTotals[bucket]) fail("Totals do not match critical path");
+	}
+	if (attributed !== wall - recomputedTotals.unattributed) fail("Invalid attributed time");
 	arr(root.path_span_ids).forEach(str);
 	for (const value of arr(root.spans)) {
 		const span = obj(value); str(span.id); nullableString(span.parent_id); str(span.name); str(span.category);
