@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
 import { validateExport } from "../src/core/export/index.ts";
 import { buildSidecar } from "../src/core/export/sidecar.ts";
-import { main, planScenePages, promoteBundle } from "./export-replay.ts";
+import { main, planScenePages, promoteBundle, promotionFs } from "./export-replay.ts";
 
 function crowdedScene() {
 	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
@@ -132,6 +132,7 @@ for (const fault of ["rename-out second", "rename-in third", "undo previous", "u
 			}
 			let reported = "";
 			assert.throws(() => promoteBundle(staging, out, {
+				...promotionFs,
 				mkdir(path) { previous = path; mkdirSync(path); },
 				exists: existsSync,
 				lstat: lstatSync,
@@ -188,6 +189,60 @@ test("promotion installs a bundle and cleans recovery directories with or withou
 			for (const name of bundleFiles) assert.equal(readFileSync(resolve(out, name), "utf8"), `new ${name}`);
 		} finally { rmSync(out, { recursive: true, force: true }); }
 	}
+});
+
+test("interleaved promotions refuse the second bundle and keep the first coherent", () => {
+	const out = mkdtempSync(resolve(tmpdir(), "asr-lock-test-"));
+	try {
+		const first = mkdtempSync(resolve(out, ".staging-a-"));
+		const second = mkdtempSync(resolve(out, ".staging-b-"));
+		const alias = resolve(out, "alias"); symlinkSync(out, alias);
+		for (const name of bundleFiles) {
+			writeFileSync(resolve(out, name), "old");
+			writeFileSync(resolve(first, name), "bundle-a");
+			writeFileSync(resolve(second, name), "bundle-b");
+		}
+		let interleaved = false;
+		promoteBundle(first, out, { ...promotionFs, rename(from, to) {
+			renameSync(from, to);
+			if (!interleaved) {
+				interleaved = true;
+				assert.throws(() => promoteBundle(second, alias), /another export into .* is in progress/);
+			}
+		} });
+		assert.ok(interleaved);
+		for (const name of bundleFiles) assert.equal(readFileSync(resolve(out, name), "utf8"), "bundle-a");
+		assert.ok(!existsSync(resolve(out, ".export.lock")));
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("an input at the lock path is preserved even if it resembles a stale lock", () => {
+	const out = mkdtempSync(resolve(tmpdir(), "asr-lock-input-test-"));
+	try {
+		const input = resolve(out, ".export.lock");
+		const content = JSON.stringify({ pid: 2147483647 });
+		writeFileSync(input, content);
+		const manifest = resolve(out, "manifest.json"); writeFileSync(manifest, "{}");
+		assert.throws(() => main([input, manifest, "--out", out]), /lock destination that collides with input/);
+		assert.equal(readFileSync(input, "utf8"), content);
+	} finally { rmSync(out, { recursive: true, force: true }); }
+});
+
+test("stale locks are reclaimed once; live and malformed locks fail closed", () => {
+	const out = mkdtempSync(resolve(tmpdir(), "asr-lock-test-"));
+	try {
+		const staging = mkdtempSync(resolve(out, ".staging-"));
+		for (const name of bundleFiles) writeFileSync(resolve(staging, name), "bundle");
+		const lock = resolve(out, ".export.lock");
+		for (const value of [JSON.stringify({ pid: process.pid }), "invalid"]) {
+			writeFileSync(lock, value);
+			assert.throws(() => promoteBundle(staging, out), /another export into .* is in progress/);
+			assert.equal(readFileSync(lock, "utf8"), value);
+		}
+		writeFileSync(lock, JSON.stringify({ pid: 123456, startedAt: "synthetic" }));
+		promoteBundle(staging, out, { ...promotionFs, pidAlive: () => false });
+		assert.ok(!existsSync(lock));
+	} finally { rmSync(out, { recursive: true, force: true }); }
 });
 
 for (const failure of ["invalid manifest", "malformed manifest", "missing Chrome", "missing ffmpeg", "layout failure", "long caption"] as const) {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { generateReplayFixtures } from "../src/core/export/fixtures/generate.ts";
@@ -49,14 +49,23 @@ function regularBundleFiles(dir: string, lstat: PromotionFs["lstat"]): string[] 
 	});
 }
 
-function preflightOutput(out: string, inputs: string[]): void {
+function checkOutputLocation(out: string, inputs: string[]): void {
 	const sources = inputs.map((input) => realpathSync(resolve(input)));
 	const output = resolvedPath(resolve(out));
-	const destinations = bundleFiles.map((name) => resolvedPath(resolve(out, name)));
 	for (const source of sources) {
 		if (output === source || output.startsWith(`${source}${sep}`)) {
 			throw new Error(`Refusing output directory inside input file: ${source}`);
 		}
+		if ([".export.lock", ".export.lock.reclaim"].some((name) => resolvedPath(resolve(out, name)) === source)) {
+			throw new Error(`Refusing lock destination that collides with input: ${source}`);
+		}
+	}
+}
+
+function preflightOutput(out: string, inputs: string[]): void {
+	checkOutputLocation(out, inputs);
+	const destinations = [...bundleFiles, ".export.lock", ".export.lock.reclaim"].map((name) => resolvedPath(resolve(out, name)));
+	for (const source of inputs.map((input) => realpathSync(resolve(input)))) {
 		if (destinations.includes(source)) throw new Error(`Refusing bundle destination that collides with input: ${source}`);
 	}
 	regularBundleFiles(out, lstatSync);
@@ -68,12 +77,65 @@ export interface PromotionFs {
 	mkdir(path: string): void;
 	exists(path: string): boolean;
 	lstat(path: string): { isFile(): boolean };
+	realpath(path: string): string;
+	createLock(path: string): void;
+	readLock(path: string): string;
+	unlinkLock(path: string): void;
+	pidAlive(pid: number): boolean;
 }
-const promotionFs: PromotionFs = { rename: renameSync, rm: rmSync, mkdir: mkdirSync, exists: existsSync, lstat: lstatSync };
+export const promotionFs: PromotionFs = {
+	rename: renameSync, rm: rmSync, mkdir: mkdirSync, exists: existsSync, lstat: lstatSync, realpath: realpathSync,
+	createLock(path) {
+		const fd = openSync(path, "wx");
+		try { writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })); }
+		catch (error) { closeSync(fd); unlinkSync(path); throw error; }
+		closeSync(fd);
+	},
+	readLock: (path) => readFileSync(path, "utf8"), unlinkLock: unlinkSync,
+	pidAlive(pid) {
+		try { process.kill(pid, 0); return true; }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; return true; }
+	},
+};
 class BundleRecoveryError extends Error {}
+
+function acquireLock(out: string, fs: PromotionFs): () => void {
+	const canonical = fs.realpath(out);
+	const lock = resolve(canonical, ".export.lock");
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try { fs.createLock(lock); return () => fs.unlinkLock(lock); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			if (attempt === 0) {
+				const guard = `${lock}.reclaim`;
+				try { fs.createLock(guard); } catch (guardError) {
+					if ((guardError as NodeJS.ErrnoException).code !== "EEXIST") throw guardError;
+					throw new Error(`another export into ${canonical} is in progress`);
+				}
+				let stale = false;
+				try {
+					let pid: unknown;
+					try { pid = JSON.parse(fs.readLock(lock)).pid; } catch { /* Unreadable locks fail closed. */ }
+					if (Number.isSafeInteger(pid) && Number(pid) > 0 && !fs.pidAlive(Number(pid))) {
+						fs.unlinkLock(lock);
+						stale = true;
+					}
+				} finally { fs.unlinkLock(guard); }
+				if (stale) continue;
+			}
+			throw new Error(`another export into ${canonical} is in progress`);
+		}
+	}
+	throw new Error(`another export into ${canonical} is in progress`);
+}
 
 /** Promotion owns cleanup; incomplete rollback keeps both directories for manual recovery. */
 export function promoteBundle(staging: string, out: string, fs: PromotionFs = promotionFs): void {
+	const release = acquireLock(out, fs);
+	try { promoteLockedBundle(staging, out, fs); } finally { release(); }
+}
+
+function promoteLockedBundle(staging: string, out: string, fs: PromotionFs): void {
 	const oldFiles = regularBundleFiles(out, fs.lstat);
 	if (regularBundleFiles(staging, fs.lstat).length !== bundleFiles.length) throw new Error("Incomplete staged bundle; refusing promotion.");
 	const previous = resolve(out, `.previous-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -120,8 +182,11 @@ export function main(args = process.argv.slice(2)): void {
 		else positional.push(arg);
 	}
 	if (!out || (slug ? positional.length !== 0 : positional.length !== 2)) throw new Error(usage);
-	preflightOutput(out, positional);
+	checkOutputLocation(out, positional);
 	mkdirSync(resolve(out), { recursive: true });
+	const release = acquireLock(out, promotionFs);
+	try {
+	preflightOutput(out, positional);
 	const staging = mkdtempSync(resolve(out, ".staging-"));
 	let evidence: unknown;
 	let markdown = "";
@@ -139,7 +204,7 @@ export function main(args = process.argv.slice(2)): void {
 		const sidecar = buildSidecar(parsed, trace, validation);
 		evidence = sidecar;
 		markdown = renderSidecarMarkdown(sidecar);
-		const sidecarValidation = validateSidecar(sidecar, trace, parsed);
+		const sidecarValidation = validateSidecar(sidecar, parsed, trace);
 		if (!validation.ok && !allowInvalid) throw new Error(`Invalid manifest; refusing to render: ${validation.failures.map((f) => f.reason).join(", ")}`);
 		if (!sidecarValidation.ok && validation.ok) throw new Error(`Invalid sidecar: ${sidecarValidation.errors.join("; ")}`);
 		const pages = sidecar.scenes.map(planScenePages);
@@ -230,7 +295,7 @@ document.head.append(marker);
 			const result = spawnSync(ffmpeg, ["-hide_banner", "-loglevel", "error", ...input, ...filterArgs, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", resolve(staging, "replay.mp4")], { encoding: "utf8" });
 			if (result.error || result.status !== 0) throw new Error(`ffmpeg failed: ${result.error?.message ?? result.stderr}`);
 		} finally { rmSync(temp, { recursive: true, force: true }); }
-		promoteBundle(staging, out);
+		promoteLockedBundle(staging, out, promotionFs);
 	} catch (error) {
 		preserveStaging = error instanceof BundleRecoveryError;
 		const message = error instanceof Error ? error.message : String(error);
@@ -241,6 +306,7 @@ document.head.append(marker);
 		console.error(`Export failed; evidence saved to ${failed}`);
 		throw error;
 	} finally { if (!preserveStaging) rmSync(staging, { recursive: true, force: true }); }
+	} finally { release(); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
