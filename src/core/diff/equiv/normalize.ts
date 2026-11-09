@@ -104,7 +104,7 @@ function replacement(v: unknown): Replacement | undefined {
 		? { old: v.old_string, next: v.new_string } : undefined;
 }
 
-function editEvidence(name: unknown, args: Json): Replacement[] | undefined {
+function editEvidence(name: unknown, args: Json, successful: boolean): Replacement[] | undefined {
 	if (name === "Edit" && onlyKeys(args, ["file_path", "old_string", "new_string", "replace_all"])) {
 		const { file_path: _file, ...body } = args;
 		const edit = replacement(body);
@@ -113,7 +113,8 @@ function editEvidence(name: unknown, args: Json): Replacement[] | undefined {
 	if (name !== "MultiEdit" || !onlyKeys(args, ["file_path", "edits"]) ||
 		!Array.isArray(args.edits) || args.edits.length === 0) return undefined;
 	const edits = args.edits.map(replacement);
-	return edits.every((edit) => edit !== undefined) ? composition(edits) : undefined;
+	if (!edits.every((edit) => edit !== undefined)) return undefined;
+	return successful ? composition(edits) : edits;
 }
 
 function bounds(start: unknown, count: unknown): ReadRange | null {
@@ -150,6 +151,20 @@ function literalCommand(args: Json): string | undefined {
 	if (!Array.isArray(cmd) || cmd.length !== 3 ||
 		!["sh", "bash", "zsh"].includes(cmd[0]) || !["-c", "-lc"].includes(cmd[1]) || typeof cmd[2] !== "string") return undefined;
 	return cmd[2];
+}
+
+/** Literal execution only; scope options must name this run's exact root. */
+function executionEvidence(args: Json, cwd?: string | null): Evidence | undefined {
+	const { workdir, cwd: directory, ...command } = args;
+	for (const option of ["workdir", "cwd"]) {
+		if (option in args && (typeof args[option] !== "string" || !cwd || args[option] !== cwd)) return undefined;
+	}
+	const cmd = literalCommand(command);
+	// Match the read allowlist's narrow literal alphabet, allowing option words.
+	// No shell parsing, expansion, quoting, assignments, or stage splitting.
+	if (cmd === undefined || cmd.trim() !== cmd || !/^[A-Za-z0-9_./:@%+,-]+(?: [A-Za-z0-9_./:@%+,=-]+)*$/.test(cmd)) return undefined;
+	if (["cd", "export", "env", "sh", "bash", "zsh", "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac"].includes(cmd.split(" ")[0] as string)) return undefined;
+	return { key: key("execution", command.cmd ?? command.command) };
 }
 
 // An intentionally narrow token alphabet excludes expansion, quoting, comments,
@@ -194,7 +209,7 @@ function shellEvidence(args: Json, cwd?: string | null): Evidence | undefined {
 }
 
 /** The only sources eligible for enrichment and subsequent merging. */
-function allowlistedEvidence(source: Step, cwd?: string | null): Evidence | undefined {
+function allowlistedEvidence(source: Step, cwd?: string | null, successful = false): Evidence | undefined {
 	const args = source.attributes[ATTR.TOOL_ARGS];
 	if (!plainObject(args)) return undefined;
 	const name = source.attributes[ATTR.TOOL_NAME];
@@ -212,7 +227,7 @@ function allowlistedEvidence(source: Step, cwd?: string | null): Evidence | unde
 		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-native", name, fileKey(file, cwd), args) };
 	}
 	if (name === "Edit" || name === "MultiEdit") {
-		const edits = editEvidence(name, args);
+		const edits = editEvidence(name, args, successful);
 		return edits ? { action: "edit", target, key: editKey(target, edits, cwd), edit: target !== null ? edits : undefined } : undefined;
 	}
 	if ((name === "Write" || name === "write_file") &&
@@ -272,17 +287,25 @@ export function normalizeEquivalent(
 		if (source.subagent_id || source.kind !== "tool_call") continue;
 		const members = grouped.get(id) ?? [];
 		if (sourceNormalizationTruncated(source, cwd)) reasons.add("normalizer-cap-or-unsupported-shape");
-		const evidence = allowlistedEvidence(source, cwd);
+		const member = members[0];
+		let evidence = allowlistedEvidence(source, cwd, member?.status === "ok");
 		const normalizedRun = members.length > 0 && members.every((step) => step.action === "test" || step.action === "run") &&
 			!["exec", "write_stdin"].includes(String(source.attributes[ATTR.TOOL_NAME]));
 		if (normalizedRun) normalizedRuns.add(id);
-		const member = members[0];
+		// Test classification alone is not source evidence. Generic run sources
+		// retain their existing unsupported accounting even when plainly literal.
+		if (members.length === 1 && member?.action === "test" &&
+			["Bash", "shell", "shell_command", "exec_command"].includes(String(source.attributes[ATTR.TOOL_NAME]))) {
+			const args = source.attributes[ATTR.TOOL_ARGS];
+			const execution = plainObject(args) ? executionEvidence(args, cwd) : undefined;
+			if (execution) evidence = { ...execution, action: "test" };
+		}
 		// Preserve guard/blocked classification. Write may already be classified
 		// as an edit; write_file is deliberately additive over Run Diff's other.
 		const compatible = member && (member.action === evidence?.action || evidence?.action === "write" &&
 			(member.action === "edit" || member.action === "other" && source.attributes[ATTR.TOOL_NAME] === "write_file"));
 		if (evidence && members.length === 1 && compatible) evidenceBySource.set(id, evidence);
-		else if (!(normalizedRun && members.every((step) => step.action === "test")) && !statusPoll(source)) {
+		else if (!statusPoll(source)) {
 			// `run` is also the base normalizer's catch-all for arbitrary shell
 			// syntax (awk, xargs, wrappers). Keep its signature, but do not treat
 			// that classification alone as proof of supported source coverage.

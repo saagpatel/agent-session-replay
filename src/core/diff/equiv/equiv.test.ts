@@ -573,15 +573,133 @@ test("round-2 retries and mixed-outcome ranges cannot vanish into failures", () 
 	}
 });
 
-test("tests and runs retain the existing normalized signature and global barriers", () => {
+test("tests use literal source keys while runs retain their unsupported accounting and global barriers", () => {
 	for (const command of ["pnpm test", "node build.js", "awk token a.ts"]) {
 		const t = trace([read(1, 5), shell(command), read(6, 5)]);
 		const n = normalized(t);
 		assert.equal(n.events.length, 3, command);
-		assert.equal(n.events[1]?.signature, n.steps[1]?.signature, command);
+		if (command === "pnpm test") {
+			assert.notEqual(n.events[1]?.signature, n.steps[1]?.signature, command);
+			assert.equal(n.incomplete, false, command);
+		} else {
+			assert.equal(n.events[1]?.signature, n.steps[1]?.signature, command);
+			assert.ok(n.incompleteReasons.includes("unsupported-source"), command);
+		}
 		assert.equal(n.events[1]?.action, n.steps[1]?.action, command);
 		assert.equal(n.events[1]?.rule, null, command);
 	}
+});
+
+test("test sources fail closed on shell syntax and execution scope options", () => {
+	const commands = [
+		"pnpm test $(node mutate.js)",
+		"pnpm test `node mutate.js`",
+		"pnpm test $FLAGS",
+		"pnpm test > result.txt",
+		"pnpm test 2>> result.txt",
+		"pnpm test < input.txt",
+		"pnpm test | tail",
+		"pnpm test && node mutate.js",
+		"pnpm test; node mutate.js",
+		"X=1 pnpm test",
+		"export X=1 && pnpm test",
+		"cd src && pnpm test",
+		"pnpm test <<EOF\nsynthetic\nEOF",
+		"pnpm test\nnode mutate.js",
+		"pnpm test\n",
+		"pnpm test # comment",
+		"pnpm test *.ts",
+		"bash -lc 'pnpm test'",
+		"if pnpm test",
+		"then pnpm test",
+	];
+	const unsupported: Tool[] = commands.map(shell);
+	for (const name of ["Bash", "shell", "shell_command", "exec_command"]) {
+		for (const command of commands) unsupported.push([name, { cmd: ["bash", "-lc", command] }]);
+		for (const option of ["workdir", "cwd", "working_directory"]) {
+			for (const directory of ["/work/other", null, "", 1]) {
+				unsupported.push([name, { command: "pnpm test", [option]: directory }]);
+			}
+		}
+		unsupported.push(
+			[name, { cmd: "pnpm test", workdir: "/work/equiv", cwd: "/work/other" }],
+			[name, { cmd: "pnpm test", env: { X: "1" } }],
+			[name, { cmd: "pnpm test", command: "pnpm test" }],
+			[name, { cmd: ["pnpm", "test"] }],
+			[name, { cmd: ["bash", "-lc", "pnpm test", "extra"] }],
+		);
+	}
+	unsupported.push(["UnknownTool", { command: "pnpm test" }]);
+	// Generic runs continue to be unsupported, including deceptively literal
+	// signatures left behind when Run Diff strips shell syntax or scope.
+	for (const command of ["node build.js", "node build.js $(node mutate.js)", "node build.js > result.txt", "X=1 node build.js"]) {
+		unsupported.push(shell(command));
+	}
+	unsupported.push(["exec_command", { cmd: "node build.js", workdir: "/work/other" }]);
+	for (const tool of unsupported) {
+		const label = JSON.stringify(tool);
+		const t = trace([tool]);
+		for (const other of [trace([shell("pnpm test")]), t]) {
+			const result = alignEquivalent(t, other);
+			assert.equal(result.incomplete, true, label);
+			assert.equal(result.equivalent, false, label);
+			assert.ok(result.incompleteReasons.includes("unsupported-source"), label);
+		}
+		const barrier = normalized(trace([read(1, 5), tool, read(6, 5)]));
+		assert.ok(barrier.events.every((event) => event.members.length === 1), label);
+	}
+});
+
+test("accepted tests retain exact literal arguments and argv wrappers in their keys", () => {
+	for (const name of ["Bash", "shell", "shell_command", "exec_command"]) {
+		for (const command of ["pnpm test", "pnpm test -- --grep x", "node --test a.test.ts"]) {
+			const forms: Array<string | string[]> = [command];
+			for (const wrapper of ["sh", "bash", "zsh"]) {
+				for (const flag of ["-c", "-lc"]) forms.push([wrapper, flag, command]);
+			}
+			for (const form of forms) {
+				for (const field of ["cmd", "command"]) {
+					const t = trace([[name, { [field]: form }]]);
+					assert.equal(alignEquivalent(t, t).equivalent, true, JSON.stringify(form));
+					for (const option of ["workdir", "cwd"]) {
+						const scoped = trace([[name, { [field]: form, [option]: "/work/equiv" }]]);
+						assert.equal(alignEquivalent(t, scoped).equivalent, true, JSON.stringify(form));
+					}
+				}
+			}
+		}
+	}
+	for (const command of ["pnpm test -- --grep x", "pnpm run test", "pnpm test --grep=x"]) {
+		const result = alignEquivalent(trace([shell("pnpm test")]), trace([shell(command)]));
+		assert.equal(result.incomplete, false, command);
+		assert.equal(result.equivalent, false, command);
+	}
+	const wrapped = trace([["shell", { cmd: ["bash", "-lc", "pnpm test"] }]]);
+	assert.equal(alignEquivalent(wrapped, trace([shell("pnpm test")])).equivalent, false);
+	const unknownRoot = trace([["exec_command", { cmd: "pnpm test", workdir: "/work/equiv" }]]);
+	delete unknownRoot.run.workspace;
+	assert.ok(normalized(unknownRoot).incompleteReasons.includes("unsupported-source"));
+});
+
+test("unsuccessful MultiEdits retain their ordered replacements without internal or cross-step composition", () => {
+	const multi = (via: string, status: DiffStatus): Tool => ["MultiEdit", { file_path: "/work/equiv/a.ts", edits: [
+		{ old_string: "a", new_string: via }, { old_string: via, new_string: "c" },
+	] }, status];
+	for (const status of ["error", "unknown", "interrupted"] as const) {
+		const left = trace([multi("b", status)]);
+		const right = trace([multi("x", status)]);
+		const result = alignEquivalent(left, right);
+		assert.equal(result.equivalent, false, status);
+		assert.notEqual(result.left.events[0]?.key, result.right.events[0]?.key, status);
+		assert.deepEqual(JSON.parse(normalized(left).events[0]?.key as string)[2], [
+			{ old: "a", next: "b" }, { old: "b", next: "c" },
+		], status);
+		assert.equal(alignEquivalent(left, trace([edit("a", "c", "a.ts", status)])).equivalent, false, status);
+		const chain = normalized(trace([edit("start", "a"), multi("b", status), edit("c", "end")]));
+		assert.deepEqual(chain.events.map((event) => event.members), [[0], [1], [2]], status);
+		assert.equal(result.incomplete, status === "unknown", status);
+	}
+	assert.equal(alignEquivalent(trace([multi("b", "ok")]), trace([multi("x", "ok")])).equivalent, true);
 });
 
 test("allowlisted arguments cannot overwrite a blocked source classification", () => {
