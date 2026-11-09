@@ -21,6 +21,8 @@
  * Defensive throughout: a single malformed event never aborts the run.
  */
 
+import { literalExecCalls } from "../diff/normalize.ts";
+import { commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
@@ -181,6 +183,23 @@ function execParts(v: unknown): ExecPart[] {
 
 /** A legacy `apply_patch` output that says it applied. */
 const PATCH_OK_RE = /^(?:Success\b|Done!)|"exit_code"\s*:\s*0\b/;
+/** Only a completed literal call's own successful output can claim a commit. */
+function execCellCommitOutput(input: string, rawOutput: unknown): { output: string; call: number } | null {
+	const calls = literalExecCalls(input);
+	if (!calls || !Array.isArray(rawOutput) || rawOutput.length !== calls.length + 1) return null;
+	const header = str(asObj(rawOutput[0])["text"])?.trimStart() ?? "";
+	if (!/^Script completed\b/.test(header)) return null;
+	for (let i = calls.length - 1; i >= 0; i--) {
+		const call = calls[i]!;
+		if (call.name !== "exec_command" || !isCommitCommand(call.args ?? {}, call.name)) continue;
+		try {
+			const chunk = asObj(JSON.parse(str(asObj(rawOutput[i + 1])["text"]) ?? ""));
+			if (typeof chunk["chunk_id"] === "string" && chunk["exit_code"] === 0 && typeof chunk["output"] === "string" && commitHeader(chunk["output"]))
+				return { output: chunk["output"], call: i };
+		} catch { /* Unparseable output is not commit evidence. */ }
+	}
+	return null;
+}
 
 /** Joined text of a Codex message payload (content[] of {type, text}). */
 function messageText(payload: Json): string | undefined {
@@ -319,6 +338,24 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		if ((m && m[1] !== "0") || failedInner || scriptFailed) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
+		}
+		const successfulShellResult = m
+			? m[1] === "0"
+			: results.length > 0 && results.every((result) => result.exit_code === 0);
+		const toolName = str(step.attributes[ATTR.TOOL_NAME]);
+		const cellCommit = toolName === "exec" ? execCellCommitOutput(input, rawOutput) : null;
+		const commitOutput =
+			toolName === "exec"
+				? cellCommit?.output
+				: step.status === "ok" && successfulShellResult && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" && isCommitCommand(asObj(step.attributes[ATTR.TOOL_ARGS]), toolName ?? "")
+					? output
+					: null;
+		if (commitOutput && !step.attributes[ATTR.GIT_COMMIT]) {
+			const commitMatch = commitHeader(commitOutput);
+			if (commitMatch) {
+				step.attributes[ATTR.GIT_COMMIT] = commitMatch;
+				if (cellCommit) step.attributes[ATTR.GIT_COMMIT_CALL] = cellCommit.call;
+			}
 		}
 		if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
 		else if (hasTestPasses(output)) step.attributes[ATTR.TEST_PASSES] = true;
