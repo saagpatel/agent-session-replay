@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "The same whole-file-or-unknown read request appears on both sides.",
+  "category": "unknown-range-reads"
+}

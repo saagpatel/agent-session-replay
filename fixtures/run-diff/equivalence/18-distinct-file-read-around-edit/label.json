@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "A known successful edit to another file commutes with this read; the relative order does not change the observed work.",
+  "category": "order-guard"
+}

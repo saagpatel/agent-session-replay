@@ -29,6 +29,8 @@ export interface CanonicalEvent {
 export interface EquivalentNormalization {
 	steps: DiffStep[];
 	events: CanonicalEvent[];
+	/** Source-order segments separated by omitted opaque calls. */
+	sourceSegments: ReadonlyMap<string, number>;
 	incomplete: boolean;
 	incompleteReasons: string[];
 }

@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Convention: an additional read-only search is exploratory.",
+  "category": "extra-exploratory-reads"
+}

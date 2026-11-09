@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "Unknown ranges do not erase the known file identity.",
+  "category": "unknown-range-reads"
+}

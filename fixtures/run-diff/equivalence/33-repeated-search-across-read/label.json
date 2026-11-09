@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "An intervening read commutes with the identical search, so duplicates collapse.",
+  "category": "repeated-searches"
+}

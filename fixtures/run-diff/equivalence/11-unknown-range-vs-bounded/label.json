@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "An unknown-range request does not prove equivalence to a bounded read.",
+  "category": "unknown-range-reads"
+}

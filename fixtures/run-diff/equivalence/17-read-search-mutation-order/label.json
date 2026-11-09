@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "A broad search and an edit are separated by different observed order; the search may see the changed file.",
+  "category": "order-guard"
+}

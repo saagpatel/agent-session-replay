@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The test runs before the fix on one side and after it on the other.",
+  "category": "test-before-vs-after-fix"
+}

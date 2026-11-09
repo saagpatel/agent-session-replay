@@ -44,6 +44,29 @@ On the drop screen, choose **Compare two runs of the same task**, load one trans
 
 Like the rest of the app, Run Diff parses in the browser and uploads nothing.
 
+### Work Equivalence
+
+Work Equivalence compares canonical events while retaining every original member for expansion. Its rules are:
+
+| RULES | Description |
+| --- | --- |
+| `read-coalesce` | Allowlist only: structured Read/read_file with known keys, or an entire literal sed -n 'N,Mp' file, sed -n 'Np' file, head -n N file, or cat file (plain command or exact sh/bash/zsh -c/-lc argv). Union successful overlapping/adjacent ranges of one file only across other reads/searches. Whole-file-or-unknown reads require identical evidence. Unsupported sources are global barriers and make comparison incomplete. |
+| `search-dedupe` | Allowlist only: structured Grep/Glob with documented keys, or an entire literal rg command with only -n -i -w -l -F --no-heading flags, or grep -rn, with plain pattern/path tokens. Shell commands permit no quoting, expansion, chaining or redirects; only exact sh/bash/zsh -c/-lc argv wrappers are unwrapped. Merge identical successful searches across commuting events; retain every member. |
+| `edit-batch` | Allowlist only: structured Edit/MultiEdit with known keys and replace_all omitted or false; structured Write/write_file use exact content and stay separate. Batch consecutive successful replacements of one file only when sequential composition matches the other side. Failed/unknown observations never merge. Tests/runs retain normalized signatures and are global barriers; only explicitly empty write_stdin status polls may be ignored. |
+
+Successful consecutive reads and searches can be reordered for comparison. Reads never commute across edits. Delegates, unsupported sources, unresolved paths, and unknown workspace roots make a comparison incomplete.
+
+Run `pnpm run-diff:equiv --eval` for the evaluation, `pnpm run-diff:equiv --count` for the fixture count, or `pnpm run-diff:equiv <fixture-slug>` to inspect a pair.
+
+On this synthetic set of 40 pairs (20 labeled equivalent and 20 divergent), `--eval` reports 0/20 false matches (0.0%), 4/20 missed matches (20.0%), and 2 incomplete comparisons. The linear Run Diff baseline reports 15/20 false matches (75.0%) and 2/20 missed matches (10.0%). Incomplete comparisons are excluded from equivalence error counts; rates use the full labeled-class denominators. These figures describe only this synthetic set.
+
+The four missed matches are:
+
+- `09-extra-exploratory-read`: one side has an additional successful read; the comparison retains it.
+- `18-distinct-file-read-around-edit`: the read moves across an edit, which is an order barrier even for distinct files.
+- `23-extra-exploratory-reads`: one side has an additional read-only search; the comparison retains it.
+- `26-identical-tests`: the test commands have different source evidence (plain command versus an argv shell wrapper), so their keys differ.
+
 ### Known limits
 
 Run Diff is experimental. It reads results from evidence only, and anything the transcript does not prove is shown as unknown (a step) or unclear (a run's verdict), never guessed:
