@@ -192,7 +192,7 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	// Distinct canonical evidence is visible and marked on both sides.
 	const { ATTR } = await import("../src/core/types.ts");
-	const evidenceTrace = (name: "Grep" | "Read", args: Record<string, unknown>) => {
+	const evidenceTrace = (name: "Grep" | "Read" | "Write", args: Record<string, unknown>) => {
 		const tool = name === "Grep" ? { name, pattern: "placeholder" } as const : { name, file: "src/a.ts" } as const;
 		const trace = parseTranscript(toJsonl(ccEvents("look", [tool]))).trace;
 		const source = trace.steps.find((step) => step.attributes[ATTR.TOOL_NAME] === name);
@@ -217,6 +217,17 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(readEvidence, /lines 1–10/);
 	assert.match(readEvidence, /lines 20–29/);
 	assert.equal((readEvidence.match(/rd-eq-evidence--changed/g) ?? []).length, 2);
+	const writeEvidence = renderEvidence(
+		evidenceTrace("Write", { file_path: "/work/a/fixture-repo/src/a.ts", content: "alpha\nsecond\nthird\nfourth" }),
+		evidenceTrace("Write", { file_path: "/work/a/fixture-repo/src/a.ts", content: "beta\nsecond\nthird\nfourth" }),
+	);
+	assert.match(writeEvidence, /rd-verdict-banner--divergent/);
+	const fingerprints = [...writeEvidence.matchAll(/content fingerprint ([0-9a-f]{8})/g)].map((match) => match[1]);
+	assert.equal(fingerprints.length, 2);
+	assert.notEqual(fingerprints[0], fingerprints[1]);
+	assert.match(writeEvidence, /<pre>alpha\nsecond\nthird\n…<\/pre>/);
+	assert.match(writeEvidence, /<pre>beta\nsecond\nthird\n…<\/pre>/);
+	assert.equal((writeEvidence.match(/rd-eq-evidence rd-eq-evidence--changed/g) ?? []).length, 2);
 
 	// Incomplete evidence is named in plain words, and divergent rows use the linear highlight.
 	const incompleteHtml = renderToStaticMarkup(
@@ -261,6 +272,17 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(branchHtml, /rd-branch-drop__count">1 step/);
 	assert.match(branchHtml, /Repeated signature after failed or unknown attempt/);
 	assert.match(branchHtml, /<details class="rd-branch-drop" open="">/);
+
+	const shellWrite = parseTranscript(toJsonl(ccEvents("write", [{ name: "Bash", command: "echo hello > src/a.ts" }]))).trace;
+	const shellWriteHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(shellWrite, shellWrite)} leftFile="a" rightFile="b" leftTrace={shellWrite} rightTrace={shellWrite} mode="preservation" />,
+	);
+	const lane = shellWriteHtml.split('<section class="rd-branch__lane"')[1]!;
+	const retained = lane.split("<h3>Retained</h3>")[1]!.split("<h3>Attempted and dropped</h3>")[0]!;
+	const unknown = lane.split("<h3>Unknown</h3>")[1]!;
+	assert.doesNotMatch(retained, /src\/a\.ts/);
+	assert.match(unknown, /src\/a\.ts/);
+	assert.match(unknown, /end state is incomplete|lineage was proven/);
 
 	// More than six dropped branches stay collapsed so the lane can still be scanned.
 	const crowded = parseTranscript(

@@ -152,9 +152,24 @@ function eventEvidence(event: CanonicalEvent | null): string | null {
 			typeof edit.old === "string" && typeof edit.next === "string" ? `${clip(edit.old)} → ${clip(edit.next)}` : "unknown edit",
 		).join("; ");
 	}
+	if (parts[0] === "write-content" && typeof parts[2] === "string" && typeof parts[3] === "string") {
+		return `content fingerprint ${parts[2].slice(0, 8)}`;
+	}
 	if (parts[0] === "execution") return `command ${typeof parts[1] === "string" ? parts[1] : JSON.stringify(parts[1])}`;
 	if ((event.action === "test" || event.action === "run") && event.target) return `command ${event.target}`;
 	return null;
+}
+
+function writePreview(event: CanonicalEvent): string | null {
+	try {
+		const parts: unknown = JSON.parse(event.key);
+		if (!Array.isArray(parts) || parts[0] !== "write-content" || typeof parts[3] !== "string") return null;
+		const lines = parts[3].split(/\r?\n/);
+		const preview = lines.slice(0, 3).map((line: string) => line.length > 120 ? `${line.slice(0, 120)}…` : line).join("\n");
+		return lines.length > 3 ? `${preview}\n…` : preview;
+	} catch {
+		return null;
+	}
 }
 
 /** Plain wording for Work Equivalence incomplete-reason codes. */
@@ -229,6 +244,7 @@ function EquivCell({
 	const failed = isFailure(event.status);
 	const unknown = event.status === "unknown";
 	const originals = event.rule ? expand(event, steps) : [];
+	const preview = writePreview(event);
 	return (
 		<div className={`rd-cell rd-cell--eq rd-cell--${side}${failed ? " rd-cell--err" : ""}`}>
 			<div className="rd-eq-main">
@@ -252,6 +268,12 @@ function EquivCell({
 				) : null}
 			</div>
 			{evidence ? <span className={`rd-eq-evidence${evidenceDiffers ? " rd-eq-evidence--changed" : ""}`}>{evidence}</span> : null}
+			{preview !== null ? (
+				<details className={`rd-eq-originals${evidenceDiffers ? " rd-eq-evidence--changed" : ""}`}>
+					<summary>Content preview (first 3 lines)</summary>
+					<pre>{preview}</pre>
+				</details>
+			) : null}
 			{event.rule ? (
 				<details className="rd-eq-originals">
 					<summary>
@@ -400,6 +422,16 @@ function structuralCheck(graph: BranchGraph): ArtifactCheck {
 		claimedButUnchanged: [],
 		steps: graph.nodes.map((node) => {
 			const branch = branches.get(node.branchId);
+			if (node.action === "edit" || node.action === "write") {
+				const effects = graph.editEffects.filter((effect) => effect.node.stepId === node.stepId && effect.node.part === node.part);
+				const incomplete = !graph.endStateComplete || effects.some((effect) => graph.endState[effect.file] === null);
+				const statuses = new Set(effects.map((effect) => effect.lineage));
+				const status = incomplete || effects.length === 0 ? "unknown" : statuses.size === 1 ? effects[0]!.lineage : "partial";
+				return {
+					node, status, source: "structure" as const,
+					reason: incomplete ? "The file's end state is incomplete." : effects.length === 0 ? "No edit or write lineage was proven." : status === "unknown" ? "The edit or write lineage could not be reconstructed." : "Run end-state lineage; commit link not checked.",
+				};
+			}
 			return {
 				node,
 				status: branch?.structuralStatus ?? "unknown",
@@ -423,7 +455,7 @@ function droppedFile(group: BranchReport["abandoned"][number]): string {
 	return `${targets.length} files`;
 }
 
-function ReportStepList({ steps }: { steps: BranchReport["retained"] }) {
+function ReportStepList({ steps, showReason = false }: { steps: BranchReport["retained"]; showReason?: boolean }) {
 	if (steps.length === 0) return <p className="rd-branch__empty">None</p>;
 	return (
 		<ol className="rd-branch__list">
@@ -442,6 +474,7 @@ function ReportStepList({ steps }: { steps: BranchReport["retained"] }) {
 							<span className="rd-branch__status">{node.status}</span>
 						</span>
 					))}
+					{showReason && step.reason ? <span className="rd-branch__reason">{step.reason}</span> : null}
 				</li>
 			))}
 		</ol>
@@ -499,7 +532,7 @@ function BranchLane({
 			{report.unknown.length > 0 ? (
 				<>
 					<h3>Unknown</h3>
-					<ReportStepList steps={report.unknown} />
+					<ReportStepList steps={report.unknown} showReason />
 				</>
 			) : null}
 		</section>
