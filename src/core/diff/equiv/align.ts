@@ -39,7 +39,9 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 		left: row.left ? left.events[row.left.index] as CanonicalEvent : null,
 		right: row.right ? right.events[row.right.index] as CanonicalEvent : null,
 	}));
-	const reasons = new Set([...left.incompleteReasons, ...right.incompleteReasons]);
+	// Candidate discovery must not hide an exhausted normalization budget.
+	const reasons = new Set([...candidateLeft.incompleteReasons, ...candidateRight.incompleteReasons,
+		...left.incompleteReasons, ...right.incompleteReasons]);
 	if (aligned.truncated.left || aligned.truncated.right) reasons.add("alignment-truncated");
 	if (leftTrace.malformed_lines || rightTrace.malformed_lines) reasons.add("malformed-transcript");
 	// Unknown command steps are already marked by normalization. Exec cells can

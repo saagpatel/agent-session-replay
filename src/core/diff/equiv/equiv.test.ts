@@ -90,6 +90,63 @@ test("read enrichment distinguishes ranges and preserves unknown-range identity"
 	}
 });
 
+test("whole-file and unknown-range reads use workspace-relative keys across worktrees", () => {
+	for (const name of ["Read", "read_file"]) {
+		for (const pathField of name === "Read" ? ["file_path"] : ["path", "file_path"]) {
+			for (const options of [{}, { offset: 2 }]) {
+				const left = trace([[name, { [pathField]: "/work/left/a.ts", ...options }]]);
+				const right = trace([[name, { [pathField]: "/work/right/a.ts", ...options }]]);
+				left.run.workspace = { cwd: "/work/left" };
+				right.run.workspace = { cwd: "/work/right" };
+				assert.equal(alignEquivalent(left, right).equivalent, true);
+				const other = trace([[name, { [pathField]: "/work/right/b.ts", ...options }]]);
+				other.run.workspace = right.run.workspace;
+				assert.equal(alignEquivalent(left, other).equivalent, false);
+			}
+		}
+	}
+	assert.equal(alignEquivalent(trace([["Read", { file_path: "/work/equiv/a.ts" }]]),
+		trace([["Read", { file_path: "/work/equiv/a.ts", offset: 2 }]])).equivalent, false);
+});
+
+test("800 distinct file reads and a second pass compare without restarting pair scans", () => {
+	const pass = Array.from({ length: 800 }, (_, i) => read(1, 5, `file-${i}.ts`));
+	const t = trace([...pass, ...pass]);
+	const started = performance.now();
+	const result = alignEquivalent(t, t);
+	const elapsed = performance.now() - started;
+	assert.equal(result.equivalent, true);
+	assert.equal(result.left.events.length, 800);
+	assert.ok(result.left.events.every((event, i) => event.members[0] === i && event.members[1] === i + 800));
+	assert.ok(elapsed < 2000, `comparison took ${elapsed.toFixed(1)} ms`);
+});
+
+test("5,000 disjoint ranges exhaust the normalization budget and preserve every member", () => {
+	const t = trace(Array.from({ length: 5000 }, (_, i) => read(i * 3 + 1, 1)));
+	const started = performance.now();
+	const result = alignEquivalent(t, t);
+	const elapsed = performance.now() - started;
+	assert.equal(result.incomplete, true);
+	assert.equal(result.equivalent, false);
+	assert.ok(result.incompleteReasons.includes("normalization-budget"));
+	assert.ok(result.left.incompleteReasons.includes("normalization-budget"));
+	assert.ok(result.right.incompleteReasons.includes("normalization-budget"));
+	assert.deepEqual(expandAll(result.left), normalizeTrace(t));
+	assert.equal(result.left.events.length, 5000);
+	assert.ok(elapsed < 2000, `budgeted comparison took ${elapsed.toFixed(1)} ms`);
+});
+
+test("budget exhaustion after partial coalescing retains members and cannot prove equivalence", () => {
+	const t = trace(Array.from({ length: 5000 }, () => read(1, 5)));
+	const result = alignEquivalent(t, t);
+	assert.deepEqual(result.incompleteReasons, ["normalization-budget"]);
+	assert.equal(result.equivalent, false);
+	assert.deepEqual(result.truncated, { left: 0, right: 0 });
+	assert.ok(result.left.events.length < 5000);
+	assert.ok(result.left.events.length > 1);
+	assert.deepEqual(expandAll(result.left), normalizeTrace(t));
+});
+
 test("search dedupe uses query, path, options, and no intervening mutation", () => {
 	const a = trace([grep(), read(1, 5), grep(), grep()]);
 	const b = trace([grep(), read(1, 5)]);

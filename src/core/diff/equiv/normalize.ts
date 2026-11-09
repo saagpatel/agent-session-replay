@@ -224,7 +224,8 @@ function allowlistedEvidence(source: Step, cwd?: string | null, successful = fal
 			args.offset !== undefined && !positiveInteger(args.offset) || args.limit !== undefined && !positiveInteger(args.limit)) return undefined;
 		const range = bounds(args.offset ?? 1, args.limit);
 		if (args.limit !== undefined && range === null) return undefined;
-		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-native", name, fileKey(file, cwd), args) };
+		const { file_path: _file, path: _path, ...options } = args;
+		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-native", name, fileKey(file, cwd), options) };
 	}
 	if (name === "Edit" || name === "MultiEdit") {
 		const edits = editEvidence(name, args, successful);
@@ -259,6 +260,77 @@ function merge(a: CanonicalEvent, b: CanonicalEvent, evidenceKey: string, rule: 
 	};
 }
 
+const NORMALIZATION_BUDGET = 2_000_000;
+type Spend = (steps?: number) => boolean;
+
+/**
+ * Keep only candidates with the same file/range kind or exact search key.
+ * Barriers close affected buckets; distinct-file edits leave reads open.
+ * A bridging range revisits its own bucket, never the entire event stream.
+ */
+function coalesceObservations(
+	events: CanonicalEvent[],
+	sameSegment: (a: CanonicalEvent, b: CanonicalEvent) => boolean,
+	cwd: string | null | undefined,
+	spend: Spend,
+): CanonicalEvent[] {
+	const slots: Array<CanonicalEvent | null> = [...events];
+	const buckets = new Map<string, Set<number>>();
+	for (let i = 0; i < slots.length; i++) {
+		if (!spend()) break;
+		const event = slots[i] as CanonicalEvent;
+		if (i > 0 && !sameSegment(events[i - 1] as CanonicalEvent, event)) buckets.clear();
+		if (event.action !== "read" && event.action !== "search") {
+			for (const [bucketKey, candidates] of buckets) {
+				if (!spend()) return slots.filter((e): e is CanonicalEvent => e !== null);
+				const representative = slots[candidates.values().next().value as number] as CanonicalEvent;
+				if (!canCommute(event, representative)) buckets.delete(bucketKey);
+			}
+			continue;
+		}
+		if (event.status !== "ok" || event.range && event.target === null) continue;
+		const bucketKey = key(event.action, event.target, event.range ? "range" : event.key);
+		let candidates = buckets.get(bucketKey);
+		if (!candidates) {
+			candidates = new Set();
+			buckets.set(bucketKey, candidates);
+		}
+		let position = i;
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const candidate of candidates) {
+				if (!spend()) return slots.filter((e): e is CanonicalEvent => e !== null);
+				if (candidate === position) continue;
+				const a = slots[candidate] as CanonicalEvent;
+				const b = slots[position] as CanonicalEvent;
+				const range = a.range && b.range
+					? a.range.start <= b.range.end + 1 && b.range.start <= a.range.end + 1
+						? { start: Math.min(a.range.start, b.range.start), end: Math.max(a.range.end, b.range.end) } : null
+					: undefined;
+				if (range === null) continue;
+				// Charge member copying as well as candidate checks so a single
+				// enormous group cannot hide quadratic work behind cheap lookups.
+				if (!spend(a.members.length + b.members.length)) return slots.filter((e): e is CanonicalEvent => e !== null);
+				const first = Math.min(candidate, position);
+				const last = Math.max(candidate, position);
+				const merged = merge(slots[first] as CanonicalEvent, slots[last] as CanonicalEvent,
+					range ? readKey(a.target, range, cwd) : a.key, a.action === "read" ? "read-coalesce" : "search-dedupe");
+				if (range) merged.range = range;
+				slots[first] = merged;
+				slots[last] = null;
+				candidates.delete(candidate);
+				candidates.delete(position);
+				position = first;
+				changed = true;
+				break;
+			}
+		}
+		candidates.add(position);
+	}
+	return slots.filter((e): e is CanonicalEvent => e !== null);
+}
+
 /**
  * Additive normalization over existing DiffSteps. No input is removed or mutated.
  * Supply sources in trace order so omitted opaque calls retain their barriers.
@@ -272,7 +344,11 @@ export function normalizeEquivalent(
 	editKeys?: ReadonlySet<string>,
 ): EquivalentNormalization {
 	const grouped = new Map<string, DiffStep[]>();
-	for (const step of steps) grouped.set(step.stepId, [...(grouped.get(step.stepId) ?? []), step]);
+	for (const step of steps) {
+		const members = grouped.get(step.stepId);
+		if (members) members.push(step);
+		else grouped.set(step.stepId, [step]);
+	}
 	const evidenceBySource = new Map<string, Evidence>();
 	const edits = new Map<string, Replacement[]>();
 	const reasons = new Set<string>();
@@ -315,7 +391,7 @@ export function normalizeEquivalent(
 	}
 	const sameSegment = (a: CanonicalEvent, b: CanonicalEvent) =>
 		segments.get(a.memberStepIds[0] as string) === segments.get(b.memberStepIds[0] as string);
-	const events = steps.map((step, index): CanonicalEvent => {
+	let events = steps.map((step, index): CanonicalEvent => {
 		const source = sources.get(step.stepId);
 		const allowed = evidenceBySource.get(step.stepId);
 		const delegate = step.action === "delegate";
@@ -347,50 +423,43 @@ export function normalizeEquivalent(
 			status: step.status,
 		};
 	});
+	// Bound additional rewrite work after evidence enrichment: event visits,
+	// candidate/barrier checks, replacements and copied members.
+	let remaining = NORMALIZATION_BUDGET;
+	const spend: Spend = (count = 1) => {
+		if (count <= remaining) {
+			remaining -= count;
+			return true;
+		}
+		reasons.add("normalization-budget");
+		return false;
+	};
 	// A consecutive edit chain is one candidate. Never partially collapse it when
 	// comparison cannot verify the complete chain against the other lane.
+	editBatches:
 	for (let i = 0; i < events.length; i++) {
+		if (!spend()) break;
 		const first = events[i] as CanonicalEvent;
 		let composed = edits.get(first.id);
 		if (!composed) continue;
 		let end = i;
 		for (let j = i + 1; j < events.length; j++) {
+			if (!spend()) break editBatches;
 			const next = events[j] as CanonicalEvent;
 			const edit = edits.get(next.id);
 			if (!edit || !sameSegment(first, next) || next.target !== first.target || next.status !== "ok") break;
+			if (!spend(composed.length + edit.length)) break editBatches;
 			composed = composition([...composed, ...edit]);
 			end = j;
 		}
 		const composedKey = editKey(first.target, composed, cwd);
 		if (end === i || editKeys && !editKeys.has(composedKey)) continue;
+		const memberCount = events.slice(i, end + 1).reduce((sum, e) => sum + e.members.length, 0);
+		if (!spend(memberCount * (end - i + 1))) break;
 		let combined = first;
 		for (let j = i + 1; j <= end; j++) combined = merge(combined, events[j] as CanonicalEvent, composedKey, "edit-batch");
 		events.splice(i, end - i + 1, combined);
 	}
-	// Iterate to a fixed point: a later range may bridge two earlier ranges.
-	let changed = true;
-	while (changed) {
-		changed = false;
-		outer:
-		for (let i = 0; i < events.length; i++) {
-			const a = events[i] as CanonicalEvent;
-			if (a.status !== "ok" || a.action !== "read" && a.action !== "search") continue;
-			for (let j = i + 1; j < events.length; j++) {
-				const b = events[j] as CanonicalEvent;
-				if (!sameSegment(a, b) || !canCommute(a, b)) break;
-				if (b.status !== "ok" || b.action !== a.action || a.target !== b.target) continue;
-				const range = a.range && b.range && a.range.start <= b.range.end + 1 && b.range.start <= a.range.end + 1
-					? { start: Math.min(a.range.start, b.range.start), end: Math.max(a.range.end, b.range.end) } : null;
-				if (a.action === "read" ? !(a.target !== null && range || !a.range && !b.range && a.key === b.key) : a.key !== b.key) continue;
-				if (!events.slice(i + 1, j).every((e) => canCommute(b, e))) continue;
-				const merged = merge(a, b, range ? readKey(a.target, range, cwd) : a.key, a.action === "read" ? "read-coalesce" : "search-dedupe");
-				if (range) merged.range = range;
-				events[i] = merged;
-				events.splice(j, 1);
-				changed = true;
-				break outer;
-			}
-		}
-	}
+	if (!reasons.has("normalization-budget")) events = coalesceObservations(events, sameSegment, cwd, spend);
 	return { steps, events, incomplete: reasons.size > 0, incompleteReasons: [...reasons] };
 }
