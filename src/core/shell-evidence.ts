@@ -144,7 +144,8 @@ export function shellEvidence(command: string): ShellEvidence | null {
 }
 
 export function isCommitCommand(args: Args): boolean {
-	if (args["env"] && Object.keys(Object(args["env"])).length) return false;
+	const allowed = new Set(["command", "cmd", "workdir", "description", "timeout", "timeout_ms", "yield_time_ms", "max_output_tokens"]);
+	if (Object.keys(args).some((key) => !allowed.has(key))) return false;
 	const command = shellCommand(args);
 	return command !== undefined && shellEvidence(command)?.kind === "commit";
 }

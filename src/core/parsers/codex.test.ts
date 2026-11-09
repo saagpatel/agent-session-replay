@@ -140,6 +140,29 @@ test("Codex commit metadata distinguishes shell operators from literal arguments
 	assert.deepEqual(commit("git add . && git commit -m x"), { branch: "main", short: "1a2b3c4" });
 });
 
+test("Codex shell and exec cells require allowlisted argument keys for commit evidence", () => {
+	const cases: Array<[Record<string, unknown>, boolean]> = [
+		[{ shell: "/work/fake-shell" }, false], [{ env: {} }, false], [{ mystery: true }, false],
+		[{ login: false }, false], [{ tty: false }, false], [{ run_in_background: false }, false],
+		[{ workdir: "/work/repo", description: "commit", timeout: 100, timeout_ms: 100, yield_time_ms: 10, max_output_tokens: 100 }, true],
+	];
+	for (const [extra, accepted] of cases) {
+		for (const name of ["shell", "exec_command", "local_shell", "exec"]) {
+			const cell = name === "exec";
+			const shellArgs = { cmd: "git commit -m fixture", ...extra };
+			const args = cell ? { input: `text(await tools.exec_command(${JSON.stringify(shellArgs)}))` } : shellArgs;
+			const body = "[main 1a2b3c4] fixture";
+			const output = cell ? [{ type: "text", text: "Script completed\n" }, { type: "text", text: JSON.stringify({ chunk_id: "c", exit_code: 0, output: body }) }] : `Process exited with code 0\nOutput:\n${body}`;
+			const { steps } = parseCodexEvents([
+				branchSessionMeta(),
+				branchEvent("response_item", { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c" }),
+				branchEvent("response_item", { type: "function_call_output", call_id: "c", output }),
+			]);
+			assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined, `${name}: ${JSON.stringify(extra)}`);
+		}
+	}
+});
+
 test("Codex shell and exec cells require allowlisted commit options", () => {
 	const rejected = ["--dry-run --porcelain -z", "--dry-run", "--short", "--porcelain", "--long", "-z", "--null", "--amend", "-v", "-F message", "--fixup HEAD", "file.txt", "--message fixture", "-m", "-q -m x", "--quiet -m x"];
 	const accepted = ["", "-m fixture", "-mfixture", "--message=fixture", "-a -m fixture", "-am fixture", "--all --allow-empty"];

@@ -2,6 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { literalExecCalls } from "./normalize.ts";
 
+test("literal exec calls retain argument keys and reject unreadable properties", () => {
+	const call = literalExecCalls('text(await tools.exec_command({cmd:"git commit -m fixture",shell:"/work/fake-shell",timeout_ms:100,mystery:false}))')?.[0];
+	assert.deepEqual(Object.keys(call?.args ?? {}), ["cmd", "shell", "timeout_ms", "mystery"]);
+	for (const prop of ["...extra", "[key]: 1", "shell: chosen", "env: {}", "shell"]) {
+		assert.equal(literalExecCalls(`text(await tools.exec_command({cmd:"git commit -m fixture",${prop}}))`), null, prop);
+	}
+});
+
 test("literal exec calls scan escapes sequentially", () => {
 	const patch = "*** Begin Patch\n*** Add File: src/example.ts\n+const pattern = /\\w+/;\n*** End Patch";
 	assert.equal(literalExecCalls(`text(await tools.apply_patch(${JSON.stringify(patch)}))`)?.[0]?.patch, patch);

@@ -168,6 +168,21 @@ test("tool_use + matching tool_result merge into one ok tool_call step", () => {
 	assert.equal(tc.ended_at, TS2);
 });
 
+test("Claude commit evidence requires allowlisted shell arguments", () => {
+	const cases: Array<[Record<string, unknown>, boolean]> = [
+		[{ shell: "/work/fake-shell" }, false], [{ env: {} }, false], [{ mystery: true }, false],
+		[{ run_in_background: false }, false],
+		[{ workdir: "/work/repo", description: "commit", timeout: 100, timeout_ms: 100, yield_time_ms: 10, max_output_tokens: 100 }, true],
+	];
+	for (const [extra, accepted] of cases) {
+		const { steps } = parseClaudeCodeEvents([
+			{ type: "assistant", sessionId: "s", uuid: "a1", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash1", name: "Bash", input: { command: "git commit -m fixture", ...extra } }] } },
+			{ type: "user", sessionId: "s", uuid: "u1", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash1", content: "[main 1a2b3c4] fixture" }] }, toolUseResult: { type: "bash", stdout: "[main 1a2b3c4] fixture", stderr: "", interrupted: false, isImage: false } },
+		]);
+		assert.deepEqual(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], accepted ? { branch: "main", short: "1a2b3c4" } : undefined);
+	}
+});
+
 test("successful Bash output with multiple commit headers records no identity", () => {
 	const { steps } = parseClaudeCodeEvents([
 		{

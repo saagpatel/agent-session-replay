@@ -191,7 +191,7 @@ function execCellCommitOutput(input: string, rawOutput: unknown): { output: stri
 	if (!/^Script completed\b/.test(header)) return null;
 	for (let i = calls.length - 1; i >= 0; i--) {
 		const call = calls[i]!;
-		if (call.name !== "exec_command" || !isCommitCommand({ cmd: call.command })) continue;
+		if (call.name !== "exec_command" || !isCommitCommand(call.args ?? {})) continue;
 		try {
 			const chunk = asObj(JSON.parse(str(asObj(rawOutput[i + 1])["text"]) ?? ""));
 			if (typeof chunk["chunk_id"] === "string" && chunk["exit_code"] === 0 && typeof chunk["output"] === "string" && commitHeader(chunk["output"]))

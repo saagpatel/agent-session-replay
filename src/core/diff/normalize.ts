@@ -752,6 +752,7 @@ export function literalExecCalls(input: string): Array<{
 	patch?: string;
 	path?: string;
 	content?: string;
+	args?: Record<string, string | undefined>;
 }> | null {
 	// maskCode only ends line comments at LF; reject other JS line terminators.
 	if (/[\r\u2028\u2029]/.test(input)) return null;
@@ -810,7 +811,7 @@ export function literalExecCalls(input: string): Array<{
 			if (values.has("workdir") && workdir === undefined) return null;
 			const command = values.get("cmd");
 			if (name === "exec_command" && command === undefined) return null;
-			out.push({ name, command, workdir, path: values.get("path") ?? values.get("file_path"), content: values.get("content") });
+			out.push({ name, command, workdir, path: values.get("path") ?? values.get("file_path"), content: values.get("content"), args: Object.fromEntries(values) });
 		}
 		offset = end + finish[0].length;
 	}
