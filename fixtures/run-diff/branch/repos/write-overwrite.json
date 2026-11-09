@@ -1,0 +1,20 @@
+{
+  "commits": [
+    {
+      "parent": null,
+      "message": "write-overwrite base",
+      "files": {
+        "src/value.ts": "const value = 0;\n",
+        "src/other.ts": "const other = 0;\n"
+      }
+    },
+    {
+      "parent": "2780105e5401b6502830993ea5768baf7feb8b4e",
+      "message": "write-overwrite final",
+      "files": {
+        "src/value.ts": "const value = 2;",
+        "src/other.ts": "const other = 0;\n"
+      }
+    }
+  ]
+}

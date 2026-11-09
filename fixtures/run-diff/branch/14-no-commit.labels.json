@@ -1,0 +1,14 @@
+{
+  "repo": "no-commit",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0"
+    ]
+  },
+  "claim": {
+    "commitShort": null
+  },
+  "notes": "No git commit output is present."
+}

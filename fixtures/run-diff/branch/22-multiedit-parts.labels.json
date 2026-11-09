@@ -1,0 +1,15 @@
+{
+  "repo": "multiedit-parts",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "284b67a"
+  },
+  "notes": "One MultiEdit tool call contains two ordered edit operations."
+}

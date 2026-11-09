@@ -1,0 +1,15 @@
+{
+  "repo": "codex-zero-dead-ends",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "call_0",
+      "call_1"
+    ]
+  },
+  "claim": {
+    "commitShort": "3c92f33"
+  },
+  "notes": "Codex rollout with one passing test."
+}

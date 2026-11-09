@@ -1,0 +1,19 @@
+{
+  "repo": "two-hypotheses",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0",
+      "toolu_1"
+    ],
+    "retained": [
+      "toolu_2",
+      "toolu_3",
+      "toolu_4"
+    ]
+  },
+  "claim": {
+    "commitShort": "bc2ce3b"
+  },
+  "notes": "Two independent hypotheses are both restored."
+}

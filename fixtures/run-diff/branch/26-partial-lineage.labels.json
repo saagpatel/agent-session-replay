@@ -1,0 +1,18 @@
+{
+  "repo": "partial-lineage",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_1",
+      "toolu_2"
+    ],
+    "partial": [
+      "toolu_0"
+    ]
+  },
+  "claim": {
+    "commitShort": "15a80d5"
+  },
+  "notes": "The first edit retains part of its inserted line while a later edit replaces the suffix."
+}
