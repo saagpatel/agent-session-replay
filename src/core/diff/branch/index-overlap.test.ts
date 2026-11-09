@@ -61,18 +61,36 @@ test("literal staging coverage or commit all proves the worktree boundary after 
 	assert.deepEqual(restaged.check.effects.map((effect) => effect.status), ["abandoned", "retained"]);
 });
 
-test("unproven staging, unstaged edits and explicit commit pathspecs fail closed", () => {
-	for (const command of ["git add -p src/a.ts", "git add -u", "git add --force src/a.ts", "git add ':(literal)src/a.ts'", "git add src/b.ts", "git add src/a.ts.backup"]) {
+test("unproven staging and explicit commit pathspecs fail closed", () => {
+	for (const command of ["git add -p src/a.ts", "git add -u", "git add --force src/a.ts", "git add ':(literal)src/a.ts'"]) {
 		const { graph, check } = artifact([edit("first", "base", "one", 0, 1), shell(command, 2)]);
 		assert.equal(graph.claim.tree?.[file], null, command);
 		assert.equal(check.effects[0]?.status, "unknown", command);
 	}
-	assert.equal(artifact([edit("first", "base", "one", 0, 1)]).check.effects[0]?.status, "unknown");
 	for (const command of ["git commit -m fixture src/a.ts", "git commit -am fixture -- src/a.ts", "git commit --include src/a.ts -m fixture", "git commit --interactive -m fixture"]) {
 		assert.equal(artifact([edit("first", "base", "one", 0, 1), shell("git add .", 2)], command).check.effects[0]?.status, "unknown", command);
 	}
 	const unproven = artifact([edit("first", "base", "one", 0, 1), shell("git add .", 2), shell("git add -p src/a.ts", 4)]);
 	assert.equal(unproven.check.effects[0]?.status, "unknown");
+});
+
+test("never-staged paths use their previous boundary content", () => {
+	for (const staging of [[], [shell("git add src/b.ts", 2)], [shell("git add src/a.ts.backup", 2)]]) {
+		const { graph, check } = artifact([edit("first", "base", "one", 0, 1), ...staging], "git commit -m fixture", "base\n");
+		assert.equal(graph.claim.tree?.[file]?.text, "base\n");
+		assert.equal(check.effects[0]?.status, "abandoned");
+	}
+	const previous = artifact([
+		edit("first", "base", "one", 0, 1), shell("git add src/a.ts", 2),
+		shell("git commit -m earlier", 4), edit("second", "one", "two", 6, 7),
+	], "git commit -m fixture", "one\n");
+	assert.equal(previous.graph.claim.tree?.[file]?.text, "one\n");
+	assert.deepEqual(previous.check.effects.map((effect) => effect.status), ["retained", "abandoned"]);
+	const uncertainCommit = shell("git commit -m earlier", 2);
+	uncertainCommit.status = "interrupted";
+	const uncertain = artifact([uncertainCommit, edit("first", "base", "one", 4, 5)], "git commit -m fixture", "base\n");
+	assert.equal(uncertain.graph.claim.tree?.[file], null);
+	assert.equal(uncertain.check.effects[0]?.status, "unknown");
 });
 
 test("staging provenance is per path and resolves literal working directories", () => {
@@ -81,8 +99,8 @@ test("staging provenance is per path and resolves literal working directories", 
 	const second = tool("other", "Edit", { file_path: other, old_string: "other", new_string: "next" }, 4, 5);
 	const { graph, check } = artifact([edit("first", "base", "one", 0, 1), stage, second]);
 	assert.equal(graph.claim.tree?.[file]?.text, "one\n");
-	assert.equal(graph.claim.tree?.[other], null);
-	assert.deepEqual(check.effects.map((effect) => effect.status), ["retained", "unknown"]);
+	assert.equal(graph.claim.tree?.[other]?.text, "other\n");
+	assert.deepEqual(check.effects.map((effect) => effect.status), ["retained", "abandoned"]);
 });
 
 test("overlapping writes, including sidechains and missing end times, have unknown lineage", () => {

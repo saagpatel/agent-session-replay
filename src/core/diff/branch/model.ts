@@ -293,6 +293,10 @@ export function buildBranchGraph(
 	const unknown = new Set<string>();
 	// Only a proven stage after the last mutation makes the index agree with the worktree.
 	const staged = new Set<string>(Object.keys(base));
+	let previousTree = new Map<string, FileState | null>(Object.entries(base).map(([path, text]) => [path,
+		text === null ? null : { text, owners: Array<string | null>(text.length).fill(null) }]));
+	const stagedSinceCommit = new Set<string>();
+	let uncertainIndex = false;
 	for (const [file, text] of Object.entries(base)) {
 		if (text === null) unknown.add(file);
 		else
@@ -550,6 +554,7 @@ export function buildBranchGraph(
 		const { node, name } = op;
 		for (const path of conflicts.get(node.index) ?? []) invalidate(path);
 		const mutation = mutationPaths(op, trace);
+		if (op.unparsed) uncertainIndex = true;
 		if (op.evidence?.kind !== "add")
 			for (const path of paths)
 				if (mutation === null || mutation.some((p) => covers(p, path))) staged.delete(path);
@@ -575,9 +580,13 @@ export function buildBranchGraph(
 			if (!location) invalidateTree();
 			// A command in another directory cannot restore or claim this repository.
 			if (!location || location.startsWith("external:")) continue;
-			if (evidence?.staged) indexChanged = true;
+			if (evidence?.staged) {
+				indexChanged = true;
+				uncertainIndex = true;
+			}
 			const restore = evidence?.kind === "restore" ? evidence.paths : undefined;
 			const whole = evidence?.kind === "whole-restore";
+			if (whole || evidence?.kind === "move") uncertainIndex = true;
 			if (restore || whole) {
 				const paths = restore
 					? restore
@@ -650,9 +659,15 @@ export function buildBranchGraph(
 				}
 			} else if (evidence?.kind === "add") {
 				indexChanged = true;
-				if (!evidence.stagePaths || node.status !== "ok") staged.clear();
+				if (!evidence.stagePaths || !mutation || node.status !== "ok") {
+					staged.clear();
+					uncertainIndex = true;
+				}
 				else for (const path of paths)
-					if (mutation?.some((p) => covers(p, path))) staged.add(path);
+					if (mutation.some((p) => covers(p, path))) {
+						staged.add(path);
+						stagedSinceCommit.add(path);
+					}
 			}
 		} else if (!READ_TOOLS.has(name)) {
 			unparsedReasons.add(`Unparsed writer: ${name || "unknown tool"}.`);
@@ -677,28 +692,40 @@ export function buildBranchGraph(
 		}
 		const step = trace.steps.find((s) => s.step_id === node.stepId);
 		const git = obj(step?.attributes[ATTR.GIT_COMMIT]);
-		if (typeof git["short"] === "string" && !claimedSteps.has(node.stepId) &&
-			op.evidence?.kind === "commit" && !op.unparsed && node.status === "ok" &&
-			(op.call === undefined || op.call === step?.attributes[ATTR.GIT_COMMIT_CALL])) {
+		if (op.evidence?.kind === "commit" && !op.unparsed && node.status === "ok") {
 			const boundaryUnknown = new Set(unknown);
-			for (const path of new Set([...files.keys(), ...touched]))
-				if (op.evidence.commitWorktree === undefined ||
-					(!op.evidence.commitWorktree && !staged.has(path))) boundaryUnknown.add(path);
-			claim = {
+			const boundary = new Map<string, FileState | null>([...files].map(([path, state]) =>
+				[path, { text: state.text, owners: [...state.owners] }]));
+			for (const path of new Set([...files.keys(), ...touched, ...previousTree.keys()])) {
+				if (op.evidence.commitWorktree === undefined) boundaryUnknown.add(path);
+				else if (!op.evidence.commitWorktree && !staged.has(path)) {
+					if (!uncertainIndex && !stagedSinceCommit.has(path) && previousTree.has(path) && !unknown.has(path))
+						boundary.set(path, previousTree.get(path)!);
+					else boundaryUnknown.add(path);
+				}
+			}
+			for (const path of boundaryUnknown) boundary.set(path, null);
+			if (typeof git["short"] === "string" && !claimedSteps.has(node.stepId) &&
+				(op.call === undefined || op.call === step?.attributes[ATTR.GIT_COMMIT_CALL])) claim = {
 				commitShort: git["short"],
 				stepId: node.stepId,
 				part: node.part,
-				tree: Object.fromEntries([
-					...[...files].map(([path, state]) => [path, { text: state.text, owners: [...state.owners] }]),
-					...[...boundaryUnknown].map((path) => [path, null]),
-				]),
+				tree: Object.fromEntries(boundary),
 				files: [...touched].sort(),
 			};
 			headChanged = true;
-			claimedSteps.add(node.stepId);
+			if (typeof git["short"] === "string" && (op.call === undefined || op.call === step?.attributes[ATTR.GIT_COMMIT_CALL])) claimedSteps.add(node.stepId);
+			previousTree = boundary;
+			stagedSinceCommit.clear();
+			uncertainIndex = false;
 		}
 		if (op.evidence?.kind === "commit" && !op.unparsed)
 			headChanged = true;
+		if (op.evidence?.kind === "commit" && node.status !== "ok") {
+			previousTree = new Map(paths.map((path) => [path, null]));
+			staged.clear();
+			uncertainIndex = true;
+		}
 	}
 	const endState: FileSnapshot = Object.fromEntries([
 		...[...files].map(([file, state]) => [file, state.text]),
