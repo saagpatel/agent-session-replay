@@ -30,6 +30,18 @@ export interface CausalGraph {
 	adjacency: Map<string, string[]>;
 }
 
+/** Exclude conservative barriers when proving a dependency from evidence. */
+export function evidencedOnly(graph: CausalGraph): CausalGraph {
+	const edges = graph.edges.filter((edge) => edge.kind !== "unresolved-write");
+	const adjacency = new Map<string, string[]>();
+	for (const edge of edges) {
+		const neighbors = adjacency.get(edge.from) ?? [];
+		if (!neighbors.includes(edge.to)) neighbors.push(edge.to);
+		adjacency.set(edge.from, neighbors);
+	}
+	return { ...graph, edges, adjacency };
+}
+
 /**
  * Build evidenced dependencies and conservative unresolved-operation barriers,
  * never timestamp or source adjacency alone.

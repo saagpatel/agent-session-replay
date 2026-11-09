@@ -1,4 +1,4 @@
-import { findPath, type CausalGraph } from "./causal.ts";
+import { evidencedOnly, findPath, type CausalGraph } from "./causal.ts";
 import type { ResolvedManifest } from "./manifest.ts";
 import { fileOperations, stepLabel } from "./operations.ts";
 
@@ -20,16 +20,11 @@ export function checkCaptions(resolved: ResolvedManifest, graph: CausalGraph): C
 	const label = (id: string) => stepLabel(graph.steps.get(id), cwd);
 	const predecessors = new Map<string, Set<string>>();
 	// Possible mutations constrain playback, but cannot substantiate a claim.
-	const evidencedGraph: CausalGraph = { ...graph, edges: [], adjacency: new Map() };
+	const evidencedGraph = evidencedOnly(graph);
 	for (const edge of graph.edges) {
 		const incoming = predecessors.get(edge.to) ?? new Set<string>();
 		incoming.add(edge.from);
 		predecessors.set(edge.to, incoming);
-		if (edge.kind === "unresolved-write") continue;
-		evidencedGraph.edges.push(edge);
-		const neighbors = evidencedGraph.adjacency.get(edge.from) ?? [];
-		if (!neighbors.includes(edge.to)) neighbors.push(edge.to);
-		evidencedGraph.adjacency.set(edge.from, neighbors);
 	}
 	for (const caption of resolved.manifest.captions) {
 		const refs = caption.kind === "shows" ? caption.refs : [caption.cause, caption.effect];

@@ -670,11 +670,10 @@ test("unresolved barriers outside the caption source interval cannot prove a bec
 	const result = validateExport(manifest, trace);
 	assert.equal(result.ok, false);
 	assert.ok(result.failures.some((failure) => failure.reason === "caption-unsupported-claim"));
-	assert.ok(result.failures.some((failure) => failure.reason === "unresolved-operation" && failure.step === "unknown"));
-	assert.ok(!result.warnings.some((warning) => warning.reason === "unresolved-operation"));
+	assert.ok(result.warnings.some((warning) => warning.reason === "unresolved-operation" && warning.step === "unknown"));
 });
 
-test("caption dependencies follow graph ancestors and descendants rather than source intervals", () => {
+test("caption scope includes the source interval but not one-sided evidenced dependencies", () => {
 	const cases = [
 		[
 			toolStep("unknown", "unknown_tool"),
@@ -697,9 +696,22 @@ test("caption dependencies follow graph ancestors and descendants rather than so
 		const manifest = oneScene(trace, ["cause", "effect"]);
 		manifest.captions.push({ id: "claim", sceneId: "scene-main", kind: "because", text: "The cause led to the effect.", cause: "cause", effect: "effect" });
 		const result = validateExport(manifest, trace);
-		assert.equal(result.failures.some((failure) => failure.reason === "unresolved-operation"), index < 2);
-		assert.equal(result.warnings.some((warning) => warning.reason === "unresolved-operation"), index === 2);
+		assert.equal(result.failures.some((failure) => failure.reason === "unresolved-operation"), index === 2);
+		assert.equal(result.warnings.some((warning) => warning.reason === "unresolved-operation"), index < 2);
 	}
+});
+
+test("an evidenced caption path scopes an unresolved step outside the source interval", () => {
+	const trace = makeTrace([
+		makeStep("effect", { parent_step_id: "unknown" }),
+		toolStep("unknown", "unknown_tool", {}, { parent_step_id: "cause" }),
+		makeStep("cause"),
+	]);
+	const manifest = oneScene(trace, ["cause", "unknown", "effect"]);
+	manifest.captions.push({ id: "claim", sceneId: "scene-main", kind: "because", text: "The cause led to the effect.", cause: "cause", effect: "effect" });
+	const result = validateExport(manifest, trace);
+	assert.ok(result.failures.some((failure) => failure.reason === "unresolved-operation" && failure.step === "unknown"));
+	assert.ok(!result.failures.some((failure) => failure.reason === "caption-unsupported-claim"));
 });
 
 test("caption proofs retain evidenced paths alongside unresolved barriers", () => {
@@ -724,7 +736,9 @@ test("an incomplete exec cell cannot prove that its literal calls were all invok
 	const manifest = oneScene(trace, [patch, read]);
 	assert.equal(validateExport(manifest, trace).warnings[0]?.reason, "unresolved-operation");
 	manifest.captions.push({ id: "cause", sceneId: "scene-main", kind: "because", text: "The patch precedes its read.", cause: patch, effect: read });
-	assert.ok(validateExport(manifest, trace).failures.some((failure) => failure.reason === "unresolved-operation"));
+	const result = validateExport(manifest, trace);
+	assert.ok(result.warnings.some((warning) => warning.reason === "unresolved-operation"));
+	assert.ok(result.failures.some((failure) => failure.reason === "caption-unsupported-claim"));
 });
 
 test("source digest binds causal links, nested tool evidence, workspace and playback fields", () => {

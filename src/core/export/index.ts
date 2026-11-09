@@ -1,5 +1,5 @@
 import type { Trace } from "../types.ts";
-import { buildCausalGraph, happensBefore, type GraphDiagnostic } from "./causal.ts";
+import { buildCausalGraph, evidencedOnly, happensBefore, type GraphDiagnostic } from "./causal.ts";
 import { checkCaptions, type CaptionFailure } from "./caption-ref.ts";
 import { parseManifest, resolveManifest, type ManifestError } from "./manifest.ts";
 import { checkOrder, type OrderFailure } from "./order-check.ts";
@@ -14,6 +14,7 @@ export function validateExport(input: unknown, trace: Trace): { ok: boolean; fai
 	const resolved = resolveManifest(manifest, trace);
 	if ("errors" in resolved) return { ok: false, failures: resolved.errors, warnings: [] };
 	const graph = buildCausalGraph(trace);
+	const evidencedGraph = evidencedOnly(graph);
 	const indices = new Map(trace.steps.map((step, index) => [step.step_id, index]));
 	// A reversed source interval needs independence evidence for every cell it
 	// crosses, including omitted cells. Preserving source order needs no such claim.
@@ -34,11 +35,13 @@ export function validateExport(input: unknown, trace: Trace): { ok: boolean; fai
 		const index = indices.get(diagnostic.step!)!;
 		const dependedOn = reversed.some(([from, to]) => from <= index && index <= to) || manifest.captions.some((caption) => {
 			if (caption.kind === "shows") return caption.refs.includes(diagnostic.step!);
-			// Dependency scope includes conservative barriers, even when an
-			// explicit parent places the operation outside the source interval.
-			return diagnostic.step === caption.cause || diagnostic.step === caption.effect ||
-				happensBefore(graph, diagnostic.step!, caption.effect) ||
-				happensBefore(graph, caption.cause, diagnostic.step!);
+			const causeIndex = indices.get(caption.cause)!;
+			const effectIndex = indices.get(caption.effect)!;
+			if (causeIndex < index && index < effectIndex) return true;
+			const step = diagnostic.step!;
+			return (step === caption.cause || happensBefore(evidencedGraph, caption.cause, step)) &&
+				(step === caption.effect || happensBefore(evidencedGraph, step, caption.effect)) &&
+				happensBefore(evidencedGraph, caption.cause, caption.effect);
 		});
 		if (!dependedOn) warnings.push(diagnostic);
 		return dependedOn;
