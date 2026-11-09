@@ -7,10 +7,28 @@ import { validateExport } from "./index.ts";
 import { traceDigest } from "./manifest.ts";
 import { buildSidecar, renderSidecarMarkdown, validateSidecar } from "./sidecar.ts";
 
+test("sidecar validator rejects omitted coverage and incorrect counts", () => {
+	const { trace, faithful } = generateReplayFixtures().sessions[0]!;
+	const original = buildSidecar(faithful, trace, validateExport(faithful, trace));
+	for (const [change, reason] of [
+		[(sidecar: typeof original) => { sidecar.scenes.pop(); }, /Scene coverage/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.steps.pop(); }, /Played step coverage/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.steps.reverse(); }, /Played step coverage/],
+		[(sidecar: typeof original) => { sidecar.scenes[0]!.captions.pop(); }, /Caption coverage/],
+		[(sidecar: typeof original) => { sidecar.counts.sourceSteps--; }, /Counts/],
+	] as const) {
+		const sidecar = structuredClone(original);
+		change(sidecar);
+		const result = validateSidecar(sidecar, faithful, trace);
+		assert.equal(result.ok, false);
+		assert.match(result.errors.join("; "), reason);
+	}
+});
+
 test("all generated sidecars retain scene and caption evidence", () => {
 	for (const { trace, faithful } of generateReplayFixtures().sessions) {
 		const sidecar = buildSidecar(faithful, trace, validateExport(faithful, trace));
-		assert.deepEqual(validateSidecar(sidecar, trace, faithful), { ok: true, errors: [] });
+		assert.deepEqual(validateSidecar(sidecar, faithful, trace), { ok: true, errors: [] });
 		const markdown = renderSidecarMarkdown(sidecar);
 		for (const [i, scene] of faithful.scenes.entries()) {
 			assert.deepEqual(sidecar.scenes[i]!.steps.map((s) => s.id), scene.steps);
@@ -86,7 +104,7 @@ test("sidecar validator rejects a reference outside the export", () => {
 	const sidecar = buildSidecar(faithful, trace, validateExport(faithful, trace));
 	const missing = trace.steps.find((s) => !faithful.scenes.some((scene) => scene.steps.includes(s.step_id)))!;
 	sidecar.scenes[0]!.captions[0]!.refs.push({ id: missing.step_id, step: { id: missing.step_id, label: "test", status: "unknown", index: trace.steps.indexOf(missing), timestamp: missing.started_at } });
-	assert.equal(validateSidecar(sidecar, trace, faithful).ok, false);
+	assert.equal(validateSidecar(sidecar, faithful, trace).ok, false);
 });
 
 test("labels use recorded details and invalid captions report their reason", () => {
@@ -127,6 +145,6 @@ for (const role of ["cause", "effect"] as const) {
 		const swapped = structuredClone(sidecar);
 		const refs = swapped.scenes.flatMap((scene) => scene.captions).find((item) => item.id === caption.id)!.refs;
 		refs.reverse();
-		assert.equal(validateSidecar(swapped, trace, faithful).ok, false);
+		assert.equal(validateSidecar(swapped, faithful, trace).ok, false);
 	});
 }

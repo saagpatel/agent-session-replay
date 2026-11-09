@@ -61,7 +61,7 @@ export function buildSidecar(manifest: Manifest, trace: Trace, validation: Valid
 
 /** Check schema, and verify played references against the source and export. Range endpoints and path
  * intermediates are source evidence and can legitimately lie outside the shortened export. */
-export function validateSidecar(value: unknown, trace: Trace, manifest: Manifest): { ok: boolean; errors: string[] } {
+export function validateSidecar(value: unknown, manifest: Manifest, trace: Trace): { ok: boolean; errors: string[] } {
 	const errors: string[] = [];
 	const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 	const strings = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string");
@@ -77,10 +77,17 @@ export function validateSidecar(value: unknown, trace: Trace, manifest: Manifest
 		(value.verdict !== "VALID" && value.verdict !== "INVALID") || !obj(value.counts) ||
 		!["sourceSteps", "exportedSteps", "scenes", "captions"].every((key) => Number.isSafeInteger((value.counts as Record<string, unknown>)[key]) && Number((value.counts as Record<string, unknown>)[key]) >= 0) ||
 		!strings(value.failures) || !Array.isArray(value.scenes)) return { ok: false, errors: ["Invalid sidecar structure."] };
-	for (const scene of value.scenes) {
+	const sameIds = (actual: unknown[], expected: string[]) => actual.length === expected.length && actual.every((item, i) => obj(item) && item.id === expected[i]);
+	if (!sameIds(value.scenes, manifest.scenes.map((scene) => scene.id))) errors.push("Scene coverage does not match manifest order.");
+	const counts = { sourceSteps: trace.steps.length, exportedSteps: manifest.scenes.reduce((n, scene) => n + scene.steps.length, 0), scenes: manifest.scenes.length, captions: manifest.captions.length };
+	if (Object.entries(counts).some(([key, count]) => (value.counts as Record<string, unknown>)[key] !== count)) errors.push("Counts do not match manifest and trace.");
+	for (const [index, scene] of value.scenes.entries()) {
 		if (!obj(scene) || typeof scene.id !== "string" || typeof scene.positionMs !== "number" || !Number.isFinite(scene.positionMs) ||
 			typeof scene.durationMs !== "number" || !Number.isFinite(scene.durationMs) || scene.durationMs <= 0 || !obj(scene.range) ||
 			!Array.isArray(scene.steps) || !Array.isArray(scene.captions)) { errors.push("Invalid scene structure."); continue; }
+		const expected = manifest.scenes[index];
+		if (!expected || !sameIds(scene.steps, expected.steps)) errors.push(`Played step coverage does not match scene: ${scene.id}`);
+		if (!sameIds(scene.captions, manifest.captions.filter((caption) => caption.sceneId === scene.id).map((caption) => caption.id))) errors.push(`Caption coverage does not match scene: ${scene.id}`);
 		step(scene.range.from, false); step(scene.range.to, false);
 		scene.steps.forEach((s) => step(s, true));
 		for (const caption of scene.captions) {
