@@ -146,7 +146,7 @@ test("Codex commit metadata ignores failed results and malformed lines", () => {
 test("Codex preserves the first commit identity across repeated outputs and accepts git header variants", () => {
 	const root = parseCodexEvents([
 		branchSessionMeta(),
-		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: "{}", call_id: "c-root" }),
+		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd: "git commit -m fixture" }), call_id: "c-root" }),
 		branchEvent("response_item", { type: "function_call_output", call_id: "c-root", output: "Process exited with code 0\nOutput:\n[main (root-commit) 1a2b3c4] first" }),
 		branchEvent("response_item", { type: "function_call_output", call_id: "c-root", output: "Process exited with code 0\nOutput:\n[detached HEAD 5d6e7f8] later" }),
 	]);
