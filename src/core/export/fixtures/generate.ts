@@ -80,7 +80,9 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		steps.forEach((step, index) => {
 			const time = new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString();
 			step.started_at = time;
-			step.ended_at = new Date(Date.parse(time) + (step.step_id.startsWith("parallel-") ? 20000 : step.subagent_id ? 1000 : 5000)).toISOString();
+			// Sequential edit/test cycles finish before the next invocation; only
+			// the explicitly parallel reads retain overlapping intervals.
+			step.ended_at = new Date(Date.parse(time) + (step.step_id.startsWith("parallel-") ? 20000 : 1000)).toISOString();
 		});
 		// Each synthetic Agent result returns after all of its child's steps end.
 		for (const spawn of steps.filter((step) => step.attributes[ATTR.AGENT_SPAWNS])) {

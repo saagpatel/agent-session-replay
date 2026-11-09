@@ -234,11 +234,59 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		}
 	}
 
-	const writes = new Map<string, Set<string>>();
+	const operations = trace.steps.map((step) => ({ step, evidence: operationEvidence(step, cwd) }));
+	type Writer = { id: string; start: number; end: number; confirmed: boolean };
+	const interval = (step: Step) => {
+		const start = step.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] === true ? NaN : Date.parse(step.started_at);
+		const end = Date.parse(step.ended_at ?? "");
+		return Number.isFinite(start) && Number.isFinite(end) && end < start
+			? { start: NaN, end: NaN } : { start, end };
+	};
+	const writes = new Map<string, Writer[]>();
+	for (const { step, evidence } of operations) {
+		const name = step.attributes[ATTR.TOOL_NAME];
+		const writer: Writer = {
+			id: step.step_id, ...interval(step),
+			// Exec completion proves invocation, not its individual write results.
+			confirmed: step.status === "ok" && !evidence.unresolved && name !== "exec" &&
+				(name !== "apply_patch" || step.attributes[ATTR.PATCH_CONFIRMED] === true),
+		};
+		for (const path of new Set(evidence.operations.filter((operation) => operation.kind === "write")
+			.map((operation) => operation.path).filter((path) => path !== undefined))) {
+			const writers = writes.get(path) ?? [];
+			writers.push(writer);
+			writes.set(path, writers);
+		}
+	}
+	// Unknown starts stay eligible; known future starts can be skipped per path.
+	for (const writers of writes.values()) writers.sort((a, b) =>
+		(Number.isFinite(a.start) ? a.start : -Infinity) - (Number.isFinite(b.start) ? b.start : -Infinity));
+	const observe = (writers: Writer[], step: Step, kind: "file-read" | "test-write", evidence: string) => {
+		const { start, end } = interval(step);
+		const possible: Writer[] = [];
+		let replacement: Writer | undefined;
+		let previous: Writer | undefined;
+		for (const writer of writers) {
+			if (Number.isFinite(end) && Number.isFinite(writer.start) && writer.start > end) break;
+			if (writer.id === step.step_id) continue;
+			possible.push(writer);
+			if (!writer.confirmed || !Number.isFinite(writer.start) || !Number.isFinite(writer.end) ||
+				!Number.isFinite(start) || writer.end > start) continue;
+			previous = replacement;
+			replacement = writer;
+		}
+		for (const writer of possible) {
+			// A replacement must finish before this observer starts, and start
+			// after this writer finishes. Keep two candidates to avoid self-retirement
+			// for zero-duration writes. Missing timestamps cannot prove either bound.
+			const later = replacement?.id === writer.id ? previous : replacement;
+			if (later && Number.isFinite(writer.end) && writer.end <= later.start) continue;
+			add(writer.id, step.step_id, kind, evidence);
+		}
+	};
 	const allWrites = new Set<string>();
 	const barriers = new Set<string>();
-	for (const step of trace.steps) {
-		const evidence = operationEvidence(step, cwd);
+	for (const { step, evidence } of operations) {
 		if (evidence.unresolved) {
 			diagnostics.push({
 				reason: "unresolved-operation",
@@ -252,31 +300,13 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		}
 		for (const operation of evidence.operations) {
 			if (operation.kind === "write" && operation.path) {
-				const name = step.attributes[ATTR.TOOL_NAME];
-				// A completed exec proves invocation, not its individual write results.
-				const confirmed = step.status === "ok" && Boolean(step.ended_at) && !evidence.unresolved &&
-					name !== "exec" && (name !== "apply_patch" || step.attributes[ATTR.PATCH_CONFIRMED] === true);
-				const writers = writes.get(operation.path) ?? new Set<string>();
-				if (confirmed) {
-					const start = Date.parse(step.started_at);
-					for (const writer of writers) {
-						const end = Date.parse(steps.get(writer)?.ended_at ?? "");
-						if (Number.isFinite(start) && Number.isFinite(end) && end <= start) writers.delete(writer);
-					}
-				}
-				writers.add(step.step_id);
-				writes.set(operation.path, writers);
 				allWrites.add(step.step_id);
 			}
 			if (operation.kind === "read" && operation.path) {
-				for (const writer of writes.get(operation.path) ?? []) {
-					if (writer !== step.step_id) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
-				}
+				observe(writes.get(operation.path) ?? [], step, "file-read", `matching tool argument path ${operation.path}`);
 			}
 			if (operation.kind === "test") {
-				for (const writers of writes.values()) for (const writer of writers) {
-					if (writer !== step.step_id) add(writer, step.step_id, "test-write", "possible current write before test invocation");
-				}
+				for (const writers of writes.values()) observe(writers, step, "test-write", "possible current write before test invocation");
 			}
 		}
 		if (evidence.unresolved) {

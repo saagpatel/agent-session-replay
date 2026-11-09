@@ -537,7 +537,7 @@ test("stops file read dependencies at a confirmed content-independent write to t
 	const trace = makeTrace([
 		toolStep("first-write", "Write", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:01Z" }),
 		toolStep("second-write", "Write", { file_path: "src/a.ts" }, { status: "ok", started_at: "2026-01-01T00:00:01Z", ended_at: "2026-01-01T00:00:02Z" }),
-		toolStep("read", "Read", { file_path: "src/a.ts" }),
+		toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:03Z" }),
 	]);
 	const graph = buildCausalGraph(trace);
 	assert.equal(happensBefore(graph, "first-write", "read"), false);
@@ -863,8 +863,8 @@ test("only confirmed successful direct overwrites retire earlier possible writer
 		toolStep("first", "Write", args, confirmed),
 		toolStep("uncertain", "Write", args, { status: "error", ended_at: "2026-01-01T00:00:01Z" }),
 		toolStep("replacement", "Write", args, { ...confirmed, started_at: "2026-01-01T00:00:01Z" }),
-		toolStep("read", "Read", { file_path: "src/a.ts" }),
-		toolStep("test", "Bash", { command: "pnpm test" }),
+		toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:02Z" }),
+		toolStep("test", "Bash", { command: "pnpm test" }, { started_at: "2026-01-01T00:00:02Z" }),
 	]);
 	const edges = buildCausalGraph(trace).edges.filter((edge) => edge.kind === "file-read" || edge.kind === "test-write");
 	assert.deepEqual(edges.map(({ from, to }) => [from, to]), [["replacement", "read"], ["replacement", "test"]]);
@@ -902,10 +902,86 @@ test("a direct patch retires earlier writers only when its own result confirms a
 		if (confirmed) patch.attributes[ATTR.PATCH_CONFIRMED] = true;
 		const graph = buildCausalGraph(makeTrace([
 			toolStep("first", "Write", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:01Z" }), patch,
-			toolStep("read", "Read", { file_path: "src/a.ts" }),
+			toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:03Z" }),
 		]));
 		assert.equal(happensBefore(graph, "first", "read"), !confirmed);
 		assert.ok(happensBefore(graph, "patch", "read"));
+	}
+});
+
+test("reads and tests overlapping a replacement retain the original writer regardless of source order", () => {
+	for (const nestedWriter of [false, true]) for (const nestedObserver of [false, true]) {
+		for (const kind of ["read", "test"] as const) for (const observerFirst of [false, true]) {
+			const args = { file_path: "src/a.ts", content: "original" };
+			const original = nestedWriter ? nestedStep("Write", args) : toolStep("original", "Write", args);
+			original.step_id = "original";
+			original.ended_at = "2026-01-01T00:00:01Z";
+			const replacement = toolStep("replacement", "Write", args, {
+				status: "ok", started_at: "2026-01-01T00:00:02Z", ended_at: "2026-01-01T00:00:10Z",
+			});
+			const name = kind === "read" ? "Read" : "Bash";
+			const observerArgs = kind === "read" ? { file_path: "src/a.ts" } : { command: "pnpm test" };
+			const observer = nestedObserver ? nestedStep(name, observerArgs) : toolStep("observer", name, observerArgs);
+			observer.step_id = "observer";
+			observer.started_at = "2026-01-01T00:00:03Z";
+			observer.ended_at = "2026-01-01T00:00:04Z";
+			const trace = makeTrace(observerFirst ? [original, observer, replacement] : [original, replacement, observer]);
+			const graph = buildCausalGraph(trace);
+			const edges = graph.edges.filter((edge) => edge.to === "observer");
+			assert.deepEqual(edges.map(({ from, kind }) => [from, kind]), [
+				["original", kind === "read" ? "file-read" : "test-write"],
+				["replacement", kind === "read" ? "file-read" : "test-write"],
+			]);
+			assert.equal(validateExport(oneScene(trace, ["original", "replacement", "observer"]), trace).ok, true);
+			const result = validateExport(oneScene(trace, ["replacement", "observer", "original"]), trace);
+			assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "original" && failure.b === "observer"));
+			// Once the replacement finishes, only it can supply the observed contents.
+			observer.started_at = "2026-01-01T00:00:11Z";
+			observer.ended_at = "2026-01-01T00:00:12Z";
+			assert.deepEqual(buildCausalGraph(trace).edges.filter((edge) => edge.to === "observer").map((edge) => edge.from), ["replacement"]);
+			assert.equal(validateExport(oneScene(trace, ["replacement", "observer", "original"]), trace).ok, true);
+		}
+	}
+});
+
+test("missing, invalid, inferred, or reversed replacement timestamps cannot retire an original writer", () => {
+	for (const change of [
+		(step: Step) => { step.ended_at = null; },
+		(step: Step) => { step.ended_at = "invalid"; },
+		(step: Step) => { step.started_at = "invalid"; },
+		(step: Step) => { step.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] = true; },
+		(step: Step) => { step.ended_at = "2026-01-01T00:00:01Z"; },
+	]) {
+		const replacement = toolStep("replacement", "Write", { file_path: "src/a.ts" }, {
+			status: "ok", started_at: "2026-01-01T00:00:02Z", ended_at: "2026-01-01T00:00:10Z",
+		});
+		change(replacement);
+		const trace = makeTrace([
+			toolStep("original", "Write", { file_path: "src/a.ts" }, { ended_at: "2026-01-01T00:00:01Z" }),
+			replacement,
+			toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:11Z", ended_at: "2026-01-01T00:00:12Z" }),
+		]);
+		assert.deepEqual(buildCausalGraph(trace).edges.map((edge) => edge.from).sort(), ["original", "replacement"]);
+	}
+});
+
+test("writers starting after an observer ends are excluded, while missing observer times retain possibilities", () => {
+	for (const nested of [false, true]) for (const status of ["ok", "error", undefined] as const) {
+		const writer = nested ? nestedStep("Write", { file_path: "src/a.ts" }) : toolStep("writer", "Write", { file_path: "src/a.ts" });
+		writer.step_id = "writer";
+		writer.status = status;
+		writer.started_at = "2026-01-01T00:00:05Z";
+		writer.ended_at = "2026-01-01T00:00:06Z";
+		for (const observer of [toolStep("read", "Read", { file_path: "src/a.ts" }), nestedStep("Bash", { command: "pnpm test" })]) {
+			observer.started_at = "2026-01-01T00:00:03Z";
+			observer.ended_at = "2026-01-01T00:00:04Z";
+			const trace = makeTrace([writer, observer]);
+			assert.deepEqual(buildCausalGraph(trace).edges, []);
+			for (const end of [undefined, "invalid"]) {
+				observer.ended_at = end;
+				assert.ok(happensBefore(buildCausalGraph(trace), "writer", observer.step_id));
+			}
+		}
 	}
 });
 
