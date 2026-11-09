@@ -1,0 +1,17 @@
+{
+  "repo": "codex-single-revert",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [
+      "call_0"
+    ],
+    "retained": [
+      "call_1",
+      "call_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "bf18a76"
+  },
+  "notes": "Codex write_file call followed by a successful path restore."
+}

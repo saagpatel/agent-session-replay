@@ -1,0 +1,17 @@
+{
+  "repo": "codex-patch-revert",
+  "harness": "codex",
+  "expected": {
+    "abandoned": [
+      "call_0"
+    ],
+    "retained": [
+      "call_1",
+      "call_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "001dffe"
+  },
+  "notes": "Codex rollout: patch attempt followed by file restore."
+}

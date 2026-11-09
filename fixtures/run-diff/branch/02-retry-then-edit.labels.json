@@ -1,0 +1,19 @@
+{
+  "repo": "retry-then-edit",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [
+      "toolu_0",
+      "toolu_1"
+    ],
+    "retained": [
+      "toolu_2",
+      "toolu_3",
+      "toolu_4"
+    ]
+  },
+  "claim": {
+    "commitShort": "ed9aace"
+  },
+  "notes": "The first edit and failed test belong to the abandoned attempt; the retry edit and pass survive."
+}

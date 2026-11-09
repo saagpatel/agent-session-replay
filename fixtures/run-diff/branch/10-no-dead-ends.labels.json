@@ -1,0 +1,16 @@
+{
+  "repo": "no-dead-ends",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1",
+      "toolu_2"
+    ]
+  },
+  "claim": {
+    "commitShort": "b4824df"
+  },
+  "notes": "A straightforward edit and passing test."
+}

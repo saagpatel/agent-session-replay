@@ -1,0 +1,19 @@
+{
+  "repo": "artifact-omits-edit",
+  "harness": "claude-code",
+  "expected": {
+    "abandoned": [],
+    "retained": [
+      "toolu_0",
+      "toolu_1",
+      "toolu_2"
+    ],
+    "artifactOnly": [
+      "toolu_0"
+    ]
+  },
+  "claim": {
+    "commitShort": "3955308"
+  },
+  "notes": "The successful run claims a commit that omits the edit; packet 03 decides artifact membership."
+}
