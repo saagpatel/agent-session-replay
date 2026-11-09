@@ -243,15 +243,16 @@ function EquivCell({
 	if (!event) return <div className={`rd-cell rd-cell--${side} rd-cell--empty`} aria-hidden="true" />;
 	const failed = isFailure(event.status);
 	const unknown = event.status === "unknown";
-	const originals = event.rule ? expand(event, steps) : [];
+	const originals = expand(event, steps);
+	const unsupported = event.action === "other" || event.target === null;
 	const preview = writePreview(event);
 	return (
 		<div className={`rd-cell rd-cell--eq rd-cell--${side}${failed ? " rd-cell--err" : ""}`}>
 			<div className="rd-eq-main">
 				<span className="rd-act" style={{ ["--c" as string]: `var(${ACTION_VAR[event.action]})` }}>
-					{event.action}
+					{unsupported ? originals[0]?.label : event.action}
 				</span>
-				<span className="rd-cell__target">{event.target ?? ""}</span>
+				{unsupported ? <span className="rd-rule">unsupported</span> : <span className="rd-cell__target">{event.target}</span>}
 				{event.rule ? (
 					<span className="rd-rule">
 						{event.rule}
@@ -267,6 +268,7 @@ function EquivCell({
 					</span>
 				) : null}
 			</div>
+			<span className="rd-eq-evidence">{originals.map((step) => step.label).join(" · ")}</span>
 			{evidence ? <span className={`rd-eq-evidence${evidenceDiffers ? " rd-eq-evidence--changed" : ""}`}>{evidence}</span> : null}
 			{preview !== null ? (
 				<details className={`rd-eq-originals${evidenceDiffers ? " rd-eq-evidence--changed" : ""}`}>
@@ -274,22 +276,20 @@ function EquivCell({
 					<pre>{preview}</pre>
 				</details>
 			) : null}
-			{event.rule ? (
-				<details className="rd-eq-originals">
-					<summary>
-						{event.members.length} original {event.members.length === 1 ? "step" : "steps"}
-					</summary>
-					<ul>
-						{originals.map((step, index) => (
-							<li key={`${step.stepId}:${step.index}:${index}`}>
-								<span className="rd-eq-original__label">{step.label}</span>
-								<code className="rd-eq-original__id">{step.stepId}</code>
-								<span className="rd-eq-original__status">{step.status}</span>
-							</li>
-						))}
-					</ul>
-				</details>
-			) : null}
+			<details className="rd-eq-originals">
+				<summary>
+					{event.members.length} original {event.members.length === 1 ? "step" : "steps"}
+				</summary>
+				<ul>
+					{originals.map((step, index) => (
+						<li key={`${step.stepId}:${step.index}:${index}`}>
+							<span className="rd-eq-original__label">{step.label}</span>
+							<code className="rd-eq-original__id">{step.stepId}</code>
+							<span className="rd-eq-original__status">{step.status}</span>
+						</li>
+					))}
+				</ul>
+			</details>
 		</div>
 	);
 }

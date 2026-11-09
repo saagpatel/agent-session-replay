@@ -190,6 +190,21 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(equivHtml, /read-coalesce/);
 	assert.match(equivHtml, /edit-batch/);
 
+	// Unsupported patches retain their identifying labels and source details on both sides.
+	const patchA = parseTranscript(toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/a.ts" }]))).trace;
+	const patchB = parseTranscript(toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }]))).trace;
+	const patchHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(patchA, patchB)} leftFile="a" rightFile="b" leftTrace={patchA} rightTrace={patchB} mode="equivalence" />,
+	);
+	const patchRow = patchHtml.match(/<div class="rd-row rd-row--changed">[\s\S]*?(?=<\/div><\/div><\/section>)/)?.[0];
+	assert.ok(patchRow, "patches should appear in a changed row");
+	assert.match(patchRow, /src\/a\.ts/);
+	assert.match(patchRow, /src\/b\.ts/);
+	assert.equal((patchRow.match(/<details class="rd-eq-originals">/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/>unsupported<\/span>/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/rd-eq-original__id/g) ?? []).length, 2);
+	assert.equal((patchRow.match(/rd-eq-original__status/g) ?? []).length, 2);
+
 	// Distinct canonical evidence is visible and marked on both sides.
 	const { ATTR } = await import("../src/core/types.ts");
 	const evidenceTrace = (name: "Grep" | "Read" | "Write", args: Record<string, unknown>) => {
