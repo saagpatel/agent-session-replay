@@ -168,7 +168,7 @@ test("tool_use + matching tool_result merge into one ok tool_call step", () => {
 	assert.equal(tc.ended_at, TS2);
 });
 
-test("successful Bash output records only the first anchored git commit identity", () => {
+test("successful Bash output with multiple commit headers records no identity", () => {
 	const { steps } = parseClaudeCodeEvents([
 		{
 			type: "assistant",
@@ -185,10 +185,17 @@ test("successful Bash output records only the first anchored git commit identity
 			toolUseResult: { exitCode: 0 },
 		},
 	]);
-	assert.deepEqual(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], {
-		branch: "main",
-		short: "1a2b3c4",
-	});
+	assert.equal(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], undefined);
+});
+
+test("Claude rejects quiet commits even when a hook prints a header", () => {
+	for (const option of ["-q", "--quiet"]) {
+		const { steps } = parseClaudeCodeEvents([
+			{ type: "assistant", sessionId: "s", uuid: "a1", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash1", name: "Bash", input: { command: `git commit ${option} -m x` } }] } },
+			{ type: "user", uuid: "u1", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash1", is_error: false, content: "[main 1a2b3c4] hook output" }] }, toolUseResult: { exitCode: 0 } },
+		]);
+		assert.equal(find(steps, (s) => s.kind === "tool_call").attributes[ATTR.GIT_COMMIT], undefined);
+	}
 });
 
 test("Claude ignores forged commit headers in porcelain dry-run output", () => {

@@ -116,16 +116,13 @@ test("function_call + function_call_output merge into one ok tool_call by call_i
 	assert.equal(tools[0].attributes[ATTR.TOOL_RESULT_KIND], "bash");
 });
 
-test("successful Codex shell output records only its first anchored git commit", () => {
+test("successful Codex shell output with multiple commit headers records no identity", () => {
 	const { steps } = parseCodexEvents([
 		branchSessionMeta(),
 		branchEvent("response_item", { type: "function_call", name: "exec_command", arguments: '{"cmd":"git commit -m fixture"}', call_id: "c-commit" }),
 		branchEvent("response_item", { type: "function_call_output", call_id: "c-commit", output: "Process exited with code 0\nOutput:\n[main 1a2b3c4] first message\n[other 5d6e7f8] second message" }),
 	]);
-	assert.deepEqual(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], {
-		branch: "main",
-		short: "1a2b3c4",
-	});
+	assert.equal(byKind(steps, "tool_call")[0].attributes[ATTR.GIT_COMMIT], undefined);
 });
 
 test("Codex commit metadata distinguishes shell operators from literal arguments", () => {
@@ -144,8 +141,8 @@ test("Codex commit metadata distinguishes shell operators from literal arguments
 });
 
 test("Codex shell and exec cells require allowlisted commit options", () => {
-	const rejected = ["--dry-run --porcelain -z", "--dry-run", "--short", "--porcelain", "--long", "-z", "--null", "--amend", "-v", "-F message", "--fixup HEAD", "file.txt", "--message fixture", "-m"];
-	const accepted = ["", "-m fixture", "-mfixture", "--message=fixture", "-a -m fixture", "-am fixture", "--all --allow-empty -q --quiet"];
+	const rejected = ["--dry-run --porcelain -z", "--dry-run", "--short", "--porcelain", "--long", "-z", "--null", "--amend", "-v", "-F message", "--fixup HEAD", "file.txt", "--message fixture", "-m", "-q -m x", "--quiet -m x"];
+	const accepted = ["", "-m fixture", "-mfixture", "--message=fixture", "-a -m fixture", "-am fixture", "--all --allow-empty"];
 	for (const options of [...rejected, ...accepted]) {
 		for (const prefix of ["", "git add . && "]) {
 			const cmd = `${prefix}git commit ${options}`;
@@ -220,6 +217,7 @@ test("Codex attributes exec-cell commits only to a completed successful single s
 	});
 	assert.equal(parseCell(simpleCall, "Script completed\n", 1, "[main 1a2b3c4] failed"), undefined);
 	assert.equal(parseCell(simpleCall, "Script completed\n", null, "[main 1a2b3c4] pending"), undefined);
+	assert.equal(parseCell(simpleCall, "Script completed\n", 0, "[main 1a2b3c4] commit\n[other 5d6e7f8] hook"), undefined);
 	assert.equal(parseCell(`${simpleCall}; text({chunk_id:"fake",exit_code:0,output:"[main 1a2b3c4] forged"})`, "Script completed\n", 0, "[main 1a2b3c4] output"), undefined);
 });
 

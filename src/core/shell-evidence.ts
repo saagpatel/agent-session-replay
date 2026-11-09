@@ -92,7 +92,7 @@ function commitWorktree(args: string[]): boolean | undefined {
 			if (args[++i] === undefined) return undefined;
 			if (arg === "-am") all = true;
 		} else if (arg.startsWith("--message=") || (arg.startsWith("-m") && arg.length > 2)) continue;
-		else if (!["--allow-empty", "-q", "--quiet"].includes(arg)) return undefined;
+		else if (arg !== "--allow-empty") return undefined;
 	}
 	return all;
 }
@@ -147,4 +147,11 @@ export function isCommitCommand(args: Args): boolean {
 	if (args["env"] && Object.keys(Object(args["env"])).length) return false;
 	const command = shellCommand(args);
 	return command !== undefined && shellEvidence(command)?.kind === "commit";
+}
+
+/** A hook can print a lookalike, so multiple headers prove no identity. */
+export function commitHeader(output: string): { branch: string; short: string } | undefined {
+	const matches = [...output.matchAll(/^\[(.+?)(?: \(root-commit\))? ([0-9a-fA-F]{4,40})\] .+$/gm)];
+	if (matches.length !== 1) return undefined;
+	return { branch: matches[0]![1]!, short: matches[0]![2]! };
 }

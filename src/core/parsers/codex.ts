@@ -22,7 +22,7 @@
  */
 
 import { literalExecCalls } from "../diff/normalize.ts";
-import { isCommitCommand } from "../shell-evidence.ts";
+import { commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
@@ -183,7 +183,6 @@ function execParts(v: unknown): ExecPart[] {
 
 /** A legacy `apply_patch` output that says it applied. */
 const PATCH_OK_RE = /^(?:Success\b|Done!)|"exit_code"\s*:\s*0\b/;
-const GIT_COMMIT_RE = /^\[(.+?)(?: \(root-commit\))? ([0-9a-fA-F]{4,40})\] .+$/m;
 /** Only a completed literal call's own successful output can claim a commit. */
 function execCellCommitOutput(input: string, rawOutput: unknown): { output: string; call: number } | null {
 	const calls = literalExecCalls(input);
@@ -195,7 +194,7 @@ function execCellCommitOutput(input: string, rawOutput: unknown): { output: stri
 		if (call.name !== "exec_command" || !isCommitCommand({ cmd: call.command })) continue;
 		try {
 			const chunk = asObj(JSON.parse(str(asObj(rawOutput[i + 1])["text"]) ?? ""));
-			if (typeof chunk["chunk_id"] === "string" && chunk["exit_code"] === 0 && typeof chunk["output"] === "string" && GIT_COMMIT_RE.test(chunk["output"]))
+			if (typeof chunk["chunk_id"] === "string" && chunk["exit_code"] === 0 && typeof chunk["output"] === "string" && commitHeader(chunk["output"]))
 				return { output: chunk["output"], call: i };
 		} catch { /* Unparseable output is not commit evidence. */ }
 	}
@@ -352,12 +351,9 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 					? output
 					: null;
 		if (commitOutput && !step.attributes[ATTR.GIT_COMMIT]) {
-			const commitMatch = commitOutput.match(GIT_COMMIT_RE);
+			const commitMatch = commitHeader(commitOutput);
 			if (commitMatch) {
-				step.attributes[ATTR.GIT_COMMIT] = {
-					branch: commitMatch[1],
-					short: commitMatch[2],
-				};
+				step.attributes[ATTR.GIT_COMMIT] = commitMatch;
 				if (cellCommit) step.attributes[ATTR.GIT_COMMIT_CALL] = cellCommit.call;
 			}
 		}
