@@ -25,3 +25,4 @@ qa/
 coverage/
 
 dist-receipts/
+fixtures/generated/

@@ -1,46 +1,41 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
-import { ATTR, type Trace } from "../types.ts";
+import { createHash } from "node:crypto";
+import { ATTR } from "../types.ts";
 import { buildCausalGraph, happensBefore } from "./causal.ts";
-import { parseManifest, type Manifest } from "./manifest.ts";
+import { parseManifest } from "./manifest.ts";
 import { validateExport } from "./index.ts";
+import { generateReplayFixtures } from "./fixtures/generate.ts";
 
-const sessions = "fixtures/replay-sessions";
-const misleading = "fixtures/misleading-edits";
-const files = (dir: string) => readdirSync(dir).sort();
-const json = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
-const traceFiles = () => files(sessions).filter((name) => name.endsWith(".trace.json"));
-const slugOf = (name: string) => name.slice(0, -".trace.json".length);
-function loadTrace(slug: string): Trace {
-	const value = json(`${sessions}/${slug}.trace.json`) as Trace;
-	assert.equal(value.plumbline_version, "1");
-	assert.equal(typeof value.run.run_id, "string");
-	assert.ok(Array.isArray(value.steps));
-	for (const step of value.steps) {
-		assert.equal(typeof step.step_id, "string");
-		assert.equal(typeof step.kind, "string");
-		assert.ok(Number.isFinite(Date.parse(step.started_at)));
-		assert.ok(step.attributes && typeof step.attributes === "object");
-	}
-	return value;
-}
+const kinds = ["reversed-cause-effect", "dropped-prerequisite", "absent-event-caption", "unsupported-claim", "cross-subagent-reorder"];
+const reasons: Record<string, string> = {
+	"reversed-cause-effect": "reversed-causal-order",
+	"dropped-prerequisite": "dropped-prerequisite",
+	"absent-event-caption": "caption-ref-absent",
+	"unsupported-claim": "caption-unsupported-claim",
+	"cross-subagent-reorder": "reversed-causal-order",
+};
 
-test("sessions --count: 20 synthetic traces have faithful shortened manifests", () => {
-	assert.equal(traceFiles().length, 20);
-	assert.equal(files(sessions).length, 40);
+test("20 synthetic traces have faithful shortened manifests", () => {
+	const { sessions } = generateReplayFixtures();
+	assert.equal(sessions.length, 20);
 	const workerCounts = new Set<number>();
 	const cycleCounts = new Set<number>();
 	const fanouts = new Set<number>();
 	const hookPositions = new Set<string>();
 	const compactPositions = new Set<string>();
 	const workerInterleavings = new Set<string>();
-	for (const file of traceFiles()) {
-		const slug = slugOf(file);
+	for (const { slug, trace, faithful } of sessions) {
 		const n = Number(slug.slice(0, 2)) - 1;
-		const trace = loadTrace(slug);
+		assert.equal(trace.plumbline_version, "1");
+		assert.equal(typeof trace.run.run_id, "string");
+		assert.ok(Array.isArray(trace.steps));
+		for (const step of trace.steps) {
+			assert.equal(typeof step.step_id, "string");
+			assert.equal(typeof step.kind, "string");
+			assert.ok(Number.isFinite(Date.parse(step.started_at)));
+			assert.ok(step.attributes && typeof step.attributes === "object");
+		}
 		assert.ok(trace.steps.length >= 25 && trace.steps.length <= 80, slug);
 		const graph = buildCausalGraph(trace);
 		assert.ok(happensBefore(graph, "edit-a", "test"), slug);
@@ -88,7 +83,7 @@ test("sessions --count: 20 synthetic traces have faithful shortened manifests", 
 			assert.equal(happensBefore(graph, parallel[i]!.step_id, parallel[j]!.step_id), false, slug);
 			assert.equal(happensBefore(graph, parallel[j]!.step_id, parallel[i]!.step_id), false, slug);
 		}
-		const parsed = parseManifest(json(`${sessions}/${slug}.faithful.manifest.json`));
+		const parsed = parseManifest(faithful);
 		assert.ok(!("errors" in parsed), slug);
 		assert.ok(parsed.scenes.length >= 3 && parsed.scenes.length <= 6, slug);
 		assert.ok(parsed.captions.length >= 3 && parsed.captions.length <= 8, slug);
@@ -109,41 +104,31 @@ test("sessions --count: 20 synthetic traces have faithful shortened manifests", 
 	assert.ok(workerInterleavings.size >= 6);
 });
 
-test("misleading edits fail with their named reason", () => {
+test("misleading edits fail with their named reason and expected counts", () => {
+	const { sessions, misleading } = generateReplayFixtures();
+	const traces = new Map(sessions.map(({ slug, trace }) => [slug, trace]));
 	const counts = new Map<string, number>();
-	const kinds = ["reversed-cause-effect", "dropped-prerequisite", "absent-event-caption", "unsupported-claim", "cross-subagent-reorder"];
-	const reasons: Record<string, string> = { "reversed-cause-effect": "reversed-causal-order", "dropped-prerequisite": "dropped-prerequisite", "absent-event-caption": "caption-ref-absent", "unsupported-claim": "caption-unsupported-claim", "cross-subagent-reorder": "reversed-causal-order" };
-	for (const file of files(misleading)) {
-		const kind = kinds.find((item) => file.endsWith(`.${item}.manifest.json`));
-		assert.ok(kind, file);
-		const slug = file.slice(0, -`.${kind}.manifest.json`.length);
-		const data = json(`${misleading}/${file}`) as Manifest & { expect: { reason: string } };
-		const { expect, ...manifest } = data;
-		assert.equal(typeof expect.reason, "string", file);
-		assert.equal(expect.reason, reasons[kind], file);
-		const result = validateExport(manifest, loadTrace(slug));
-		assert.equal(result.ok, false, file);
-		assert.ok(result.failures.some((failure) => failure.reason === expect.reason), `${file}: ${JSON.stringify(result.failures)}`);
-		counts.set(kind, (counts.get(kind) ?? 0) + 1);
+	for (const item of misleading) {
+		assert.ok(kinds.includes(item.kind), item.kind);
+		assert.equal(item.expect.reason, reasons[item.kind], `${item.slug}.${item.kind}`);
+		const result = validateExport(item.manifest, traces.get(item.slug)!);
+		assert.equal(result.ok, false, `${item.slug}.${item.kind}`);
+		assert.ok(result.failures.some((failure) => failure.reason === item.expect.reason), `${item.slug}.${item.kind}: ${JSON.stringify(result.failures)}`);
+		counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
 	}
-	for (const file of traceFiles()) {
-		const slug = slugOf(file);
-		for (const kind of kinds.slice(0, 3)) assert.ok(files(misleading).includes(`${slug}.${kind}.manifest.json`));
-	}
-	assert.ok((counts.get(kinds[3]!) ?? 0) + (counts.get(kinds[4]!) ?? 0) >= 10);
-	console.log("Misleading edit counts:\n" + kinds.map((kind) => `${kind}\t${counts.get(kind) ?? 0}`).join("\n"));
+	assert.deepEqual(Object.fromEntries(counts), {
+		"reversed-cause-effect": 20,
+		"dropped-prerequisite": 20,
+		"absent-event-caption": 20,
+		"unsupported-claim": 10,
+		"cross-subagent-reorder": 10,
+	});
 });
 
-test("fixture regeneration is byte-identical", () => {
-	const temp = mkdtempSync(resolve(".replay-fixtures-"));
-	try {
-		execFileSync(process.execPath, ["--experimental-strip-types", "scripts/gen-replay-fixtures.ts", temp]);
-		for (const dir of [sessions, misleading]) {
-			const generated = resolve(temp, dir);
-			assert.deepEqual(files(generated), files(dir));
-			for (const name of files(dir)) assert.deepEqual(readFileSync(resolve(generated, name)), readFileSync(resolve(dir, name)), name);
-		}
-	} finally {
-		rmSync(temp, { recursive: true, force: true });
-	}
+test("fixture generation is deterministic", () => {
+	const first = generateReplayFixtures();
+	const second = generateReplayFixtures();
+	assert.deepEqual(second, first);
+	const digest = createHash("sha256").update(JSON.stringify(first)).digest("hex");
+	assert.equal(digest, "52dbd517418981f98bbfbdee8feca4cdceac52c4167992258e66328c2e02cbdf");
 });
