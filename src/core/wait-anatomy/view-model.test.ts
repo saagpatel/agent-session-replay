@@ -8,6 +8,7 @@ test("calculates percentages and carries unattributed reasons", () => {
 	data.critical_path[0].bucket = "unattributed";
 	data.totals_ns.unattributed = data.totals_ns.useful_execution;
 	data.totals_ns.useful_execution = 0;
+	data.attributed_ns = data.wall_clock_ns - data.totals_ns.unattributed;
 	data.unattributed = [{ start_ns: 0, end_ns: 2_000_000, reason: "No evidence" }];
 	const view = waitAnatomyView(parseWaitAnalysis(data));
 	assert.ok(Math.abs(view.buckets.reduce((sum, row) => sum + row.percent, 0) - 100) < 0.001);
