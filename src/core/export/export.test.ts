@@ -12,6 +12,7 @@ import {
 	type Manifest,
 } from "./manifest.ts";
 import { validateExport } from "./index.ts";
+import { parseCodexTranscript } from "../parsers/codex.ts";
 
 function makeStep(id: string, extra: Partial<Step> = {}): Step {
 	return {
@@ -445,6 +446,11 @@ test("returns the deterministic shortest causal path", () => {
 	assert.equal(path.length, 3);
 	assert.deepEqual(path, ["start", "short-one", "end"]);
 	assert.deepEqual(path, findPath(graph, "start", "end"));
+	const resolved = resolveManifest(oneScene(trace, ["end", "start"]), trace);
+	assert.ok(!("errors" in resolved));
+	const failure = checkOrder(resolved, graph).find((item) => item.reason === "reversed-causal-order");
+	assert.ok(failure?.reason === "reversed-causal-order");
+	assert.deepEqual(failure.path, path);
 });
 
 test("recognizes Claude MultiEdit as a write of its target", () => {
@@ -547,4 +553,164 @@ test("reuses Run Diff command classification to identify test runs", () => {
 		toolStep("test", "Bash", { command: "pnpm test:export" }),
 	]);
 	assert.ok(happensBefore(buildCausalGraph(trace), "write", "test"));
+});
+
+function rollout(cells: string[]): Trace {
+	const envelope = (type: string, payload: unknown) => ({ timestamp: "2026-01-01T00:00:00Z", type, payload });
+	return parseCodexTranscript([
+		envelope("session_meta", { id: "synthetic-exec-run", cwd: "/work/project" }),
+		...cells.flatMap((input, index) => [
+			envelope("response_item", { type: "custom_tool_call", name: "exec", call_id: `cell-${index}`, input }),
+			envelope("response_item", { type: "custom_tool_call_output", call_id: `cell-${index}`, output: "Script completed" }),
+		]),
+	].map((line) => JSON.stringify(line)).join("\n"));
+}
+
+const patchCell = `text(await tools.apply_patch("*** Begin Patch\\n*** Update File: src/a.ts\\n@@\\n-old\\n+new\\n*** End Patch"));`;
+const readCell = 'text(await tools.exec_command({cmd: "cat src/a.ts"}));';
+
+test("parsed Codex literal exec calls preserve enclosing IDs and reject a read before its patch", () => {
+	const trace = rollout([patchCell, readCell]);
+	assert.equal(trace.steps.length, 2);
+	const [patch, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	const graph = buildCausalGraph(trace);
+	assert.deepEqual(graph.diagnostics, []);
+	assert.deepEqual(findPath(graph, patch, read), [patch, read]);
+	assert.equal(validateExport(oneScene(trace, [patch, read]), trace).ok, true);
+	assert.ok(validateExport(oneScene(trace, [read, patch]), trace).failures.some((failure) => failure.reason === "reversed-causal-order"));
+});
+
+test("literal exec calls retain all patch targets, workdirs and same-cell accesses without self cycles", () => {
+	const trace = rollout([
+		patchCell + '\ntext(await tools.exec_command({cmd: "cat src/a.ts"}));',
+		'text(await tools.exec_command({cmd: "cat a.ts", workdir: "/work/project/src"}));',
+	]);
+	const [patch, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	const graph = buildCausalGraph(trace);
+	assert.deepEqual(graph.diagnostics, []);
+	assert.ok(happensBefore(graph, patch, read));
+});
+
+test("exec operation evidence is not limited to Run Diff's six stages or root context", () => {
+	const patch = ["*** Begin Patch", ...Array.from({ length: 8 }, (_, i) => `*** Add File: src/file-${i}.ts\n+new`), "*** End Patch"].join("\n");
+	const trace = rollout([
+		`text(await tools.apply_patch(${JSON.stringify(patch)}));`,
+		'text(await tools.exec_command({cmd: "cat src/file-7.ts"}));',
+	]);
+	trace.steps[0]!.subagent_id = "synthetic-child";
+	const [write, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	assert.ok(happensBefore(buildCausalGraph(trace), write, read));
+	assert.equal(validateExport(oneScene(trace, [read, write]), trace).ok, false);
+});
+
+test("unresolved exec cells warn unless captions or reordered source intervals depend on them", () => {
+	const unsupported = [
+		`if (ready) { ${patchCell} }`,
+		'text(await tools.exec_command({cmd: command}));',
+		'text(await tools.exec_command({cmd: "cat src/a.ts", workdir}));',
+		'text(await tools.exec_command({cmd: "cat src/a.ts", ...options}));',
+		'text(await tools.exec_command({cmd: "touch src/a.ts; pnpm test"}));',
+		'text(await tools.exec_command({cmd: "cat src/a.ts; pnpm test"}));',
+		'text(await tools.exec_command({cmd: "cat src/\\u0061.ts"}));',
+		'text(await tools.exec_command({cmd: "cat src/\\x61.ts"}));',
+		'text(await tools.exec_command({cmd: "cat src/\\\na.ts"}));',
+		'text(await tools.unknown_tool({path: "src/a.ts"}));',
+		'// tools.apply_patch("fake")\ntext("tools.exec_command(fake)");',
+	];
+	for (const cell of unsupported) {
+		const trace = rollout([patchCell, cell, readCell]);
+		const [patch, unknown, read] = trace.steps.map((step) => step.step_id) as [string, string, string];
+		const faithful = oneScene(trace, [patch, unknown, read]);
+		const result = validateExport(faithful, trace);
+		assert.equal(result.ok, true, cell);
+		assert.equal(result.warnings[0]?.reason, "unresolved-operations", cell);
+		for (const played of [[unknown, patch, read], [read, patch]]) {
+			assert.ok(validateExport(oneScene(trace, played), trace).failures.some((failure) => failure.reason === "unresolved-operations"), cell);
+		}
+		for (const caption of [
+			{ id: "show", sceneId: "scene-main", kind: "shows" as const, text: "The cell is shown.", refs: [unknown] },
+			{ id: "cause", sceneId: "scene-main", kind: "because" as const, text: "The patch precedes the read.", cause: patch, effect: read },
+		]) {
+			assert.ok(validateExport({ ...faithful, captions: [caption] }, trace).failures.some((failure) => failure.reason === "unresolved-operations"), cell);
+		}
+	}
+});
+
+test("unrelated unresolved exec cells remain warnings for a supported caption and independent swap", () => {
+	const trace = rollout([patchCell, readCell, 'if (ready) text(await tools.unknown_tool({}));']);
+	trace.steps.push(makeStep("left"), makeStep("right"));
+	const [patch, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	const manifest = oneScene(trace, [patch, read, "right", "left"]);
+	manifest.captions.push({ id: "supported", sceneId: "scene-main", kind: "because", text: "The patch precedes its read.", cause: patch, effect: read });
+	const result = validateExport(manifest, trace);
+	assert.equal(result.ok, true);
+	assert.equal(result.warnings.length, 1);
+});
+
+test("an incomplete exec cell cannot prove that its literal calls were all invoked", () => {
+	const trace = rollout([patchCell, readCell]);
+	delete trace.steps[0]!.attributes[ATTR.EXEC_COMPLETED];
+	const [patch, read] = trace.steps.map((step) => step.step_id) as [string, string];
+	assert.equal(happensBefore(buildCausalGraph(trace), patch, read), false);
+	const manifest = oneScene(trace, [patch, read]);
+	assert.equal(validateExport(manifest, trace).warnings[0]?.reason, "unresolved-operations");
+	manifest.captions.push({ id: "cause", sceneId: "scene-main", kind: "because", text: "The patch precedes its read.", cause: patch, effect: read });
+	assert.ok(validateExport(manifest, trace).failures.some((failure) => failure.reason === "unresolved-operations"));
+});
+
+test("source digest binds causal links, nested tool evidence, workspace and playback fields", () => {
+	const trace = makeTrace([
+		toolStep("patch", "Edit", { file_path: "src/a.ts", nested: { x: 1, y: 2 } }),
+		toolStep("read", "Read", { file_path: "src/a.ts" }),
+	]);
+	const original = oneScene(trace, ["read", "patch"]);
+	assert.equal(validateExport(original, trace).ok, false);
+	const changes: Array<(copy: Trace) => void> = [
+		(copy) => { (copy.steps[1]!.attributes[ATTR.TOOL_ARGS] as Record<string, unknown>).file_path = "src/b.ts"; },
+		(copy) => { copy.steps[1]!.parent_step_id = "patch"; },
+		(copy) => { copy.steps[1]!.caused_by = "patch"; },
+		(copy) => { copy.steps[1]!.subagent_id = "child"; },
+		(copy) => { copy.steps[0]!.attributes[ATTR.AGENT_SPAWNS] = "child"; },
+		(copy) => { copy.steps[0]!.attributes[ATTR.TOOL_NAME] = "Read"; },
+		(copy) => { copy.run.workspace!.cwd = "/work/other"; },
+		(copy) => { copy.steps[0]!.status = "error"; },
+		(copy) => { copy.steps[0]!.ended_at = "2026-01-01T00:00:01Z"; },
+	];
+	for (const change of changes) {
+		const copy = structuredClone(trace);
+		change(copy);
+		assert.ok(validateExport(original, copy).failures.some((failure) => failure.reason === "source-mismatch"));
+	}
+	const reorderedKeys = structuredClone(trace);
+	reorderedKeys.steps[0]!.attributes[ATTR.TOOL_ARGS] = { nested: { y: 2, x: 1 }, file_path: "src/a.ts" };
+	assert.equal(traceDigest(reorderedKeys), traceDigest(trace));
+});
+
+test("rename destinations are writes and cannot play after their destination read", () => {
+	const trace = makeTrace([
+		toolStep("rename", "apply_patch", { input: "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/b.ts\n@@\n-old\n+new\n*** End Patch" }),
+		toolStep("destination-read", "Read", { file_path: "src/b.ts" }),
+	]);
+	assert.equal(validateExport(oneScene(trace, ["rename", "destination-read"]), trace).ok, true);
+	const reversed = validateExport(oneScene(trace, ["destination-read", "rename"]), trace);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order"));
+});
+
+test("a 2,000-step valid chain validates under 750ms with at most one traversal per exported source", () => {
+	const count = 2_000;
+	const trace = makeTrace(Array.from({ length: count }, (_, index) => makeStep(`s${index}`, index ? { caused_by: `s${index - 1}` } : {})));
+	const manifest = oneScene(trace, trace.steps.map((step) => step.step_id));
+	const start = performance.now();
+	assert.equal(validateExport(manifest, trace).ok, true);
+	const elapsed = performance.now() - start;
+	assert.ok(elapsed < 750, `validation took ${elapsed.toFixed(1)}ms`);
+	const graph = buildCausalGraph(trace);
+	const resolved = resolveManifest(manifest, trace);
+	assert.ok(!("errors" in resolved));
+	const get = graph.adjacency.get.bind(graph.adjacency);
+	let visits = 0;
+	graph.adjacency.get = (id) => { visits++; return get(id); };
+	assert.deepEqual(checkOrder(resolved, graph), []);
+	assert.ok(visits <= count * (count + 1) / 2, `too many adjacency visits: ${visits}`);
+	console.log(`2,000-step export validation: ${elapsed.toFixed(1)}ms; adjacency visits: ${visits}`);
 });

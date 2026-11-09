@@ -1,4 +1,4 @@
-import { classifyCommand } from "../diff/normalize.ts";
+import { classifyCommand, execLiteralCalls } from "../diff/normalize.ts";
 import { ATTR, type Step } from "../types.ts";
 
 /** A recorded file access or test invocation, without a claim about its result. */
@@ -48,6 +48,53 @@ const SED_READ = new RegExp(String.raw`^\s*sed\s+-n\s+(?:'\d+(?:,\d+)?p'|"\d+(?:
 
 /** Extract evidenced accesses from full tool arguments, never normalized DiffSteps. */
 export function fileOperations(step: Step, cwd?: string | null): FileOperation[] {
+	return operationEvidence(step, cwd).operations;
+}
+
+/** Unknown exec cells remain explicit rather than proving independence. */
+export function operationEvidence(step: Step, cwd?: string | null): { operations: FileOperation[]; unresolved: boolean } {
+	if (step.kind === "tool_call" && step.attributes[ATTR.TOOL_NAME] === "exec") {
+		const calls = execLiteralCalls(string(argumentsOf(step).input) ?? "");
+		// Without completion, a prior call could have thrown before later calls
+		// were invoked. Literal source alone cannot prove those accesses occurred.
+		if (!calls || step.attributes[ATTR.EXEC_COMPLETED] !== true) return { operations: [], unresolved: true };
+		const operations: FileOperation[] = [];
+		let unresolved = false;
+		for (const call of calls) {
+			let args: Record<string, unknown>;
+			if (call.tool === "apply_patch") {
+				const patch = call.argument(null).value;
+				if (patch === undefined) { unresolved = true; continue; }
+				args = { input: patch };
+			} else if (call.tool === "exec_command") {
+				const command = call.argument("cmd").value;
+				const workdir = call.argument("workdir");
+				if (command === undefined || (workdir.found && workdir.value === undefined)) {
+					unresolved = true;
+					continue;
+				}
+				args = { cmd: command, ...(workdir.found ? { workdir: workdir.value } : {}) };
+			} else {
+				unresolved = true;
+				continue;
+			}
+			const extracted = directOperations({ ...step, attributes: { [ATTR.TOOL_NAME]: call.tool, [ATTR.TOOL_ARGS]: args } }, cwd);
+			if (!extracted.length) unresolved = true;
+			// A recognized test inside a compound shell command does not resolve
+			// the other stages' accesses. Retain the invocation, flag the gap.
+			const command = commandOf(args);
+			if (command && extracted.some((op) => op.kind === "test") &&
+				(/[;&|<>`$()\n]/.test(command) || classifyCommand(command, cwd).some((part) => part.action !== "test"))) {
+				unresolved = true;
+			}
+			operations.push(...extracted);
+		}
+		return { operations, unresolved };
+	}
+	return { operations: directOperations(step, cwd), unresolved: false };
+}
+
+function directOperations(step: Step, cwd?: string | null): FileOperation[] {
 	if (step.kind !== "tool_call") return [];
 	const name = string(step.attributes[ATTR.TOOL_NAME]) ?? "";
 	const args = argumentsOf(step);
@@ -60,7 +107,7 @@ export function fileOperations(step: Step, cwd?: string | null): FileOperation[]
 	}
 	if (name === "apply_patch") {
 		const input = string(args.input) ?? "";
-		return [...input.matchAll(/^\*\*\* (?:Update|Add) File: ([^\r\n]+)\r?$/gm)]
+		return [...input.matchAll(/^\*\*\* (?:(?:Update|Add) File|Move to): ([^\r\n]+)\r?$/gm)]
 			.map((match) => ({ kind: "write", path: normalizeFilePath(match[1]!, cwd) }));
 	}
 	if (/^(test|run_tests)$/i.test(name)) return [{ kind: "test" }];

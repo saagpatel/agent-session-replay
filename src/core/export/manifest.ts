@@ -81,10 +81,20 @@ function validCaption(value: unknown, sceneIds: Set<string>): value is Caption {
 	return false;
 }
 
-/** Stable browser-safe hash of ordered IDs and kinds; not a security hash. */
+/** Sort object keys recursively while retaining source array/playback order. */
+function stableValue(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(stableValue);
+	if (object(value)) return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
+	return value;
+}
+
+/** Stable browser-safe evidence hash, including paths, links and playback fields; not a security hash. */
 export function traceDigest(trace: Trace): string {
 	let hash = 0xcbf29ce484222325n;
-	const encoded = new TextEncoder().encode(JSON.stringify(trace.steps.map((step) => [step.step_id, step.kind])));
+	const encoded = new TextEncoder().encode(JSON.stringify(stableValue({
+		cwd: trace.run.workspace?.cwd ?? null,
+		steps: trace.steps,
+	})));
 	for (const byte of encoded) {
 		hash = BigInt.asUintN(64, (hash ^ BigInt(byte)) * 0x100000001b3n);
 	}

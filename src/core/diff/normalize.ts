@@ -841,6 +841,24 @@ function straightLine(masked: string, calls: RegExpMatchArray[]): boolean {
 	return k === calls.length;
 }
 
+/** Literal invocation evidence only; no execution or success claim. */
+export function execLiteralCalls(input: string): Array<{
+	tool: string;
+	argument: (key: string | null) => { found: boolean; value?: string };
+}> | undefined {
+	const masked = maskCode(input);
+	const calls = [...masked.matchAll(CELL_CALL_RE)];
+	if (!straightLine(masked, calls)) return undefined;
+	return calls.map((call, index) => {
+		const body = input.slice(call.index ?? 0, calls[index + 1]?.index ?? input.length);
+		// The shared decoder handles common escapes, not JS unicode/hex/octal
+		// escapes or line continuations. Export must flag those as unresolved,
+		// rather than manufacture a different path. Run Diff remains unchanged.
+		const unsupportedEscape = /\\(?:[^\\'"`ntr0$/]|0[0-9])/.test(body);
+		return { tool: call[1]!, argument: (key) => unsupportedEscape ? { found: true } : exactLiteralArg(body, key) };
+	});
+}
+
 /** The result one printed part proves for the call it belongs to. */
 function partResult(tool: string, part: ExecPart | undefined, completed: boolean): UnitResult {
 	if (!part || !completed) return UNKNOWN;

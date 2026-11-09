@@ -8,16 +8,39 @@ import { checkOrder, type OrderFailure } from "./order-check.ts";
 export type Failure = ManifestError | GraphDiagnostic | CaptionFailure | OrderFailure;
 
 /** Check causal-order preservation plus caption-reference presence, not frame equality. */
-export function validateExport(input: unknown, trace: Trace): { ok: boolean; failures: Failure[] } {
+export function validateExport(input: unknown, trace: Trace): { ok: boolean; failures: Failure[]; warnings: GraphDiagnostic[] } {
 	const manifest = parseManifest(input);
-	if ("errors" in manifest) return { ok: false, failures: manifest.errors };
+	if ("errors" in manifest) return { ok: false, failures: manifest.errors, warnings: [] };
 	const resolved = resolveManifest(manifest, trace);
-	if ("errors" in resolved) return { ok: false, failures: resolved.errors };
+	if ("errors" in resolved) return { ok: false, failures: resolved.errors, warnings: [] };
 	const graph = buildCausalGraph(trace);
+	const indices = new Map(trace.steps.map((step, index) => [step.step_id, index]));
+	// A reversed source interval needs independence evidence for every cell it
+	// crosses, including omitted cells. Preserving source order needs no such claim.
+	const reversed: Array<[number, number]> = [];
+	let latest = -1;
+	for (const step of resolved.steps) {
+		const index = indices.get(step.id)!;
+		if (index < latest) reversed.push([index, latest]);
+		latest = Math.max(latest, index);
+	}
+	const warnings: GraphDiagnostic[] = [];
+	const diagnostics = graph.diagnostics.filter((diagnostic) => {
+		if (diagnostic.reason !== "unresolved-operations") return true;
+		const index = indices.get(diagnostic.step!)!;
+		const dependedOn = reversed.some(([from, to]) => from <= index && index <= to) || manifest.captions.some((caption) => {
+			if (caption.kind === "shows") return caption.refs.includes(diagnostic.step!);
+			const cause = indices.get(caption.cause)!;
+			const effect = indices.get(caption.effect)!;
+			return Math.min(cause, effect) <= index && index <= Math.max(cause, effect);
+		});
+		if (!dependedOn) warnings.push(diagnostic);
+		return dependedOn;
+	});
 	const failures: Failure[] = [
-		...graph.diagnostics,
+		...diagnostics,
 		...checkOrder(resolved, graph),
 		...checkCaptions(resolved, graph),
 	];
-	return { ok: failures.length === 0, failures };
+	return { ok: failures.length === 0, failures, warnings };
 }

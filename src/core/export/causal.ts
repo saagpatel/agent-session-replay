@@ -1,5 +1,5 @@
 import { ATTR, type Step, type Trace } from "../types.ts";
-import { fileOperations, stepLabel } from "./operations.ts";
+import { operationEvidence, stepLabel } from "./operations.ts";
 
 /** The source evidence supporting an edge's direction. */
 export type EdgeKind = "caused-by" | "parent" | "spawn" | "consumer" | "file-read" | "test-write";
@@ -12,9 +12,9 @@ export interface Edge {
 	evidence: string;
 }
 
-/** Missing evidence and invalid source graphs prevent an equivalence verdict. */
+/** Invalid source graphs and evidence gaps; unresolved operations are scoped by the validator. */
 export interface GraphDiagnostic {
-	reason: "dangling-parent" | "causal-cycle" | "unlinked-subagent-result";
+	reason: "dangling-parent" | "causal-cycle" | "unlinked-subagent-result" | "unresolved-operations";
 	message: string;
 	step?: string;
 	parent?: string;
@@ -113,17 +113,25 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	const writes = new Map<string, string>();
 	const pendingWrites = new Set<string>();
 	for (const step of trace.steps) {
-		for (const operation of fileOperations(step, cwd)) {
+		const evidence = operationEvidence(step, cwd);
+		if (evidence.unresolved) diagnostics.push({
+			reason: "unresolved-operations",
+			message: `Operations in ${label(step.step_id)} cannot be resolved from literal source evidence.`,
+			step: step.step_id,
+		});
+		for (const operation of evidence.operations) {
 			if (operation.kind === "write" && operation.path) {
 				writes.set(operation.path, step.step_id);
 				pendingWrites.add(step.step_id);
 			}
 			if (operation.kind === "read" && operation.path) {
 				const writer = writes.get(operation.path);
-				if (writer) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
+				if (writer && writer !== step.step_id) add(writer, step.step_id, "file-read", `matching tool argument path ${operation.path}`);
 			}
 			if (operation.kind === "test") {
-				for (const writer of pendingWrites) add(writer, step.step_id, "test-write", "recorded write before next test invocation");
+				for (const writer of pendingWrites) {
+					if (writer !== step.step_id) add(writer, step.step_id, "test-write", "recorded write before next test invocation");
+				}
 				pendingWrites.clear();
 			}
 		}
