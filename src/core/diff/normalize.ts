@@ -753,6 +753,8 @@ export function literalExecCalls(input: string): Array<{
 	path?: string;
 	content?: string;
 }> | null {
+	// maskCode only ends line comments at LF; reject other JS line terminators.
+	if (/[\r\u2028\u2029]/.test(input)) return null;
 	// Unsupported JS escapes must never turn executable shell syntax into data.
 	const literal = (text: string): string | undefined => {
 		const t = text.trim();
