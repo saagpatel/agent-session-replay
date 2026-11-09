@@ -42,6 +42,13 @@ function toolStep(
 	});
 }
 
+function completedSpawn(id: string, child: string): Step {
+	return makeStep(id, { kind: "agent", ended_at: "2026-01-01T00:00:05Z", attributes: {
+		[ATTR.AGENT_SPAWNS]: child,
+		[ATTR.CLAUDE_AGENT_RESULT_KIND]: "completed",
+	} });
+}
+
 function makeTrace(steps: Step[], cwd = "/work/project"): Trace {
 	return {
 		plumbline_version: "1",
@@ -199,12 +206,12 @@ test("allows overlapping scene source ranges when playback steps differ", () => 
 
 test("builds evidenced links for interleaved sidechains and a parallel tool pair", () => {
 	const steps = [
-		makeStep("spawn-a", { kind: "agent", attributes: { [ATTR.AGENT_SPAWNS]: "agent-a" } }),
-		makeStep("spawn-b", { kind: "agent", attributes: { [ATTR.AGENT_SPAWNS]: "agent-b" } }),
-		toolStep("a-first", "Edit", { file_path: "/work/project/src/a.ts" }, { subagent_id: "agent-a" }),
-		toolStep("b-first", "Bash", { command: "pnpm test:unit" }, { subagent_id: "agent-b" }),
-		makeStep("a-last", { subagent_id: "agent-a", caused_by: "a-first" }),
-		makeStep("b-last", { subagent_id: "agent-b", caused_by: "b-first" }),
+		completedSpawn("spawn-a", "agent-a"),
+		completedSpawn("spawn-b", "agent-b"),
+		toolStep("a-first", "Edit", { file_path: "/work/project/src/a.ts" }, { subagent_id: "agent-a", ended_at: "2026-01-01T00:00:02Z" }),
+		toolStep("b-first", "Bash", { command: "pnpm test:unit" }, { subagent_id: "agent-b", ended_at: "2026-01-01T00:00:02Z" }),
+		makeStep("a-last", { subagent_id: "agent-a", caused_by: "a-first", ended_at: "2026-01-01T00:00:04Z" }),
+		makeStep("b-last", { subagent_id: "agent-b", caused_by: "b-first", ended_at: "2026-01-01T00:00:04Z" }),
 		makeStep("consume-a", { parent_step_id: "a-last" }),
 		makeStep("consume-b", { caused_by: "b-last" }),
 		toolStep("parallel-left", "Read", { file_path: "src/left.ts" }),
@@ -222,8 +229,8 @@ test("builds evidenced links for interleaved sidechains and a parallel tool pair
 
 test("links only the first explicit parent-context consumer of a subagent result", () => {
 	const trace = makeTrace([
-		makeStep("spawn", { kind: "agent", attributes: { [ATTR.AGENT_SPAWNS]: "child" } }),
-		makeStep("child-last", { subagent_id: "child" }),
+		completedSpawn("spawn", "child"),
+		makeStep("child-last", { subagent_id: "child", ended_at: "2026-01-01T00:00:04Z" }),
 		makeStep("unlinked-earlier"),
 		makeStep("consumer", { parent_step_id: "child-last" }),
 	]);
@@ -234,9 +241,9 @@ test("links only the first explicit parent-context consumer of a subagent result
 
 test("does not choose an earlier or wrong-context subagent reference as consumer", () => {
 	const trace = makeTrace([
-		makeStep("spawn", { kind: "agent", attributes: { [ATTR.AGENT_SPAWNS]: "child" } }),
+		completedSpawn("spawn", "child"),
 		makeStep("early-reference", { parent_step_id: "child-last" }),
-		makeStep("child-last", { subagent_id: "child" }),
+		makeStep("child-last", { subagent_id: "child", ended_at: "2026-01-01T00:00:04Z" }),
 		makeStep("wrong-context", { subagent_id: "other", caused_by: "child-last" }),
 		makeStep("consumer", { parent_step_id: "child-last" }),
 	]);
@@ -1145,7 +1152,72 @@ test("parsed synchronous Agent results link the sidechain endpoint to the parent
 	unlinked[2]!.parentUuid = "dispatch";
 	unlinked[1]!.timestamp = "2026-01-01T00:00:07Z";
 	const unlinkedTrace = parseClaudeCodeTranscript(jsonl(unlinked), [jsonl(sidechain)]);
-	assert.ok(validateExport(oneScene(unlinkedTrace, unlinkedTrace.steps.map((step) => step.step_id)), unlinkedTrace).failures.some((failure) => failure.reason === "unlinked-subagent-result"));
+	const unlinkedResult = validateExport(oneScene(unlinkedTrace, unlinkedTrace.steps.map((step) => step.step_id)), unlinkedTrace);
+	assert.equal(unlinkedResult.ok, true);
+	assert.ok(unlinkedResult.warnings.some((warning) => warning.reason === "unlinked-subagent-result"));
+});
+
+test("Agent consumer edges and because captions require completed output after every child step ends", () => {
+	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
+	const main = [
+		{ type: "assistant", uuid: "dispatch", timestamp: "2026-01-01T00:00:00Z", message: { content: [
+			{ type: "tool_use", id: "toolu_agent", name: "Agent", input: { subagent_type: "Explore", run_in_background: true } },
+		] } },
+		{ type: "user", uuid: "agent-result", timestamp: "2026-01-01T00:00:01Z", toolUseResult: { agentId: "child" }, message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_agent", content: "Async agent launched successfully." },
+		] } },
+		// The continuation follows the last child's start in source order, but
+		// precedes its completion. Source adjacency cannot prove consumption.
+		{ type: "assistant", uuid: "continuation", timestamp: "2026-01-01T00:00:03Z", parentUuid: "agent-result", message: { content: "Continuing." } },
+	] satisfies [unknown, unknown, unknown];
+	const sidechain = [
+		{ type: "assistant", uuid: "child-read", timestamp: "2026-01-01T00:00:02Z", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_use", id: "toolu_child_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+		{ type: "user", uuid: "child-result", timestamp: "2026-01-01T00:00:10Z", isSidechain: true, agentId: "child", message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_child_read", content: "Synthetic file content." },
+		] } },
+	];
+	const launched = parseClaudeCodeTranscript(jsonl(main), [jsonl(sidechain)]);
+	const completedMain = structuredClone(main);
+	completedMain[0]!.message.content![0]!.input!.run_in_background = false;
+	completedMain[1]!.timestamp = "2026-01-01T00:00:10Z";
+	completedMain[1]!.message.content![0]!.content = "Synthetic inspection completed.";
+	completedMain[2]!.timestamp = "2026-01-01T00:00:11Z";
+	const completed = parseClaudeCodeTranscript(jsonl(completedMain), [jsonl(sidechain)]);
+	const cases: { name: string; trace: Trace; linked: boolean }[] = [
+		{ name: "async launch before child completes", trace: launched, linked: false },
+		{ name: "synchronous result at child completion", trace: completed, linked: true },
+	];
+	const mutations: [string, (trace: Trace) => void][] = [
+		["launch receipt after child completion", (trace) => { trace.steps.find((step) => step.step_id === "toolu_agent")!.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] = "launched"; }],
+		["unknown result kind", (trace) => { trace.steps.find((step) => step.step_id === "toolu_agent")!.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] = "unknown"; }],
+		["missing result kind", (trace) => { delete trace.steps.find((step) => step.step_id === "toolu_agent")!.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND]; }],
+		["result before child completion", (trace) => { trace.steps.find((step) => step.step_id === "toolu_agent")!.ended_at = "2026-01-01T00:00:09Z"; }],
+		["missing result timestamp", (trace) => { trace.steps.find((step) => step.step_id === "toolu_agent")!.ended_at = null; }],
+		["invalid result timestamp", (trace) => { trace.steps.find((step) => step.step_id === "toolu_agent")!.ended_at = "invalid"; }],
+		["missing child end", (trace) => { trace.steps.find((step) => step.step_id === "toolu_child_read")!.ended_at = null; }],
+		["invalid child end", (trace) => { trace.steps.find((step) => step.step_id === "toolu_child_read")!.ended_at = "invalid"; }],
+		["earlier child step still running", (trace) => { trace.steps.find((step) => step.step_id === "child-read")!.ended_at = "2026-01-01T00:00:12Z"; }],
+		["earlier child step missing end", (trace) => { trace.steps.find((step) => step.step_id === "child-read")!.ended_at = null; }],
+	];
+	for (const [name, mutate] of mutations) {
+		const trace = structuredClone(completed);
+		mutate(trace);
+		cases.push({ name, trace, linked: false });
+	}
+	for (const { name, trace, linked } of cases) {
+		const graph = buildCausalGraph(trace);
+		assert.equal(graph.edges.some((edge) => edge.kind === "consumer"), linked, name);
+		const manifest = oneScene(trace, trace.steps.map((step) => step.step_id));
+		const withoutClaim = validateExport(manifest, trace);
+		assert.equal(withoutClaim.ok, true, name);
+		assert.equal(withoutClaim.warnings.some((warning) => warning.reason === "unlinked-subagent-result"), !linked, name);
+		manifest.captions.push({ id: "child-cause", sceneId: "scene-main", kind: "because", text: "The child read caused the continuation.", cause: "toolu_child_read", effect: "continuation" });
+		const withClaim = validateExport(manifest, trace);
+		assert.equal(withClaim.ok, linked, name);
+		assert.equal(withClaim.failures.some((failure) => failure.reason === "caption-unsupported-claim"), !linked, name);
+	}
 });
 
 test("absent parents matching the trace's tool-use ID family remain dangling", () => {

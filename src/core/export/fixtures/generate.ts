@@ -80,8 +80,15 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		steps.forEach((step, index) => {
 			const time = new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString();
 			step.started_at = time;
-			step.ended_at = new Date(Date.parse(time) + (step.step_id.startsWith("parallel-") ? 20000 : 5000)).toISOString();
+			step.ended_at = new Date(Date.parse(time) + (step.step_id.startsWith("parallel-") ? 20000 : step.subagent_id ? 1000 : 5000)).toISOString();
 		});
+		// Each synthetic Agent result returns after all of its child's steps end.
+		for (const spawn of steps.filter((step) => step.attributes[ATTR.AGENT_SPAWNS])) {
+			const child = spawn.attributes[ATTR.AGENT_SPAWNS];
+			spawn.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] = "completed";
+			spawn.ended_at = new Date(Math.max(...steps.filter((step) => step.subagent_id === child)
+				.map((step) => Date.parse(step.ended_at!)))).toISOString();
+		}
 		const trace: Trace = { plumbline_version: "1", run: { run_id: `fixture-${slug}`, harness: { name: "synthetic" }, started_at: steps[0]!.started_at, workspace: { cwd } }, steps };
 		const lastConsumer = trace.steps.filter((step) => /^consume-/.test(step.step_id)).at(-1)!.step_id;
 		const firstConsumer = trace.steps.find((step) => /^consume-/.test(step.step_id))!.step_id;

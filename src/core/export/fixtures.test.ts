@@ -44,6 +44,7 @@ test("20 synthetic traces have faithful shortened manifests", () => {
 		}
 		assert.ok(trace.steps.length >= 25 && trace.steps.length <= 80, slug);
 		const graph = buildCausalGraph(trace);
+		assert.ok(!graph.diagnostics.some((diagnostic) => diagnostic.reason === "unlinked-subagent-result"), slug);
 		assert.ok(happensBefore(graph, "edit-a", "test"), slug);
 		assert.equal(trace.steps.find((step) => step.step_id === "edit-a")?.caused_by, "gate", slug);
 		assert.ok(trace.steps.some((step) => step.kind === "compaction"), slug);
@@ -142,5 +143,5 @@ test("fixture generation is deterministic", () => {
 	const second = generateReplayFixtures();
 	assert.deepEqual(second, first);
 	const digest = createHash("sha256").update(JSON.stringify(first)).digest("hex");
-	assert.equal(digest, "d4b10ff7270dec9e18dd7738eafd561b624cce1e12dd93671095d993fdb4b79b");
+	assert.equal(digest, "67f357bc9001766e996d68c1033a83d22f325ad45229e51beb82a105f37a96e0");
 });

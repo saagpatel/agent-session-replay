@@ -129,13 +129,19 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 		for (const step of chain) add(spawn.step_id, step.step_id, "spawn", ATTR.AGENT_SPAWNS);
 		const last = chain.at(-1)!;
 		const lastIndex = indices.get(last.step_id)!;
+		const resultTime = Date.parse(spawn.ended_at ?? "");
+		const completed = spawn.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] === "completed" &&
+			Number.isFinite(resultTime) && chain.every((step) => {
+				const end = Date.parse(step.ended_at ?? "");
+				return Number.isFinite(end) && end <= resultTime;
+			});
 		const referencesResult = (step: Step) => Boolean(step.parent_step_id &&
 			!steps.has(step.parent_step_id) && resultEventSteps.get(step.parent_step_id)?.has(spawn.step_id));
-		const candidates = trace.steps.filter((step, index) =>
+		const candidates = completed ? trace.steps.filter((step, index) =>
 			index > lastIndex &&
 			(step.subagent_id ?? null) === (spawn.subagent_id ?? null) &&
 			(step.caused_by === last.step_id || step.parent_step_id === last.step_id || referencesResult(step)),
-		);
+		) : [];
 		const consumers = candidates.filter((step, index) => index === 0 || referencesResult(step));
 		if (consumers.length) {
 			for (const consumer of consumers) add(last.step_id, consumer.step_id, "consumer", referencesResult(consumer)
