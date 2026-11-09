@@ -436,10 +436,6 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 					if (str(block["id"])) toolSteps.set(block["id"] as string, step);
 				}
 			});
-		} else if (etype === "user") {
-			contentBlocks(ev).forEach((block) => {
-				if (block["type"] === "tool_result") mergeResult(toolSteps, block, ev);
-			});
 		} else if (etype === "system") {
 			const step = systemStep(ev, subId, ts, idx);
 			if (step) steps.push(step);
@@ -456,11 +452,22 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
 	const stepIds = new Set(steps.map((step) => step.step_id));
-	const omittedEventKinds = new Map<string, "user" | "system" | "summary">();
+	const omittedEventKinds = new Map<string, "user" | "system" | "summary" | "unmatched-tool-result">();
+	// Resolve results only after every tool call is indexed, regardless of input
+	// order. Result events are causal evidence, never ordinary user context.
 	for (const event of events) {
 		const id = str(event["uuid"]);
 		const kind = event["type"];
-		if (id && !stepIds.has(id) && (kind === "user" || kind === "system" || kind === "summary")) {
+		const results = kind === "user"
+			? contentBlocks(event).filter((block) => block["type"] === "tool_result")
+			: [];
+		for (const block of results) mergeResult(toolSteps, block, event);
+		if (!id || stepIds.has(id)) continue;
+		if (results.length) {
+			if (results.some((block) => !toolSteps.has(str(block["tool_use_id"]) ?? ""))) {
+				omittedEventKinds.set(id, "unmatched-tool-result");
+			}
+		} else if (kind === "user" || kind === "system" || kind === "summary") {
 			omittedEventKinds.set(id, kind);
 		}
 	}

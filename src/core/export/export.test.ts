@@ -995,6 +995,70 @@ test("parsed Claude result events retain every contributing tool and distinct re
 	}
 });
 
+test("a Claude result event with a missing tool call blocks export", () => {
+	for (const resultBlock of [
+		{ type: "tool_result", tool_use_id: "toolu_missing", content: "Synthetic result." },
+		{ type: "tool_result", content: "Synthetic result without an ID." },
+	]) {
+		const trace = parseClaudeCodeTranscript([
+			{ type: "user", uuid: "result-event", message: { content: [
+				{ type: "text", text: "Synthetic context alongside a result." }, resultBlock,
+			] } },
+			{ type: "assistant", uuid: "done", parentUuid: "result-event", message: { content: "Using the result." } },
+		].map((event) => JSON.stringify(event)).join("\n"));
+		assert.equal(trace.steps[0]!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND], "unmatched-tool-result");
+		const result = validateExport(oneScene(trace, ["done"]), trace);
+		assert.equal(result.ok, false);
+		assert.ok(result.failures.some((failure) => failure.reason === "dangling-parent" && failure.parent === "result-event"));
+		assert.equal(result.warnings.some((warning) => warning.reason === "external-parent"), false);
+	}
+});
+
+test("a partially matched Claude result batch keeps matched edges and blocks missing evidence", () => {
+	const trace = parseClaudeCodeTranscript([
+		{ type: "assistant", uuid: "a", message: { content: [
+			{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+		{ type: "user", uuid: "batch-result", message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_read", content: "Synthetic file content." },
+			{ type: "tool_result", tool_use_id: "toolu_missing", content: "Unmatched synthetic content." },
+		] } },
+		{ type: "assistant", uuid: "done", parentUuid: "batch-result", message: { content: "Using both results." } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.equal(trace.steps.find((step) => step.step_id === "done")!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND], "unmatched-tool-result");
+	assert.deepEqual(buildCausalGraph(trace).edges, [
+		{ from: "toolu_read", to: "done", kind: "parent", evidence: "result-event" },
+	]);
+	const faithful = validateExport(oneScene(trace, ["a", "toolu_read", "done"]), trace);
+	assert.equal(faithful.ok, false);
+	assert.ok(faithful.failures.some((failure) => failure.reason === "dangling-parent" && failure.parent === "batch-result"));
+	assert.equal(faithful.warnings.some((warning) => warning.reason === "external-parent"), false);
+	const reversed = validateExport(oneScene(trace, ["a", "done", "toolu_read"]), trace);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order"));
+	assert.ok(reversed.failures.some((failure) => failure.reason === "dangling-parent"));
+});
+
+test("Claude result contributors resolve before their calls in input order", () => {
+	const trace = parseClaudeCodeTranscript([
+		{ type: "user", uuid: "result-event", timestamp: "2026-01-01T00:00:02Z", message: { content: [
+			{ type: "tool_result", tool_use_id: "toolu_read", content: "Synthetic file content." },
+		] } },
+		{ type: "assistant", uuid: "done", parentUuid: "result-event", timestamp: "2026-01-01T00:00:03Z", message: { content: "Using the result." } },
+		{ type: "assistant", uuid: "a", timestamp: "2026-01-01T00:00:01Z", message: { content: [
+			{ type: "tool_use", id: "toolu_read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.deepEqual(trace.steps.map((step) => step.step_id), ["a", "toolu_read", "done"]);
+	const read = trace.steps.find((step) => step.step_id === "toolu_read")!;
+	assert.deepEqual(read.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["result-event"]);
+	assert.equal(read.ended_at, "2026-01-01T00:00:02Z");
+	assert.equal(trace.steps.find((step) => step.step_id === "done")!.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND], undefined);
+	assert.equal(validateExport(oneScene(trace, ["a", "toolu_read", "done"]), trace).ok, true);
+	const reversed = validateExport(oneScene(trace, ["a", "done", "toolu_read"]), trace);
+	assert.equal(reversed.ok, false);
+	assert.ok(reversed.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "toolu_read" && failure.b === "done"));
+});
+
 test("parsed Agent spawn precedes every step of the first child tool event", () => {
 	const jsonl = (events: unknown[]) => events.map((event) => JSON.stringify(event)).join("\n");
 	const main = [

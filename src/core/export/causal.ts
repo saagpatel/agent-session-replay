@@ -96,7 +96,9 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			const contributors = !steps.has(step.parent_step_id) && resultEventSteps.get(step.parent_step_id);
 			if (contributors) {
 				for (const id of contributors) add(id, step.step_id, "parent", "result-event");
-			} else {
+			}
+			// Matched contributors do not account for missing calls in the same batch.
+			if (!contributors || step.attributes[ATTR.CLAUDE_PARENT_EVENT_KIND] === "unmatched-tool-result") {
 				add(step.parent_step_id, step.step_id, "parent", "parent_step_id");
 			}
 		}
