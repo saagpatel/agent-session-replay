@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Read-only observations of separate files commute.",
+  "category": "read-order-permuted-across-files"
+}

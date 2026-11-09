@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The second replacement does not consume the first replacement's output.",
+  "category": "adversarial-near-miss"
+}

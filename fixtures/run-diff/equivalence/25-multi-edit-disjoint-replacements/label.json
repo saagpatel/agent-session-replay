@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "The identical ordered disjoint replacement list is preserved on both sides.",
+  "category": "multiedit-vs-edits"
+}

@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The read of the edited file occurs on opposite sides of the mutation.",
+  "category": "read-after-edit-vs-read-before-edit"
+}

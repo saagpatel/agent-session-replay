@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The search scope differs even though the query matches.",
+  "category": "adversarial-near-miss"
+}

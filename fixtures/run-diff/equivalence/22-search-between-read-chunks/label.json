@@ -1,0 +1,5 @@
+{
+  "label": "equivalent",
+  "why": "Read and search observations commute; the same bounded range is covered in both runs.",
+  "category": "read-order-permuted-across-files"
+}

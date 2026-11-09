@@ -1,0 +1,5 @@
+{
+  "label": "divergent",
+  "why": "The file observation crosses a command that may mutate the workspace on one side.",
+  "category": "interleaved-reads-across-mutating-run"
+}
