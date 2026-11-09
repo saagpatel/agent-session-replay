@@ -29,6 +29,7 @@ export function toWaitTrace(trace: Trace): { waitTrace: WaitTrace; notes: string
 	if (!starts.length) throw new Error("Trace has no valid start time");
 	const earliest = starts.reduce((a, b) => Math.min(a, b));
 	const latest = valid.reduce((end, item) => Math.max(end, item.end), Number.isFinite(runEnd) ? Math.max(earliest, runEnd) : earliest);
+	if (latest <= earliest) notes.push("No measurable time in this session (window is zero-length); nothing to analyze.");
 	const offset = (time: number) => {
 		const ns = (time - earliest) * 1_000_000;
 		if (!Number.isSafeInteger(ns)) throw new Error("Trace duration exceeds safe integer precision");

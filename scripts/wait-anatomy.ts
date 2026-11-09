@@ -9,6 +9,11 @@ if (args.length !== 3 || args[1] !== "--out" || !args[0] || !args[2]) {
 	console.error("Usage: node --experimental-strip-types scripts/wait-anatomy.ts <session.jsonl> --out <dir>");
 	process.exit(1);
 }
+const { waitTrace } = toWaitTrace(parseTranscript(readFileSync(args[0], "utf8")).trace);
+if (waitTrace.window_ns[1] <= waitTrace.window_ns[0]) {
+	console.log("No measurable time in this session (window is zero-length); nothing to analyze.");
+	process.exit(0);
+}
 // Traceglass storage refuses symlinked path components, so hand it the real path.
 mkdirSync(resolve(args[2]), { recursive: true });
 const out = realpathSync(resolve(args[2]));
@@ -17,7 +22,6 @@ const analysisPath = join(out, "analysis.json");
 const reportPath = join(out, "report.html");
 const root = process.env.TRACEGLASS_ROOT ? resolve(process.env.TRACEGLASS_ROOT) : undefined;
 if (root && (existsSync(analysisPath) || existsSync(reportPath))) throw new Error("Analysis or report output already exists");
-const { waitTrace } = toWaitTrace(parseTranscript(readFileSync(args[0], "utf8")).trace);
 writeFileSync(tracePath, JSON.stringify(waitTrace, null, 2) + "\n", { flag: "wx" });
 if (!root) {
 	console.log("Set TRACEGLASS_ROOT to a traceglass checkout and run: python3 -m traceglass.wait_anatomy analyze " + tracePath + " --json " + analysisPath);
