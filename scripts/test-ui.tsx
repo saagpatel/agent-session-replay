@@ -190,6 +190,34 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(equivHtml, /read-coalesce/);
 	assert.match(equivHtml, /edit-batch/);
 
+	// Distinct canonical evidence is visible and marked on both sides.
+	const { ATTR } = await import("../src/core/types.ts");
+	const evidenceTrace = (name: "Grep" | "Read", args: Record<string, unknown>) => {
+		const tool = name === "Grep" ? { name, pattern: "placeholder" } as const : { name, file: "src/a.ts" } as const;
+		const trace = parseTranscript(toJsonl(ccEvents("look", [tool]))).trace;
+		const source = trace.steps.find((step) => step.attributes[ATTR.TOOL_NAME] === name);
+		assert.ok(source);
+		source.attributes[ATTR.TOOL_ARGS] = args;
+		return trace;
+	};
+	const renderEvidence = (a: typeof left, b: typeof left) => renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(a, b)} leftFile="a" rightFile="b" leftTrace={a} rightTrace={b} mode="equivalence" />,
+	);
+	const searchEvidence = renderEvidence(
+		evidenceTrace("Grep", { pattern: "alpha", path: "/work/a/fixture-repo/src" }),
+		evidenceTrace("Grep", { pattern: "beta", path: "/work/a/fixture-repo/src" }),
+	);
+	assert.match(searchEvidence, /pattern &quot;alpha&quot;/);
+	assert.match(searchEvidence, /pattern &quot;beta&quot;/);
+	assert.equal((searchEvidence.match(/rd-eq-evidence--changed/g) ?? []).length, 2);
+	const readEvidence = renderEvidence(
+		evidenceTrace("Read", { file_path: "/work/a/fixture-repo/src/a.ts", offset: 1, limit: 10 }),
+		evidenceTrace("Read", { file_path: "/work/a/fixture-repo/src/a.ts", offset: 20, limit: 10 }),
+	);
+	assert.match(readEvidence, /lines 1–10/);
+	assert.match(readEvidence, /lines 20–29/);
+	assert.equal((readEvidence.match(/rd-eq-evidence--changed/g) ?? []).length, 2);
+
 	// Incomplete evidence is named in plain words, and divergent rows use the linear highlight.
 	const incompleteHtml = renderToStaticMarkup(
 		<RunDiffView

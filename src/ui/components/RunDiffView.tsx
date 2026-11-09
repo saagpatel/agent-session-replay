@@ -125,6 +125,38 @@ const MODES: ReadonlyArray<{ id: RunDiffMode; label: string }> = [
 
 const TRACE_TOOLTIP = "Load both transcripts to use this mode.";
 
+/** Display the evidence encoded by equivalence normalization, not inferred tool output. */
+function eventEvidence(event: CanonicalEvent | null): string | null {
+	if (!event) return null;
+	if (event.action === "read") {
+		return event.range ? `lines ${event.range.start}–${event.range.end}` : "whole file or unknown range";
+	}
+	let parts: unknown;
+	try { parts = JSON.parse(event.key); } catch {
+		return (event.action === "test" || event.action === "run") && event.target ? `command ${event.target}` : null;
+	}
+	if (!Array.isArray(parts)) return null;
+	if (parts[0] === "search" && typeof parts[2] === "string" && parts[3] && typeof parts[3] === "object") {
+		const { pattern, ...options } = parts[3] as Record<string, unknown>;
+		return `pattern ${JSON.stringify(pattern)} · path ${parts[2]}${Object.keys(options).length ? ` · options ${JSON.stringify(options)}` : ""}`;
+	}
+	if (parts[0] === "search-shell" && Array.isArray(parts[2]) && typeof parts[3] === "string" && Array.isArray(parts[4])) {
+		return `pattern ${JSON.stringify(parts[3])} · path ${parts[4].join(", ")} · options ${parts[1]} ${parts[2].join(" ")}`;
+	}
+	if (parts[0] === "edit" && Array.isArray(parts[2])) {
+		const clip = (text: string) => {
+			const line = text.split(/\r?\n/, 1)[0] ?? "";
+			return JSON.stringify(line.length > 80 ? `${line.slice(0, 80)}…` : line);
+		};
+		return parts[2].map((edit: { old?: unknown; next?: unknown }) =>
+			typeof edit.old === "string" && typeof edit.next === "string" ? `${clip(edit.old)} → ${clip(edit.next)}` : "unknown edit",
+		).join("; ");
+	}
+	if (parts[0] === "execution") return `command ${typeof parts[1] === "string" ? parts[1] : JSON.stringify(parts[1])}`;
+	if ((event.action === "test" || event.action === "run") && event.target) return `command ${event.target}`;
+	return null;
+}
+
 /** Plain wording for Work Equivalence incomplete-reason codes. */
 const INCOMPLETE_PLAIN: Record<string, string> = {
 	"normalizer-cap-or-unsupported-shape":
@@ -184,10 +216,14 @@ function EquivCell({
 	event,
 	steps,
 	side,
+	evidence,
+	evidenceDiffers,
 }: {
 	event: CanonicalEvent | null;
 	steps: DiffStep[];
 	side: "left" | "right";
+	evidence: string | null;
+	evidenceDiffers: boolean;
 }) {
 	if (!event) return <div className={`rd-cell rd-cell--${side} rd-cell--empty`} aria-hidden="true" />;
 	const failed = isFailure(event.status);
@@ -215,6 +251,7 @@ function EquivCell({
 					</span>
 				) : null}
 			</div>
+			{evidence ? <span className={`rd-eq-evidence${evidenceDiffers ? " rd-eq-evidence--changed" : ""}`}>{evidence}</span> : null}
 			{event.rule ? (
 				<details className="rd-eq-originals">
 					<summary>
@@ -306,6 +343,9 @@ function WorkEquivalence({
 				</div>
 				<div className="rd-grid__body">
 					{alignment.rows.map((row) => {
+						const leftEvidence = eventEvidence(row.left);
+						const rightEvidence = eventEvidence(row.right);
+						const evidenceDiffers = row.relation !== "same" && (leftEvidence !== rightEvidence || row.left?.key !== row.right?.key);
 						const highlightSame = row.relation === "same" && row.statusDiffers;
 						const cls = [
 							"rd-row",
@@ -321,13 +361,13 @@ function WorkEquivalence({
 									<span className="rd-gutter__n">{row.row + 1}</span>
 								</div>
 								<div>
-									<EquivCell event={row.left} steps={alignment.left.steps} side="left" />
+									<EquivCell event={row.left} steps={alignment.left.steps} side="left" evidence={leftEvidence} evidenceDiffers={evidenceDiffers} />
 								</div>
 								<div className="rd-mark" aria-label={row.relation}>
 									{row.statusDiffers ? "!" : MARK[row.relation]}
 								</div>
 								<div>
-									<EquivCell event={row.right} steps={alignment.right.steps} side="right" />
+									<EquivCell event={row.right} steps={alignment.right.steps} side="right" evidence={rightEvidence} evidenceDiffers={evidenceDiffers} />
 								</div>
 							</div>
 						);
