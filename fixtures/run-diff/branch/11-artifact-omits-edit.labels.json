@@ -1,6 +1,14 @@
 {
   "repo": "artifact-omits-edit",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [
+      "toolu_0"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [

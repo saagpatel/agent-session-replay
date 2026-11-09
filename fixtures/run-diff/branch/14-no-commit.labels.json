@@ -1,6 +1,14 @@
 {
   "repo": "no-commit",
   "harness": "claude-code",
+  "artifact": {
+    "link": "no-claim",
+    "retained": [],
+    "abandoned": [],
+    "unknown": [
+      "toolu_0"
+    ]
+  },
   "expected": {
     "abandoned": [],
     "retained": [

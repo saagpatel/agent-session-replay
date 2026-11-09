@@ -1,6 +1,14 @@
 {
   "repo": "stash-backtrack",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [
+      "toolu_0"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0"

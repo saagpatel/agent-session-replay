@@ -1,6 +1,14 @@
 {
   "repo": "no-dead-ends",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_0"
+    ],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [

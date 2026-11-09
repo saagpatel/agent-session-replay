@@ -1,6 +1,38 @@
 {
   "repo": "dense-dead-ends",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_23"
+    ],
+    "abandoned": [
+      "toolu_0",
+      "toolu_1",
+      "toolu_2",
+      "toolu_3",
+      "toolu_4",
+      "toolu_5",
+      "toolu_6",
+      "toolu_7",
+      "toolu_8",
+      "toolu_9",
+      "toolu_10",
+      "toolu_11",
+      "toolu_12",
+      "toolu_13",
+      "toolu_14",
+      "toolu_15",
+      "toolu_16",
+      "toolu_17",
+      "toolu_18",
+      "toolu_19",
+      "toolu_20",
+      "toolu_21",
+      "toolu_22"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0",

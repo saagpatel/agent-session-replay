@@ -1,6 +1,12 @@
 {
   "repo": "codex-unparsed",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [],
+    "abandoned": [],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [],
     "retained": [

@@ -23,6 +23,8 @@ type Case = {
 	unknown?: string[];
 	artifactOnly?: string[];
 	claim?: "missing" | "none";
+	/** Expected artifact effect statuses, by zero-based tool ordinal. */
+	artifact: { retained: number[]; abandoned: number[]; unknown: number[]; partial?: number[] };
 	notes: string;
 };
 
@@ -56,6 +58,7 @@ const bash = (command: string, output = "ok"): Tool => ({
 const cases: Case[] = [
 	{
 		slug: "01-single-retry",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [test(true), test(false)],
 		abandoned: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -63,6 +66,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "02-retry-then-edit",
+		artifact: { retained: [2], abandoned: [0], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			test(true),
@@ -76,6 +80,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "03-edit-revert",
+		artifact: { retained: [1], abandoned: [0], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			edit("const value = 1;", "const value = 0;"),
@@ -86,6 +91,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "04-checkout-restore",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			bash("git checkout -- src/value.ts"),
@@ -96,6 +102,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "05-stash-backtrack",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [edit("const value = 0;", "const value = 1;"), bash("git stash")],
 		abandoned: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -103,6 +110,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "06-superseded-edit",
+		artifact: { retained: [1], abandoned: [0], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			edit("const value = 1;", "const value = 2;"),
@@ -113,6 +121,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "07-two-hypotheses",
+		artifact: { retained: [2, 3], abandoned: [0, 1], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			edit(
@@ -133,6 +142,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "08-retry-nested-backtrack",
+		artifact: { retained: [3], abandoned: [0, 2], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			test(true),
@@ -147,6 +157,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "09-dense-dead-ends",
+		artifact: { retained: [23], abandoned: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22], unknown: [] },
 		tools: [
 			...Array.from({ length: 12 }, (_, i) =>
 				edit(`const value = ${i};`, `const value = ${i + 1};`),
@@ -163,12 +174,14 @@ const cases: Case[] = [
 	},
 	{
 		slug: "10-no-dead-ends",
+		artifact: { retained: [0], abandoned: [], unknown: [] },
 		tools: [edit("const value = 0;", "const value = 1;"), test(false)],
 		retained: ["toolu_0", "toolu_1"],
 		notes: "A straightforward edit and passing test.",
 	},
 	{
 		slug: "11-artifact-omits-edit",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [edit("const value = 0;", "const value = 1;"), test(false)],
 		artifactOnly: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -177,6 +190,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "12-claim-outside-repo",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [test(false)],
 		claim: "missing",
 		retained: ["toolu_0"],
@@ -184,6 +198,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "13-unparsed-write",
+		artifact: { retained: [], abandoned: [], unknown: [0] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			bash('python3 -c \'open("src/value.ts", "w").write("unknown")\''),
@@ -195,6 +210,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "14-no-commit",
+		artifact: { retained: [], abandoned: [], unknown: [0] },
 		tools: [edit("const value = 0;", "const value = 1;")],
 		claim: "none",
 		retained: ["toolu_0"],
@@ -202,6 +218,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "15-reset-hard",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [write("const value = 1;"), bash("git reset --hard")],
 		abandoned: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -209,6 +226,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "16-write-overwrite",
+		artifact: { retained: [1], abandoned: [0], unknown: [] },
 		tools: [write("const value = 1;"), write("const value = 2;")],
 		abandoned: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -216,6 +234,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "17-codex-retry",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [test(true), test(false)],
 		abandoned: ["call_0"],
 		retained: ["call_1"],
@@ -223,6 +242,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "18-codex-patch-revert",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [
 			{
 				name: "apply_patch",
@@ -244,12 +264,14 @@ const cases: Case[] = [
 	},
 	{
 		slug: "19-codex-zero-dead-ends",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [test(false)],
 		retained: ["call_0"],
 		notes: "Codex rollout with one passing test.",
 	},
 	{
 		slug: "20-codex-superseded",
+		artifact: { retained: [1], abandoned: [0], unknown: [] },
 		tools: [write("const value = 1;"), write("const value = 2;")],
 		abandoned: ["call_0"],
 		retained: ["call_1"],
@@ -257,6 +279,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "21-codex-unparsed",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [
 			{
 				name: "shell",
@@ -269,6 +292,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "22-multiedit-parts",
+		artifact: { retained: [0], abandoned: [], unknown: [] },
 		tools: [
 			{
 				name: "MultiEdit",
@@ -286,6 +310,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "23-compound-over-six-stages",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [
 			bash(
 				"npm run build && npm run typecheck && npm test; git status; pwd; echo done; git diff",
@@ -297,6 +322,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "24-codex-seven-file-patch",
+		artifact: { retained: [0], abandoned: [], unknown: [] },
 		tools: [
 			{
 				name: "apply_patch",
@@ -319,6 +345,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "25-sidechain-tool",
+		artifact: { retained: [], abandoned: [], unknown: [] },
 		tools: [
 			{
 				name: "Read",
@@ -331,6 +358,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "26-partial-lineage",
+		artifact: { retained: [1], abandoned: [], partial: [0], unknown: [] },
 		tools: [edit("const value = 0;", "const value = 10;"), edit("10;", "1;")],
 		partial: ["toolu_0"],
 		retained: ["toolu_1"],
@@ -339,6 +367,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "27-identical-edit-reintroduced",
+		artifact: { retained: [2], abandoned: [0, 1], unknown: [] },
 		tools: [
 			edit("const value = 0;", "const value = 1;"),
 			edit("const value = 1;", "const value = 0;"),
@@ -351,6 +380,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "28-unconfirmed-patch",
+		artifact: { retained: [], abandoned: [], unknown: [0] },
 		tools: [
 			{
 				name: "apply_patch",
@@ -367,6 +397,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "29-codex-single-revert",
+		artifact: { retained: [], abandoned: [0], unknown: [] },
 		tools: [
 			{
 				name: "Write",
@@ -387,6 +418,7 @@ const cases: Case[] = [
 	},
 	{
 		slug: "30-codex-partial-edit",
+		artifact: { retained: [1], abandoned: [0], unknown: [] },
 		tools: [
 			{
 				name: "Write",
@@ -715,6 +747,13 @@ async function generate(outRoot = root): Promise<void> {
 		const labels = {
 			repo: repoName,
 			harness: codex ? "codex" : "claude-code",
+			artifact: {
+				link: c.claim === "none" ? "no-claim" : c.claim === "missing" ? "not-found" : "resolved",
+				retained: c.artifact.retained.map((n) => `${prefix}${n}`),
+				abandoned: c.artifact.abandoned.map((n) => `${prefix}${n}`),
+				unknown: c.artifact.unknown.map((n) => `${prefix}${n}`),
+				...(c.artifact.partial ? { partial: c.artifact.partial.map((n) => `${prefix}${n}`) } : {}),
+			},
 			expected: {
 				abandoned: c.abandoned ?? [],
 				retained,

@@ -1,6 +1,16 @@
 {
   "repo": "codex-partial-edit",
   "harness": "codex",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "call_1"
+    ],
+    "abandoned": [
+      "call_0"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "call_0"

@@ -1,6 +1,17 @@
 {
   "repo": "identical-edit-reintroduced",
   "harness": "claude-code",
+  "artifact": {
+    "link": "resolved",
+    "retained": [
+      "toolu_2"
+    ],
+    "abandoned": [
+      "toolu_0",
+      "toolu_1"
+    ],
+    "unknown": []
+  },
   "expected": {
     "abandoned": [
       "toolu_0",
