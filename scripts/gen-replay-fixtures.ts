@@ -14,6 +14,11 @@ const slugs = ["parser", "timeline", "cache", "search", "routing", "render", "sc
 for (let n = 0; n < slugs.length; n++) {
 	const slug = `${String(n + 1).padStart(2, "0")}-${slugs[n]}`;
 	const cwd = `/work/${slugs[n]}`;
+	const workerCount = 2 + n % 3;
+	const cycleCount = 1 + n % 4;
+	const fanout = 2 + n % 3;
+	const hookAt = n % 3; // Before dispatch, among worker phases, or before edits.
+	const compactAt = n % 4;
 	const steps: Step[] = [];
 	function add(id: string, kind: Step["kind"], attributes: Step["attributes"] = {}, extra: Partial<Step> = {}) {
 		const time = new Date(Date.UTC(2026, 0, 1, 0, 0, steps.length * 2)).toISOString();
@@ -21,44 +26,84 @@ for (let n = 0; n < slugs.length; n++) {
 	}
 	const tool = (id: string, name: string, args: Record<string, unknown>, extra: Partial<Step> = {}) =>
 		add(id, "tool_call", { [ATTR.TOOL_NAME]: name, [ATTR.TOOL_ARGS]: args }, extra);
-	add("spawn-a", "agent", { [ATTR.AGENT_SPAWNS]: "worker-a" });
-	add("spawn-b", "agent", { [ATTR.AGENT_SPAWNS]: "worker-b" });
-	tool("a-read", "Read", { file_path: `${cwd}/src/a.ts` }, { subagent_id: "worker-a" });
-	tool("b-read", "Read", { file_path: `${cwd}/src/b.ts` }, { subagent_id: "worker-b" });
-	add("a-plan", "decision", {}, { subagent_id: "worker-a", caused_by: "a-read" });
-	add("b-plan", "decision", {}, { subagent_id: "worker-b", caused_by: "a-plan" });
-	add("a-done", "agent", {}, { subagent_id: "worker-a", caused_by: "a-plan" });
-	add("b-done", "agent", {}, { subagent_id: "worker-b", caused_by: "b-plan" });
-	add("consume-a", "decision", {}, { caused_by: "a-done" });
-	add("consume-b", "decision", {}, { caused_by: "b-done" });
-	add("gate", "hook", { [ATTR.HOOK_EVENT]: "PreToolUse", [ATTR.HOOK_VERDICT]: "allow" });
+	const workerId = (index: number) => `worker-${String.fromCharCode(97 + index)}`;
+	const workerSteps = new Map<string, string[]>();
+	const addHook = () => add("gate", "hook", { [ATTR.HOOK_EVENT]: "PreToolUse", [ATTR.HOOK_VERDICT]: "allow" });
+	const addCompact = () => add("compact", "compaction", { [ATTR.COMPACT_REASON]: "context limit" });
+	if (hookAt === 0) addHook();
+	for (let i = 0; i < workerCount; i++) add(`spawn-${String.fromCharCode(97 + i)}`, "agent", { [ATTR.AGENT_SPAWNS]: workerId(i) }, hookAt === 0 && i === 0 ? { caused_by: "gate" } : {});
+	// Vary worker visitation order between phases to diversify interleaving while
+	// keeping each worker's read, plan, completion, and consumption causal chain.
+	for (let phase = 0; phase < 4; phase++) {
+		const order = n % 2 === 0 ? [...Array(workerCount).keys()] : [...Array(workerCount).keys()].reverse();
+		if (phase === 1) order.sort((a, b) => a - b);
+		for (const i of (n % 3 === 0 && phase === 3 ? order.reverse() : order)) {
+			const agent = workerId(i);
+			const ids = workerSteps.get(agent) ?? [];
+			const suffix = String.fromCharCode(97 + i);
+			if (phase === 0) tool(`${suffix}-read`, "Read", { file_path: `${cwd}/src/${suffix}.ts` }, { subagent_id: agent });
+			else if (phase === 1) add(`${suffix}-plan`, "decision", {}, { subagent_id: agent, caused_by: i === 1 ? "a-plan" : `${suffix}-read` });
+			else if (phase === 2) add(`${suffix}-done`, "agent", {}, { subagent_id: agent, caused_by: `${suffix}-plan` });
+			else add(`consume-${suffix}`, "decision", {}, { caused_by: `${suffix}-done` });
+			ids.push(phase === 3 ? `consume-${suffix}` : `${suffix}-${["read", "plan", "done"][phase]}`);
+			workerSteps.set(agent, ids);
+		}
+		if (phase === 1 && hookAt === 2) addHook();
+	}
+	if (hookAt === 1) addHook();
 	tool("edit-a", "Edit", { file_path: `${cwd}/src/a.ts` }, { caused_by: "gate" });
 	tool("edit-b", "Edit", { file_path: `${cwd}/src/b.ts` });
 	tool("test", "Bash", { command: "pnpm test" }, { status: n % 2 === 0 ? "error" : "ok" });
-	if (n % 2 === 0) {
-		tool("fix", "Edit", { file_path: `${cwd}/src/a.ts` }, { caused_by: "test" });
-		tool("retest", "Bash", { command: "pnpm test" }, { caused_by: "fix" });
-	} else {
+	for (let cycle = 1; cycle < cycleCount; cycle++) {
+		const editId = cycle === 1 ? "fix" : `fix-${cycle}`;
+		tool(editId, "Edit", { file_path: `${cwd}/src/${cycle % 2 === 0 ? "b" : "a"}.ts` }, { caused_by: cycle === 1 ? "test" : `retest-${cycle - 1}` });
+		tool(`retest-${cycle}`, "Bash", { command: "pnpm test" }, { caused_by: editId });
+	}
+	if (cycleCount === 1) {
 		add("review", "decision", {}, { caused_by: "test" });
 		add("result", "llm", {}, { caused_by: "review" });
 	}
-	add("compact", "compaction", { [ATTR.COMPACT_REASON]: "context limit" });
-	tool("parallel-a", "Read", { file_path: `${cwd}/docs/a.md` });
-	tool("parallel-b", "Read", { file_path: `${cwd}/docs/b.md` });
+	const finishStart = cycleCount > 1 ? "fix" : "review";
+	addCompact();
+	const parallelIds: string[] = [];
+	for (let i = 0; i < fanout; i++) {
+		const id = `parallel-${String.fromCharCode(97 + i)}`;
+		parallelIds.push(id);
+		tool(id, "Read", { file_path: `${cwd}/docs/${String.fromCharCode(97 + i)}.md` });
+	}
+	const [compact] = steps.splice(steps.findIndex((step) => step.step_id === "compact"), 1);
+	const finishIndex = steps.findIndex((step) => step.step_id === finishStart);
+	const parallelEnd = steps.findIndex((step) => step.step_id === parallelIds.at(-1));
+	// Keep compaction within the finish scene while moving its position.
+	steps.splice(finishIndex + Math.floor((parallelEnd - finishIndex) * compactAt / 4), 0, compact!);
 	for (let i = 0; i < 17 + n % 5; i++) add(`note-${i}`, i % 3 === 0 ? "llm" : "decision");
+	steps.forEach((step, index) => {
+		const time = new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString();
+		step.started_at = time;
+		step.ended_at = new Date(Date.parse(time) + (step.step_id.startsWith("parallel-") ? 20000 : 5000)).toISOString();
+	});
 	const trace: Trace = { plumbline_version: "1", run: { run_id: `fixture-${slug}`, harness: { name: "synthetic" }, started_at: steps[0]!.started_at, workspace: { cwd } }, steps };
+	const lastConsumer = trace.steps.filter((step) => /^consume-/.test(step.step_id)).at(-1)!.step_id;
+	const firstConsumer = trace.steps.find((step) => /^consume-/.test(step.step_id))!.step_id;
+	const firstWorkerRead = trace.steps.find((step) => /^[a-z]-read$/.test(step.step_id))!.step_id;
+	const finishIds = new Set([finishStart, "fix", "review", "result", "compact", ...parallelIds]);
+	for (let cycle = 1; cycle < cycleCount; cycle++) {
+		finishIds.add(cycle === 1 ? "fix" : `fix-${cycle}`);
+		finishIds.add(`retest-${cycle}`);
+	}
+	const finishSteps = trace.steps.filter((step) => finishIds.has(step.step_id)).map((step) => step.step_id);
 	const manifest: Manifest = {
 		version: 1, source: { runId: trace.run.run_id, stepCount: steps.length, digest: traceDigest(trace) }, title: `Replay ${slugs[n]}`,
 		scenes: [
-			{ id: "dispatch", range: { from: "spawn-a", to: "consume-a" }, steps: ["spawn-a", "spawn-b"] },
-			{ id: "worker-a", range: { from: "a-read", to: "b-done" }, steps: ["a-read", "a-plan", "a-done"] },
-			{ id: "worker-b", range: { from: "a-read", to: "b-done" }, steps: ["b-read", "b-plan", "b-done"] },
-			{ id: "work", range: { from: "consume-a", to: "edit-b" }, steps: ["consume-a", "consume-b", "gate", "edit-a", "edit-b"] },
+			{ id: "dispatch", range: { from: "spawn-a", to: lastConsumer }, steps: trace.steps.filter((step) => /^spawn-/.test(step.step_id)).map((step) => step.step_id) },
+			{ id: "worker-a", range: { from: firstWorkerRead, to: lastConsumer }, steps: workerSteps.get("worker-a")!.slice(0, 3) },
+			{ id: "worker-b", range: { from: firstWorkerRead, to: lastConsumer }, steps: workerSteps.get("worker-b")!.slice(0, 3) },
+			{ id: "work", range: { from: firstConsumer, to: "edit-b" }, steps: ["consume-a", "consume-b", ...(hookAt === 1 ? ["gate"] : []), "edit-a", "edit-b"] },
 			{ id: "test", range: { from: "test", to: "test" }, steps: ["test"] },
-			{ id: "finish", range: { from: n % 2 === 0 ? "fix" : "review", to: "parallel-b" }, steps: n % 2 === 0 ? ["fix", "retest", "compact", "parallel-a", "parallel-b"] : ["review", "result", "compact", "parallel-a", "parallel-b"] },
+			{ id: "finish", range: { from: finishSteps[0]!, to: parallelIds.at(-1)! }, steps: finishSteps },
 		],
 		captions: [
-			{ id: "dispatch-caption", sceneId: "dispatch", kind: "shows", text: "Two workers start.", refs: ["spawn-a", "spawn-b"] },
+			{ id: "dispatch-caption", sceneId: "dispatch", kind: "shows", text: `${workerCount} workers start.`, refs: ["spawn-a", "spawn-b"] },
 			{ id: "work-caption", sceneId: "work", kind: "because", text: "The recorded edits precede the test invocation.", cause: "edit-a", effect: "test" },
 			{ id: "finish-caption", sceneId: "finish", kind: "shows", text: "The context is compacted.", refs: ["compact"] },
 		],

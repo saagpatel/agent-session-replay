@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-02-timeline",
-    "stepCount": 37,
-    "digest": "4d42f4545b2c3f5c"
+    "stepCount": 43,
+    "digest": "aa0886c45ad78ba2"
   },
   "title": "Replay timeline",
   "scenes": [
@@ -15,14 +15,15 @@
       },
       "steps": [
         "spawn-a",
-        "spawn-b"
+        "spawn-b",
+        "spawn-c"
       ]
     },
     {
       "id": "worker-a",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "c-read",
+        "to": "consume-a"
       },
       "steps": [
         "a-read",
@@ -33,8 +34,8 @@
     {
       "id": "worker-b",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "c-read",
+        "to": "consume-a"
       },
       "steps": [
         "b-read",
@@ -45,7 +46,7 @@
     {
       "id": "work",
       "range": {
-        "from": "consume-a",
+        "from": "consume-c",
         "to": "edit-b"
       },
       "steps": [
@@ -68,15 +69,16 @@
     {
       "id": "finish",
       "range": {
-        "from": "review",
-        "to": "parallel-b"
+        "from": "fix",
+        "to": "parallel-c"
       },
       "steps": [
-        "review",
-        "result",
+        "fix",
         "compact",
+        "retest-1",
         "parallel-a",
-        "parallel-b"
+        "parallel-b",
+        "parallel-c"
       ]
     }
   ],
@@ -85,7 +87,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "3 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

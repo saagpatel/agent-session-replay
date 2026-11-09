@@ -12,38 +12,36 @@
   },
   "steps": [
     {
-      "step_id": "spawn-a",
-      "kind": "agent",
+      "step_id": "gate",
+      "kind": "hook",
       "started_at": "2026-01-01T00:00:00.000Z",
       "ended_at": "2026-01-01T00:00:05.000Z",
       "status": "ok",
       "attributes": {
-        "agent.spawns_subagent_id": "worker-a"
+        "harness.hook.event": "PreToolUse",
+        "harness.hook.verdict": "allow"
       }
     },
     {
-      "step_id": "spawn-b",
+      "step_id": "spawn-a",
       "kind": "agent",
       "started_at": "2026-01-01T00:00:02.000Z",
       "ended_at": "2026-01-01T00:00:07.000Z",
       "status": "ok",
       "attributes": {
-        "agent.spawns_subagent_id": "worker-b"
-      }
+        "agent.spawns_subagent_id": "worker-a"
+      },
+      "caused_by": "gate"
     },
     {
-      "step_id": "a-read",
-      "kind": "tool_call",
+      "step_id": "spawn-b",
+      "kind": "agent",
       "started_at": "2026-01-01T00:00:04.000Z",
       "ended_at": "2026-01-01T00:00:09.000Z",
       "status": "ok",
       "attributes": {
-        "gen_ai.tool.name": "Read",
-        "tool.arguments": {
-          "file_path": "/work/archive/src/a.ts"
-        }
-      },
-      "subagent_id": "worker-a"
+        "agent.spawns_subagent_id": "worker-b"
+      }
     },
     {
       "step_id": "b-read",
@@ -60,10 +58,24 @@
       "subagent_id": "worker-b"
     },
     {
-      "step_id": "a-plan",
-      "kind": "decision",
+      "step_id": "a-read",
+      "kind": "tool_call",
       "started_at": "2026-01-01T00:00:08.000Z",
       "ended_at": "2026-01-01T00:00:13.000Z",
+      "status": "ok",
+      "attributes": {
+        "gen_ai.tool.name": "Read",
+        "tool.arguments": {
+          "file_path": "/work/archive/src/a.ts"
+        }
+      },
+      "subagent_id": "worker-a"
+    },
+    {
+      "step_id": "a-plan",
+      "kind": "decision",
+      "started_at": "2026-01-01T00:00:10.000Z",
+      "ended_at": "2026-01-01T00:00:15.000Z",
       "status": "ok",
       "attributes": {},
       "subagent_id": "worker-a",
@@ -72,21 +84,11 @@
     {
       "step_id": "b-plan",
       "kind": "decision",
-      "started_at": "2026-01-01T00:00:10.000Z",
-      "ended_at": "2026-01-01T00:00:15.000Z",
-      "status": "ok",
-      "attributes": {},
-      "subagent_id": "worker-b",
-      "caused_by": "a-plan"
-    },
-    {
-      "step_id": "a-done",
-      "kind": "agent",
       "started_at": "2026-01-01T00:00:12.000Z",
       "ended_at": "2026-01-01T00:00:17.000Z",
       "status": "ok",
       "attributes": {},
-      "subagent_id": "worker-a",
+      "subagent_id": "worker-b",
       "caused_by": "a-plan"
     },
     {
@@ -100,10 +102,20 @@
       "caused_by": "b-plan"
     },
     {
-      "step_id": "consume-a",
-      "kind": "decision",
+      "step_id": "a-done",
+      "kind": "agent",
       "started_at": "2026-01-01T00:00:16.000Z",
       "ended_at": "2026-01-01T00:00:21.000Z",
+      "status": "ok",
+      "attributes": {},
+      "subagent_id": "worker-a",
+      "caused_by": "a-plan"
+    },
+    {
+      "step_id": "consume-a",
+      "kind": "decision",
+      "started_at": "2026-01-01T00:00:18.000Z",
+      "ended_at": "2026-01-01T00:00:23.000Z",
       "status": "ok",
       "attributes": {},
       "caused_by": "a-done"
@@ -111,22 +123,11 @@
     {
       "step_id": "consume-b",
       "kind": "decision",
-      "started_at": "2026-01-01T00:00:18.000Z",
-      "ended_at": "2026-01-01T00:00:23.000Z",
-      "status": "ok",
-      "attributes": {},
-      "caused_by": "b-done"
-    },
-    {
-      "step_id": "gate",
-      "kind": "hook",
       "started_at": "2026-01-01T00:00:20.000Z",
       "ended_at": "2026-01-01T00:00:25.000Z",
       "status": "ok",
-      "attributes": {
-        "harness.hook.event": "PreToolUse",
-        "harness.hook.verdict": "allow"
-      }
+      "attributes": {},
+      "caused_by": "b-done"
     },
     {
       "step_id": "edit-a",
@@ -169,38 +170,48 @@
       }
     },
     {
-      "step_id": "review",
-      "kind": "decision",
-      "started_at": "2026-01-01T00:00:28.000Z",
-      "ended_at": "2026-01-01T00:00:33.000Z",
-      "status": "ok",
-      "attributes": {},
-      "caused_by": "test"
-    },
-    {
-      "step_id": "result",
-      "kind": "llm",
-      "started_at": "2026-01-01T00:00:30.000Z",
-      "ended_at": "2026-01-01T00:00:35.000Z",
-      "status": "ok",
-      "attributes": {},
-      "caused_by": "review"
-    },
-    {
       "step_id": "compact",
       "kind": "compaction",
-      "started_at": "2026-01-01T00:00:32.000Z",
-      "ended_at": "2026-01-01T00:00:37.000Z",
+      "started_at": "2026-01-01T00:00:28.000Z",
+      "ended_at": "2026-01-01T00:00:33.000Z",
       "status": "ok",
       "attributes": {
         "harness.compaction.reason": "context limit"
       }
     },
     {
+      "step_id": "fix",
+      "kind": "tool_call",
+      "started_at": "2026-01-01T00:00:30.000Z",
+      "ended_at": "2026-01-01T00:00:35.000Z",
+      "status": "ok",
+      "attributes": {
+        "gen_ai.tool.name": "Edit",
+        "tool.arguments": {
+          "file_path": "/work/archive/src/a.ts"
+        }
+      },
+      "caused_by": "test"
+    },
+    {
+      "step_id": "retest-1",
+      "kind": "tool_call",
+      "started_at": "2026-01-01T00:00:32.000Z",
+      "ended_at": "2026-01-01T00:00:37.000Z",
+      "status": "ok",
+      "attributes": {
+        "gen_ai.tool.name": "Bash",
+        "tool.arguments": {
+          "command": "pnpm test"
+        }
+      },
+      "caused_by": "fix"
+    },
+    {
       "step_id": "parallel-a",
       "kind": "tool_call",
       "started_at": "2026-01-01T00:00:34.000Z",
-      "ended_at": "2026-01-01T00:00:39.000Z",
+      "ended_at": "2026-01-01T00:00:54.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",
@@ -213,7 +224,7 @@
       "step_id": "parallel-b",
       "kind": "tool_call",
       "started_at": "2026-01-01T00:00:36.000Z",
-      "ended_at": "2026-01-01T00:00:41.000Z",
+      "ended_at": "2026-01-01T00:00:56.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",

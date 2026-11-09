@@ -3,7 +3,7 @@
   "source": {
     "runId": "fixture-13-sorting",
     "stepCount": 38,
-    "digest": "5ea7d3a573bda617"
+    "digest": "227c94fca4ca51fb"
   },
   "title": "Replay sorting",
   "scenes": [
@@ -22,7 +22,7 @@
       "id": "worker-a",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-a"
       },
       "steps": [
         "a-read",
@@ -34,7 +34,7 @@
       "id": "worker-b",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-a"
       },
       "steps": [
         "b-read",
@@ -45,13 +45,12 @@
     {
       "id": "work",
       "range": {
-        "from": "consume-a",
+        "from": "consume-b",
         "to": "edit-b"
       },
       "steps": [
         "consume-a",
         "consume-b",
-        "gate",
         "edit-a"
       ]
     },
@@ -68,13 +67,13 @@
     {
       "id": "finish",
       "range": {
-        "from": "fix",
+        "from": "compact",
         "to": "parallel-b"
       },
       "steps": [
-        "fix",
-        "retest",
         "compact",
+        "review",
+        "result",
         "parallel-a",
         "parallel-b"
       ]
@@ -85,7 +84,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "2 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

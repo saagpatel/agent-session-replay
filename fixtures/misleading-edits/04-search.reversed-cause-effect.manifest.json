@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-04-search",
-    "stepCount": 39,
-    "digest": "c976e5a88a9a7b1e"
+    "stepCount": 43,
+    "digest": "c8bf2ed5048e7f7b"
   },
   "title": "Replay search",
   "scenes": [
@@ -11,7 +11,7 @@
       "id": "dispatch",
       "range": {
         "from": "spawn-a",
-        "to": "consume-a"
+        "to": "consume-b"
       },
       "steps": [
         "spawn-a",
@@ -21,8 +21,8 @@
     {
       "id": "worker-a",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "b-read",
+        "to": "consume-b"
       },
       "steps": [
         "a-read",
@@ -33,8 +33,8 @@
     {
       "id": "worker-b",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "b-read",
+        "to": "consume-b"
       },
       "steps": [
         "b-read",
@@ -61,7 +61,6 @@
       "steps": [
         "consume-a",
         "consume-b",
-        "gate",
         "edit-a",
         "edit-b"
       ]
@@ -69,13 +68,17 @@
     {
       "id": "finish",
       "range": {
-        "from": "review",
+        "from": "fix",
         "to": "parallel-b"
       },
       "steps": [
-        "review",
-        "result",
+        "fix",
+        "retest-1",
+        "fix-2",
+        "retest-2",
+        "fix-3",
         "compact",
+        "retest-3",
         "parallel-a",
         "parallel-b"
       ]
@@ -86,7 +89,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "2 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

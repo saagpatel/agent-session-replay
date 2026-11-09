@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-06-render",
-    "stepCount": 36,
-    "digest": "8d9dcaf274a1a8dd"
+    "stepCount": 48,
+    "digest": "2e78cad47681adb4"
   },
   "title": "Replay render",
   "scenes": [
@@ -15,14 +15,16 @@
       },
       "steps": [
         "spawn-a",
-        "spawn-b"
+        "spawn-b",
+        "spawn-c",
+        "spawn-d"
       ]
     },
     {
       "id": "worker-a",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "d-read",
+        "to": "consume-a"
       },
       "steps": [
         "a-read",
@@ -33,8 +35,8 @@
     {
       "id": "worker-b",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "d-read",
+        "to": "consume-a"
       },
       "steps": [
         "b-read",
@@ -45,13 +47,12 @@
     {
       "id": "work",
       "range": {
-        "from": "consume-a",
+        "from": "consume-d",
         "to": "edit-b"
       },
       "steps": [
         "consume-a",
         "consume-b",
-        "gate",
         "edit-a"
       ]
     },
@@ -68,15 +69,17 @@
     {
       "id": "finish",
       "range": {
-        "from": "review",
-        "to": "parallel-b"
+        "from": "fix",
+        "to": "parallel-d"
       },
       "steps": [
-        "review",
-        "result",
+        "fix",
         "compact",
+        "retest-1",
         "parallel-a",
-        "parallel-b"
+        "parallel-b",
+        "parallel-c",
+        "parallel-d"
       ]
     }
   ],
@@ -85,7 +88,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "4 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

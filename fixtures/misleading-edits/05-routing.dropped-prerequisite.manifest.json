@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-05-routing",
-    "stepCount": 40,
-    "digest": "2b00a0f007562849"
+    "stepCount": 46,
+    "digest": "efc284dfdd3dd0b4"
   },
   "title": "Replay routing",
   "scenes": [
@@ -11,18 +11,19 @@
       "id": "dispatch",
       "range": {
         "from": "spawn-a",
-        "to": "consume-a"
+        "to": "consume-c"
       },
       "steps": [
         "spawn-a",
-        "spawn-b"
+        "spawn-b",
+        "spawn-c"
       ]
     },
     {
       "id": "worker-a",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-c"
       },
       "steps": [
         "a-read",
@@ -34,7 +35,7 @@
       "id": "worker-b",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-c"
       },
       "steps": [
         "b-read",
@@ -68,15 +69,16 @@
     {
       "id": "finish",
       "range": {
-        "from": "fix",
-        "to": "parallel-b"
+        "from": "compact",
+        "to": "parallel-c"
       },
       "steps": [
-        "fix",
-        "retest",
         "compact",
+        "review",
+        "result",
         "parallel-a",
-        "parallel-b"
+        "parallel-b",
+        "parallel-c"
       ]
     }
   ],
@@ -85,7 +87,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "3 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-07-schema",
-    "stepCount": 37,
-    "digest": "f530b52bc371d3c2"
+    "stepCount": 39,
+    "digest": "787800773523bf8d"
   },
   "title": "Replay schema",
   "scenes": [
@@ -22,7 +22,7 @@
       "id": "worker-a",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-a"
       },
       "steps": [
         "a-read",
@@ -34,7 +34,7 @@
       "id": "worker-b",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-a"
       },
       "steps": [
         "b-read",
@@ -55,13 +55,12 @@
     {
       "id": "work",
       "range": {
-        "from": "consume-a",
+        "from": "consume-b",
         "to": "edit-b"
       },
       "steps": [
         "consume-a",
         "consume-b",
-        "gate",
         "edit-a",
         "edit-b"
       ]
@@ -74,8 +73,10 @@
       },
       "steps": [
         "fix",
-        "retest",
+        "retest-1",
         "compact",
+        "fix-2",
+        "retest-2",
         "parallel-a",
         "parallel-b"
       ]
@@ -86,7 +87,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "2 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

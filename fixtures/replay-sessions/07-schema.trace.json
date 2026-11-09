@@ -12,20 +12,32 @@
   },
   "steps": [
     {
-      "step_id": "spawn-a",
-      "kind": "agent",
+      "step_id": "gate",
+      "kind": "hook",
       "started_at": "2026-01-01T00:00:00.000Z",
       "ended_at": "2026-01-01T00:00:05.000Z",
       "status": "ok",
       "attributes": {
-        "agent.spawns_subagent_id": "worker-a"
+        "harness.hook.event": "PreToolUse",
+        "harness.hook.verdict": "allow"
       }
+    },
+    {
+      "step_id": "spawn-a",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:02.000Z",
+      "ended_at": "2026-01-01T00:00:07.000Z",
+      "status": "ok",
+      "attributes": {
+        "agent.spawns_subagent_id": "worker-a"
+      },
+      "caused_by": "gate"
     },
     {
       "step_id": "spawn-b",
       "kind": "agent",
-      "started_at": "2026-01-01T00:00:02.000Z",
-      "ended_at": "2026-01-01T00:00:07.000Z",
+      "started_at": "2026-01-01T00:00:04.000Z",
+      "ended_at": "2026-01-01T00:00:09.000Z",
       "status": "ok",
       "attributes": {
         "agent.spawns_subagent_id": "worker-b"
@@ -34,8 +46,8 @@
     {
       "step_id": "a-read",
       "kind": "tool_call",
-      "started_at": "2026-01-01T00:00:04.000Z",
-      "ended_at": "2026-01-01T00:00:09.000Z",
+      "started_at": "2026-01-01T00:00:06.000Z",
+      "ended_at": "2026-01-01T00:00:11.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",
@@ -48,8 +60,8 @@
     {
       "step_id": "b-read",
       "kind": "tool_call",
-      "started_at": "2026-01-01T00:00:06.000Z",
-      "ended_at": "2026-01-01T00:00:11.000Z",
+      "started_at": "2026-01-01T00:00:08.000Z",
+      "ended_at": "2026-01-01T00:00:13.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",
@@ -62,8 +74,8 @@
     {
       "step_id": "a-plan",
       "kind": "decision",
-      "started_at": "2026-01-01T00:00:08.000Z",
-      "ended_at": "2026-01-01T00:00:13.000Z",
+      "started_at": "2026-01-01T00:00:10.000Z",
+      "ended_at": "2026-01-01T00:00:15.000Z",
       "status": "ok",
       "attributes": {},
       "subagent_id": "worker-a",
@@ -72,8 +84,8 @@
     {
       "step_id": "b-plan",
       "kind": "decision",
-      "started_at": "2026-01-01T00:00:10.000Z",
-      "ended_at": "2026-01-01T00:00:15.000Z",
+      "started_at": "2026-01-01T00:00:12.000Z",
+      "ended_at": "2026-01-01T00:00:17.000Z",
       "status": "ok",
       "attributes": {},
       "subagent_id": "worker-b",
@@ -82,8 +94,8 @@
     {
       "step_id": "a-done",
       "kind": "agent",
-      "started_at": "2026-01-01T00:00:12.000Z",
-      "ended_at": "2026-01-01T00:00:17.000Z",
+      "started_at": "2026-01-01T00:00:14.000Z",
+      "ended_at": "2026-01-01T00:00:19.000Z",
       "status": "ok",
       "attributes": {},
       "subagent_id": "worker-a",
@@ -92,21 +104,12 @@
     {
       "step_id": "b-done",
       "kind": "agent",
-      "started_at": "2026-01-01T00:00:14.000Z",
-      "ended_at": "2026-01-01T00:00:19.000Z",
-      "status": "ok",
-      "attributes": {},
-      "subagent_id": "worker-b",
-      "caused_by": "b-plan"
-    },
-    {
-      "step_id": "consume-a",
-      "kind": "decision",
       "started_at": "2026-01-01T00:00:16.000Z",
       "ended_at": "2026-01-01T00:00:21.000Z",
       "status": "ok",
       "attributes": {},
-      "caused_by": "a-done"
+      "subagent_id": "worker-b",
+      "caused_by": "b-plan"
     },
     {
       "step_id": "consume-b",
@@ -118,15 +121,13 @@
       "caused_by": "b-done"
     },
     {
-      "step_id": "gate",
-      "kind": "hook",
+      "step_id": "consume-a",
+      "kind": "decision",
       "started_at": "2026-01-01T00:00:20.000Z",
       "ended_at": "2026-01-01T00:00:25.000Z",
       "status": "ok",
-      "attributes": {
-        "harness.hook.event": "PreToolUse",
-        "harness.hook.verdict": "allow"
-      }
+      "attributes": {},
+      "caused_by": "a-done"
     },
     {
       "step_id": "edit-a",
@@ -183,7 +184,7 @@
       "caused_by": "test"
     },
     {
-      "step_id": "retest",
+      "step_id": "retest-1",
       "kind": "tool_call",
       "started_at": "2026-01-01T00:00:30.000Z",
       "ended_at": "2026-01-01T00:00:35.000Z",
@@ -207,10 +208,38 @@
       }
     },
     {
-      "step_id": "parallel-a",
+      "step_id": "fix-2",
       "kind": "tool_call",
       "started_at": "2026-01-01T00:00:34.000Z",
       "ended_at": "2026-01-01T00:00:39.000Z",
+      "status": "ok",
+      "attributes": {
+        "gen_ai.tool.name": "Edit",
+        "tool.arguments": {
+          "file_path": "/work/schema/src/b.ts"
+        }
+      },
+      "caused_by": "retest-1"
+    },
+    {
+      "step_id": "retest-2",
+      "kind": "tool_call",
+      "started_at": "2026-01-01T00:00:36.000Z",
+      "ended_at": "2026-01-01T00:00:41.000Z",
+      "status": "ok",
+      "attributes": {
+        "gen_ai.tool.name": "Bash",
+        "tool.arguments": {
+          "command": "pnpm test"
+        }
+      },
+      "caused_by": "fix-2"
+    },
+    {
+      "step_id": "parallel-a",
+      "kind": "tool_call",
+      "started_at": "2026-01-01T00:00:38.000Z",
+      "ended_at": "2026-01-01T00:00:58.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",
@@ -222,8 +251,8 @@
     {
       "step_id": "parallel-b",
       "kind": "tool_call",
-      "started_at": "2026-01-01T00:00:36.000Z",
-      "ended_at": "2026-01-01T00:00:41.000Z",
+      "started_at": "2026-01-01T00:00:40.000Z",
+      "ended_at": "2026-01-01T00:01:00.000Z",
       "status": "ok",
       "attributes": {
         "gen_ai.tool.name": "Read",
@@ -235,37 +264,21 @@
     {
       "step_id": "note-0",
       "kind": "llm",
-      "started_at": "2026-01-01T00:00:38.000Z",
-      "ended_at": "2026-01-01T00:00:43.000Z",
-      "status": "ok",
-      "attributes": {}
-    },
-    {
-      "step_id": "note-1",
-      "kind": "decision",
-      "started_at": "2026-01-01T00:00:40.000Z",
-      "ended_at": "2026-01-01T00:00:45.000Z",
-      "status": "ok",
-      "attributes": {}
-    },
-    {
-      "step_id": "note-2",
-      "kind": "decision",
       "started_at": "2026-01-01T00:00:42.000Z",
       "ended_at": "2026-01-01T00:00:47.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-3",
-      "kind": "llm",
+      "step_id": "note-1",
+      "kind": "decision",
       "started_at": "2026-01-01T00:00:44.000Z",
       "ended_at": "2026-01-01T00:00:49.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-4",
+      "step_id": "note-2",
       "kind": "decision",
       "started_at": "2026-01-01T00:00:46.000Z",
       "ended_at": "2026-01-01T00:00:51.000Z",
@@ -273,23 +286,23 @@
       "attributes": {}
     },
     {
-      "step_id": "note-5",
-      "kind": "decision",
+      "step_id": "note-3",
+      "kind": "llm",
       "started_at": "2026-01-01T00:00:48.000Z",
       "ended_at": "2026-01-01T00:00:53.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-6",
-      "kind": "llm",
+      "step_id": "note-4",
+      "kind": "decision",
       "started_at": "2026-01-01T00:00:50.000Z",
       "ended_at": "2026-01-01T00:00:55.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-7",
+      "step_id": "note-5",
       "kind": "decision",
       "started_at": "2026-01-01T00:00:52.000Z",
       "ended_at": "2026-01-01T00:00:57.000Z",
@@ -297,23 +310,23 @@
       "attributes": {}
     },
     {
-      "step_id": "note-8",
-      "kind": "decision",
+      "step_id": "note-6",
+      "kind": "llm",
       "started_at": "2026-01-01T00:00:54.000Z",
       "ended_at": "2026-01-01T00:00:59.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-9",
-      "kind": "llm",
+      "step_id": "note-7",
+      "kind": "decision",
       "started_at": "2026-01-01T00:00:56.000Z",
       "ended_at": "2026-01-01T00:01:01.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-10",
+      "step_id": "note-8",
       "kind": "decision",
       "started_at": "2026-01-01T00:00:58.000Z",
       "ended_at": "2026-01-01T00:01:03.000Z",
@@ -321,23 +334,23 @@
       "attributes": {}
     },
     {
-      "step_id": "note-11",
-      "kind": "decision",
+      "step_id": "note-9",
+      "kind": "llm",
       "started_at": "2026-01-01T00:01:00.000Z",
       "ended_at": "2026-01-01T00:01:05.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-12",
-      "kind": "llm",
+      "step_id": "note-10",
+      "kind": "decision",
       "started_at": "2026-01-01T00:01:02.000Z",
       "ended_at": "2026-01-01T00:01:07.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-13",
+      "step_id": "note-11",
       "kind": "decision",
       "started_at": "2026-01-01T00:01:04.000Z",
       "ended_at": "2026-01-01T00:01:09.000Z",
@@ -345,23 +358,23 @@
       "attributes": {}
     },
     {
-      "step_id": "note-14",
-      "kind": "decision",
+      "step_id": "note-12",
+      "kind": "llm",
       "started_at": "2026-01-01T00:01:06.000Z",
       "ended_at": "2026-01-01T00:01:11.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-15",
-      "kind": "llm",
+      "step_id": "note-13",
+      "kind": "decision",
       "started_at": "2026-01-01T00:01:08.000Z",
       "ended_at": "2026-01-01T00:01:13.000Z",
       "status": "ok",
       "attributes": {}
     },
     {
-      "step_id": "note-16",
+      "step_id": "note-14",
       "kind": "decision",
       "started_at": "2026-01-01T00:01:10.000Z",
       "ended_at": "2026-01-01T00:01:15.000Z",
@@ -369,10 +382,26 @@
       "attributes": {}
     },
     {
-      "step_id": "note-17",
-      "kind": "decision",
+      "step_id": "note-15",
+      "kind": "llm",
       "started_at": "2026-01-01T00:01:12.000Z",
       "ended_at": "2026-01-01T00:01:17.000Z",
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "step_id": "note-16",
+      "kind": "decision",
+      "started_at": "2026-01-01T00:01:14.000Z",
+      "ended_at": "2026-01-01T00:01:19.000Z",
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "step_id": "note-17",
+      "kind": "decision",
+      "started_at": "2026-01-01T00:01:16.000Z",
+      "ended_at": "2026-01-01T00:01:21.000Z",
       "status": "ok",
       "attributes": {}
     }

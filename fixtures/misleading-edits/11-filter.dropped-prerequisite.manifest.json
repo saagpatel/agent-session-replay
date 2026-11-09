@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-11-filter",
-    "stepCount": 36,
-    "digest": "9abf931a0f1f1ec7"
+    "stepCount": 44,
+    "digest": "321d06200dd66ce1"
   },
   "title": "Replay filter",
   "scenes": [
@@ -11,18 +11,19 @@
       "id": "dispatch",
       "range": {
         "from": "spawn-a",
-        "to": "consume-a"
+        "to": "consume-c"
       },
       "steps": [
         "spawn-a",
-        "spawn-b"
+        "spawn-b",
+        "spawn-c"
       ]
     },
     {
       "id": "worker-a",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-c"
       },
       "steps": [
         "a-read",
@@ -34,7 +35,7 @@
       "id": "worker-b",
       "range": {
         "from": "a-read",
-        "to": "b-done"
+        "to": "consume-c"
       },
       "steps": [
         "b-read",
@@ -69,14 +70,17 @@
       "id": "finish",
       "range": {
         "from": "fix",
-        "to": "parallel-b"
+        "to": "parallel-c"
       },
       "steps": [
         "fix",
-        "retest",
+        "retest-1",
+        "fix-2",
         "compact",
+        "retest-2",
         "parallel-a",
-        "parallel-b"
+        "parallel-b",
+        "parallel-c"
       ]
     }
   ],
@@ -85,7 +89,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "3 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"

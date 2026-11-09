@@ -31,22 +31,63 @@ function loadTrace(slug: string): Trace {
 test("sessions --count: 20 synthetic traces have faithful shortened manifests", () => {
 	assert.equal(traceFiles().length, 20);
 	assert.equal(files(sessions).length, 40);
+	const workerCounts = new Set<number>();
+	const cycleCounts = new Set<number>();
+	const fanouts = new Set<number>();
+	const hookPositions = new Set<string>();
+	const compactPositions = new Set<string>();
+	const workerInterleavings = new Set<string>();
 	for (const file of traceFiles()) {
 		const slug = slugOf(file);
+		const n = Number(slug.slice(0, 2)) - 1;
 		const trace = loadTrace(slug);
 		assert.ok(trace.steps.length >= 25 && trace.steps.length <= 80, slug);
 		const graph = buildCausalGraph(trace);
 		assert.ok(happensBefore(graph, "edit-a", "test"), slug);
 		assert.equal(trace.steps.find((step) => step.step_id === "edit-a")?.caused_by, "gate", slug);
 		assert.ok(trace.steps.some((step) => step.kind === "compaction"), slug);
-		assert.equal(new Set(trace.steps.flatMap((step) => step.subagent_id ? [step.subagent_id] : [])).size, 2, slug);
+		const workerCount = new Set(trace.steps.flatMap((step) => step.subagent_id ? [step.subagent_id] : [])).size;
+		assert.equal(workerCount, 2 + n % 3, slug);
+		workerCounts.add(workerCount);
+		workerInterleavings.add(trace.steps.filter((step) => step.subagent_id).map((step) => step.subagent_id).join(","));
+		const cycleCount = trace.steps.filter((step) => step.attributes[ATTR.TOOL_NAME] === "Bash" && (step.attributes[ATTR.TOOL_ARGS] as { command?: string }).command === "pnpm test").length;
+		assert.equal(cycleCount, 1 + n % 4, slug);
+		cycleCounts.add(cycleCount);
+		const parallel = trace.steps.filter((step) => step.step_id.startsWith("parallel-"));
+		assert.equal(parallel.length, 2 + n % 3, slug);
+		fanouts.add(parallel.length);
+		const gateIndex = trace.steps.findIndex((step) => step.step_id === "gate");
+		assert.equal(trace.steps[gateIndex]?.attributes[ATTR.HOOK_VERDICT], "allow", slug);
+		assert.equal(trace.steps.find((step) => step.step_id === "edit-a")?.caused_by, "gate", slug);
+		if (n % 3 === 0) assert.ok(gateIndex < trace.steps.findIndex((step) => step.step_id === "spawn-a"), slug);
+		if (n % 3 === 1) assert.ok(gateIndex > trace.steps.findIndex((step) => step.step_id.startsWith("consume-")), slug);
+		if (n % 3 === 2) {
+			const lastPlan = Math.max(...trace.steps.map((step, index) => step.step_id.endsWith("-plan") ? index : -1));
+			const firstDone = trace.steps.findIndex((step) => step.step_id.endsWith("-done"));
+			assert.ok(gateIndex > lastPlan && gateIndex < firstDone, slug);
+		}
+		const gateNeighbors = trace.steps.slice(Math.max(0, gateIndex - 1), gateIndex + 2).map((step) => step.step_id).join("|");
+		hookPositions.add(gateNeighbors);
+		const compactIndex = trace.steps.findIndex((step) => step.step_id === "compact");
+		const withoutCompact = trace.steps.filter((step) => step.step_id !== "compact");
+		const finishIndex = withoutCompact.findIndex((step) => step.step_id === (n % 4 === 0 ? "review" : "fix"));
+		const parallelEnd = withoutCompact.findIndex((step) => step.step_id.startsWith("parallel-") && Number(step.step_id.charCodeAt(9)) === 97 + (2 + n % 3) - 1);
+		const expectedCompactIndex = finishIndex + Math.floor((parallelEnd - finishIndex) * (n % 4) / 4);
+		assert.equal(compactIndex, expectedCompactIndex, slug);
+		compactPositions.add(trace.steps.slice(Math.max(0, compactIndex - 1), compactIndex + 2).map((step) => step.step_id).join("|"));
 		const left = trace.steps.find((step) => step.step_id === "parallel-a")!;
 		const right = trace.steps.find((step) => step.step_id === "parallel-b")!;
 		assert.equal(left.kind, "tool_call");
 		assert.equal(right.kind, "tool_call");
 		assert.ok(Date.parse(left.ended_at!) > Date.parse(right.started_at), slug);
 		assert.equal(happensBefore(graph, left.step_id, right.step_id), false, slug);
-		assert.equal(trace.steps.find((step) => step.step_id === "gate")?.attributes[ATTR.HOOK_VERDICT], "allow");
+		const maxParallelStart = Math.max(...parallel.map((step) => Date.parse(step.started_at)));
+		const minParallelEnd = Math.min(...parallel.map((step) => Date.parse(step.ended_at!)));
+		assert.ok(maxParallelStart < minParallelEnd, slug);
+		for (let i = 0; i < parallel.length; i++) for (let j = i + 1; j < parallel.length; j++) {
+			assert.equal(happensBefore(graph, parallel[i]!.step_id, parallel[j]!.step_id), false, slug);
+			assert.equal(happensBefore(graph, parallel[j]!.step_id, parallel[i]!.step_id), false, slug);
+		}
 		const parsed = parseManifest(json(`${sessions}/${slug}.faithful.manifest.json`));
 		assert.ok(!("errors" in parsed), slug);
 		assert.ok(parsed.scenes.length >= 3 && parsed.scenes.length <= 6, slug);
@@ -60,6 +101,12 @@ test("sessions --count: 20 synthetic traces have faithful shortened manifests", 
 		const ranges = parsed.scenes.map((scene) => [indices.get(scene.range.from)!, indices.get(scene.range.to)!]);
 		assert.ok(ranges.slice(0, 3).every((range, i) => ranges.slice(0, 3).every((other, j) => i === j || Math.max(range[0]!, other[0]!) <= Math.min(range[1]!, other[1]!))), slug);
 	}
+	assert.deepEqual([...workerCounts].sort(), [2, 3, 4]);
+	assert.deepEqual([...cycleCounts].sort(), [1, 2, 3, 4]);
+	assert.deepEqual([...fanouts].sort(), [2, 3, 4]);
+	assert.ok(hookPositions.size >= 3);
+	assert.ok(compactPositions.size >= 4);
+	assert.ok(workerInterleavings.size >= 6);
 });
 
 test("misleading edits fail with their named reason", () => {

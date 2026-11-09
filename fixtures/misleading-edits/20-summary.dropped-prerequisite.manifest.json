@@ -2,8 +2,8 @@
   "version": 1,
   "source": {
     "runId": "fixture-20-summary",
-    "stepCount": 40,
-    "digest": "f30ce3c465d0b41b"
+    "stepCount": 50,
+    "digest": "5f6d447190bb986d"
   },
   "title": "Replay summary",
   "scenes": [
@@ -15,14 +15,15 @@
       },
       "steps": [
         "spawn-a",
-        "spawn-b"
+        "spawn-b",
+        "spawn-c"
       ]
     },
     {
       "id": "worker-a",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "c-read",
+        "to": "consume-a"
       },
       "steps": [
         "a-read",
@@ -33,8 +34,8 @@
     {
       "id": "worker-b",
       "range": {
-        "from": "a-read",
-        "to": "b-done"
+        "from": "c-read",
+        "to": "consume-a"
       },
       "steps": [
         "b-read",
@@ -45,7 +46,7 @@
     {
       "id": "work",
       "range": {
-        "from": "consume-a",
+        "from": "consume-c",
         "to": "edit-b"
       },
       "steps": [
@@ -68,15 +69,20 @@
     {
       "id": "finish",
       "range": {
-        "from": "review",
-        "to": "parallel-b"
+        "from": "fix",
+        "to": "parallel-c"
       },
       "steps": [
-        "review",
-        "result",
+        "fix",
+        "retest-1",
+        "fix-2",
+        "retest-2",
+        "fix-3",
+        "retest-3",
         "compact",
         "parallel-a",
-        "parallel-b"
+        "parallel-b",
+        "parallel-c"
       ]
     }
   ],
@@ -85,7 +91,7 @@
       "id": "dispatch-caption",
       "sceneId": "dispatch",
       "kind": "shows",
-      "text": "Two workers start.",
+      "text": "3 workers start.",
       "refs": [
         "spawn-a",
         "spawn-b"
