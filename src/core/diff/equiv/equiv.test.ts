@@ -101,8 +101,8 @@ test("search dedupe uses query, path, options, and no intervening mutation", () 
 	assert.equal(normalized(trace([grep(), edit("a", "b", "other.ts"), grep()])).events.length, 3);
 	const unknown: Tool = ["Grep", { path: "/work/equiv/src" }];
 	assert.equal(alignEquivalent(trace([unknown]), trace([grep()])).equivalent, false);
-	assert.equal(normalized(trace([unknown, unknown])).events.length, 1);
-	assert.equal(alignEquivalent(trace([shell("rg token src && rg token src")]), trace([shell("rg token src")])).equivalent, true);
+	assert.equal(normalized(trace([unknown, unknown])).events.length, 2);
+	assert.equal(alignEquivalent(trace([shell("rg token src && rg token src")]), trace([shell("rg token src")])).incomplete, true);
 	assert.equal(alignEquivalent(trace([shell("rg token src")]), trace([shell("rg other src")])).equivalent, false);
 });
 
@@ -156,7 +156,7 @@ test("enriched file identities never inherit display-path collisions", () => {
 	assert.equal(normalizeTrace(a)[0]?.signature, normalizeTrace(b)[0]?.signature);
 	assert.equal(alignEquivalent(a, b).equivalent, false);
 	assert.equal(alignEquivalent(trace([shell("sed -n '1,5p' /work/first/shared/a.ts")]), trace([shell("sed -n '1,5p' /work/second/shared/a.ts")])).equivalent, false);
-	assert.equal(alignEquivalent(trace([shell("sed -n 1,5p a.ts")]), trace([read(1, 5)])).equivalent, true);
+	assert.equal(alignEquivalent(trace([shell("sed -n 1,5p a.ts")]), trace([read(1, 5)])).incomplete, true);
 });
 
 test("align --order: reads and tests never cross an edit of the observed file", () => {
@@ -204,8 +204,8 @@ test("dropped opaque source calls remain incomplete and divide observations and 
 		assert.equal(normalized(compound).events[1]?.action, "other", command);
 	}
 	const literal = trace([read(1, 5), shell('echo "synthetic progress"'), read(6, 5)]);
-	assert.equal(normalized(literal).events.length, 1);
-	assert.equal(normalized(literal).incomplete, false);
+	assert.equal(normalized(literal).events.length, 2);
+	assert.equal(normalized(literal).incomplete, true);
 	const sidechain = trace([read(1, 5), shell('echo "$(node mutate.js)"'), read(6, 5)]);
 	(sidechain.steps[1] as Step).subagent_id = "synthetic-sidechain";
 	assert.equal(normalized(sidechain).events.length, 1);
@@ -300,7 +300,7 @@ test("normalizer cap metadata covers all read commands and stripped prefixes", (
 	for (const command of ["tail a b c d e f", "X=1 cat a b c d e f", "cat a; echo one; echo two; echo three; echo four; echo five; echo six"]) {
 		const uncapped = trace([shell(command)]);
 		assert.equal(sourceNormalizationTruncated(uncapped.steps[0] as Step, uncapped.run.workspace?.cwd), false, command);
-		assert.equal(alignEquivalent(uncapped, uncapped).incomplete, false, command);
+		assert.equal(alignEquivalent(uncapped, uncapped).incomplete, true, command);
 	}
 	const patch = Array.from({ length: 7 }, (_, i) => `*** Update File: /work/equiv/file${i}.ts`).join("\n");
 	const cappedSources: Tool[] = [
@@ -355,10 +355,10 @@ test("canCommute exhaustive action/status/target matrix is symmetric", () => {
 	}
 });
 
-test("merged statuses aggregate failure then unknown, and status forks diverge", () => {
-	assert.equal(normalized(trace([read(1, 5), read(6, 5, "a.ts", "unknown")])).events[0]?.status, "unknown");
-	assert.equal(normalized(trace([read(1, 5, "a.ts", "unknown"), read(6, 5, "a.ts", "error")])).events[0]?.status, "error");
-	assert.equal(normalized(trace([read(1, 5, "a.ts", "interrupted"), read(6, 5)])).events[0]?.status, "interrupted");
+test("failed and unknown observations stay separate, and status forks diverge", () => {
+	assert.deepEqual(normalized(trace([read(1, 5), read(6, 5, "a.ts", "unknown")])).events.map((e) => e.status), ["ok", "unknown"]);
+	assert.deepEqual(normalized(trace([read(1, 5, "a.ts", "unknown"), read(6, 5, "a.ts", "error")])).events.map((e) => e.status), ["unknown", "error"]);
+	assert.deepEqual(normalized(trace([read(1, 5, "a.ts", "interrupted"), read(6, 5)])).events.map((e) => e.status), ["interrupted", "ok"]);
 	assert.equal(alignEquivalent(trace([read(1, 5)]), trace([read(1, 5, "a.ts", "error")])).equivalent, false);
 });
 
@@ -366,13 +366,14 @@ test("compound source membership uses indices even when stepIds repeat", () => {
 	const t = trace([shell("sed -n '1,10p' a.ts && sed -n '11,20p' a.ts && head -n 5 b.ts")]);
 	const n = normalized(t);
 	assert.equal(n.steps.length, 3);
-	assert.equal(n.events.length, 2);
-	assert.deepEqual(n.events[0]?.memberStepIds, ["tool-0", "tool-0"]);
-	assert.deepEqual(n.events[0]?.range, { start: 1, end: 20 });
+	assert.equal(n.events.length, 3);
+	assert.deepEqual(n.events.map((e) => e.memberStepIds), [["tool-0"], ["tool-0"], ["tool-0"]]);
+	assert.ok(n.events.every((e) => e.rule === null && e.action === "other"));
+	assert.equal(n.incomplete, true);
 });
 
 test("unclassified tools, malformed data, and normalization caps are incomplete", () => {
-	for (const t of [trace([["write_file", { path: "a.ts", content: "x" }]]), trace([["UnknownTool", {}]]),
+	for (const t of [trace([["write_file", { path: "a.ts", content: "x", unsupported: true }]]), trace([["UnknownTool", {}]]),
 		trace([shell(Array.from({ length: 8 }, (_, i) => `cat file${i}.ts`).join(" && "))]),
 		trace([shell("cat a b c d e f g h")])]) {
 		const result = alignEquivalent(t, t);
@@ -391,6 +392,207 @@ test("alignment truncation cannot report equivalent even if the retained prefix 
 	assert.equal(result.incomplete, true);
 	assert.equal(result.equivalent, false);
 	assert.ok(result.incompleteReasons.includes("alignment-truncated"));
+});
+
+test("allowlist table enriches every structured and literal shell form", () => {
+	const allowlisted: Tool[] = [
+		read(1, 5),
+		["Read", { file_path: "/work/equiv/a.ts" }],
+		["read_file", { path: "/work/equiv/a.ts", offset: 1, limit: 5 }],
+		["read_file", { file_path: "/work/equiv/a.ts" }],
+		grep(),
+		grep("token", { glob: "*.ts", type: "ts", output_mode: "content", "-n": true, "-i": false,
+			"-A": 1, "-B": 2, "-C": 3, context: 4, head_limit: 5, offset: 0, multiline: true }),
+		["Glob", { pattern: "**/*.ts", path: "/work/equiv/src" }],
+		edit("a", "b"),
+		["Edit", { file_path: "/work/equiv/a.ts", old_string: "a", new_string: "b", replace_all: false }],
+		["MultiEdit", { file_path: "/work/equiv/a.ts", edits: [{ old_string: "a", new_string: "b", replace_all: false }] }],
+		["Write", { file_path: "/work/equiv/a.ts", content: "synthetic" }],
+		["write_file", { path: "/work/equiv/a.ts", content: "synthetic" }],
+		["write_file", { file_path: "/work/equiv/a.ts", content: "synthetic" }],
+	];
+	const commands = ["sed -n '1,5p' a.ts", "sed -n '5p' a.ts", "head -n 5 a.ts", "cat a.ts",
+		"rg token", "rg token src test", "rg -n -i -w -l -F --no-heading token src", "grep -rn token", "grep -rn token src test"];
+	for (const command of commands) {
+		allowlisted.push(shell(command));
+		for (const name of ["shell", "shell_command", "exec_command"]) {
+			for (const wrapper of ["sh", "bash", "zsh"]) {
+				for (const flag of ["-c", "-lc"]) {
+					allowlisted.push([name, { cmd: [wrapper, flag, command] }]);
+				}
+			}
+		}
+	}
+	for (const tool of allowlisted) {
+		const t = trace([tool]);
+		const n = normalized(t);
+		assert.equal(n.incomplete, false, JSON.stringify(tool));
+		assert.equal(n.events.length, 1, JSON.stringify(tool));
+		assert.notEqual(n.events[0]?.key, n.steps[0]?.signature, JSON.stringify(tool));
+		assert.equal(alignEquivalent(t, t).equivalent, true, JSON.stringify(tool));
+		if (n.events[0]?.action === "read" || n.events[0]?.action === "search") {
+			assert.equal(normalized(trace([tool, tool])).events.length, 1, JSON.stringify(tool));
+		}
+	}
+	assert.equal(alignEquivalent(trace([["read_file", { path: "/work/equiv/a.ts", offset: 1, limit: 5 }]]), trace([read(1, 5)])).equivalent, true);
+	assert.equal(alignEquivalent(trace([["write_file", { path: "/work/equiv/a.ts", content: "synthetic" }]]),
+		trace([["Write", { file_path: "/work/equiv/a.ts", content: "synthetic" }]])).equivalent, true);
+});
+
+test("near-miss table fails closed and cannot bridge any unsupported source", () => {
+	const commands = [
+		`bash -lc 'echo "$(node mutate.js)"'`,
+		`bash -lc 'head -n 5 a.ts'`,
+		"X=1 head -n 5 a.ts",
+		"export PATH=/custom/bin && head -n 5 a.ts",
+		"cd src && cat a.ts",
+		"cat a.ts b.ts",
+		"sed -n '1,5p' a.ts b.ts",
+		"sed -n 1,5p a.ts b.ts",
+		"sed -n 1,5p a.ts",
+		"find . -exec node mutate.js {} +",
+		"find .",
+		"rg --pre ./mutate token a.ts",
+		"rg --pre=./mutate token a.ts",
+		"rg -z token a.ts",
+		"rg --search-zip token a.ts",
+		"rg --files src",
+		"rg -q token src",
+		"rg token --pre=./mutate",
+		"grep -r token src",
+		"tail a.ts",
+		"xargs cat",
+		"awk token a.ts",
+		"cat <<EOF\nsynthetic\nEOF",
+		"cat a.ts | head -n 5",
+		"cat a.ts && cat b.ts",
+		"cat a.ts; cat b.ts",
+		"cat a.ts > b.ts",
+		"cat < a.ts",
+		"cat $(node mutate.js)",
+		"cat `node mutate.js`",
+		"cat $FILE",
+		"cat *.ts",
+		'cat "a.ts"',
+		"cat a.ts # comment",
+		"cat ~/a.ts",
+		"cat a.ts\n",
+		"echo synthetic",
+		"export X=1",
+		"cd src",
+		"pwd",
+	];
+	const unsupported: Tool[] = commands.map(shell);
+	unsupported.push(
+		["shell", { command: ["bash", "-lc", 'echo "$(node mutate.js)"'] }],
+		["shell", { command: ["cat", "a.ts"] }],
+		["shell", { command: ["/bin/bash", "-lc", "cat a.ts"] }],
+		["shell", { command: ["fish", "-c", "cat a.ts"] }],
+		["shell", { command: ["bash", "-c", "cat a.ts", "extra"] }],
+		["exec_command", { cmd: "cat a.ts", env: { X: "1" } }],
+		["exec_command", { cmd: "cat a.ts", workdir: "/work/other" }],
+		["write_stdin", { session_id: 1, chars: "node mutate.js\n" }],
+		["write_stdin", { session_id: 1 }],
+	);
+	for (const tool of unsupported) {
+		const label = JSON.stringify(tool);
+		const t = trace([tool]);
+		const result = alignEquivalent(t, trace([]));
+		assert.equal(result.incomplete, true, label);
+		assert.equal(result.equivalent, false, label);
+		assert.ok(result.incompleteReasons.includes("unsupported-source"), label);
+		const retained = normalizeTrace(t).length;
+		const interleaved = normalized(trace([read(1, 5), tool, read(6, 5)]));
+		assert.equal(interleaved.events.length, retained + 2, label);
+		assert.ok(interleaved.events.every((e) => e.members.length === 1), label);
+		assert.equal(normalized(trace([grep(), tool, grep()])).events.length, retained + 2, label);
+		assert.equal(normalized(trace([edit("a", "b"), tool, edit("b", "c")])).events.length, retained + 2, label);
+	}
+});
+
+test("structured allowlist rejects unknown keys, non-plain arguments and unsupported bodies", () => {
+	const unsupported: Tool[] = [
+		["Read", { file_path: "/work/equiv/a.ts", pages: "1" }],
+		grep("token", { future_option: true }),
+		grep("token", { output_mode: "future_mode" }),
+		["Glob", { pattern: "*.ts", recursive: true }],
+		["Edit", { file_path: "/work/equiv/a.ts", old_string: "a", new_string: "b", replace_all: true }],
+		["MultiEdit", { file_path: "/work/equiv/a.ts", edits: [{ old_string: "a", new_string: "b", unknown: true }] }],
+		["Write", { file_path: "/work/equiv/a.ts", content: "synthetic", mode: "append" }],
+		["read_file", { path: "a.ts", file_path: "b.ts" }],
+		["write_file", { path: "a.ts", content: "synthetic", append: true }],
+		["NotebookEdit", { file_path: "/work/equiv/a.ts", old_string: "a", new_string: "b" }],
+		["Read", Object.assign([], { file_path: "/work/equiv/a.ts" })],
+		["Read", Object.assign(Object.create({ inherited: true }), { file_path: "/work/equiv/a.ts" })],
+	];
+	for (const tool of unsupported) {
+		const n = normalized(trace([read(1, 5), tool, read(6, 5)]));
+		assert.equal(n.incomplete, true, JSON.stringify(tool));
+		assert.ok(n.incompleteReasons.includes("unsupported-source"), JSON.stringify(tool));
+		assert.equal(n.events.length, 3, JSON.stringify(tool));
+		assert.equal(n.events[1]?.action, "other", JSON.stringify(tool));
+	}
+});
+
+test("round-2 environment changes cannot equal structured reads", () => {
+	const changed = trace([shell("export PATH=/custom/bin && head -n 5 a.ts")]);
+	const result = alignEquivalent(changed, trace([read(1, 5)]));
+	assert.equal(result.incomplete, true);
+	assert.equal(result.equivalent, false);
+	assert.equal(result.left.events[0]?.action, "other");
+	assert.equal(result.left.events[0]?.range, null);
+});
+
+test("round-2 only explicitly empty write_stdin polls may disappear", () => {
+	const poll: Tool = ["write_stdin", { session_id: 1, chars: "", yield_time_ms: 1000 }];
+	assert.equal(alignEquivalent(trace([poll]), trace([])).equivalent, true);
+	assert.equal(normalized(trace([read(1, 5), poll, read(6, 5)])).events.length, 1);
+	for (const args of [{ session_id: 1, chars: "node mutate.js\n" }, { session_id: 1, chars: "\u0003" },
+		{ session_id: 1, chars: " " }, { session_id: 1 }, { session_id: 1, chars: null }]) {
+		const sent = trace([["write_stdin", args]]);
+		assert.equal(alignEquivalent(sent, trace([])).incomplete, true);
+		assert.equal(alignEquivalent(sent, trace([poll])).equivalent, false);
+		assert.equal(alignEquivalent(sent, trace([["write_stdin", { session_id: 1, chars: "different\n" }]])).equivalent, false);
+		assert.equal(normalized(trace([read(1, 5), ["write_stdin", args], read(6, 5)])).events.length, 2);
+	}
+});
+
+test("round-2 retries and mixed-outcome ranges cannot vanish into failures", () => {
+	for (const status of ["error", "unknown", "interrupted"] as const) {
+		const failedSearch: Tool = ["Grep", { pattern: "token", path: "/work/equiv/src" }, status];
+		const retry = trace([failedSearch, grep()]);
+		const result = alignEquivalent(retry, trace([failedSearch]));
+		assert.equal(result.equivalent, false, status);
+		assert.deepEqual(result.left.events.map((e) => e.status), [status, "ok"]);
+		assert.equal(normalized(trace([failedSearch, failedSearch])).events.length, 2);
+		const split = trace([read(1, 5, "a.ts", status), read(6, 5)]);
+		assert.equal(alignEquivalent(split, trace([read(1, 10, "a.ts", status)])).equivalent, false);
+		assert.equal(alignEquivalent(trace([read(1, 5, "a.ts", status)]), trace([read(1, 5)])).equivalent, false);
+		assert.equal(normalized(trace([read(1, 5, "a.ts", status), read(1, 5, "a.ts", status)])).events.length, 2);
+		assert.deepEqual(normalized(split).events.map((e) => e.members), [[0], [1]]);
+	}
+});
+
+test("tests and runs retain the existing normalized signature and global barriers", () => {
+	for (const command of ["pnpm test", "node build.js", "awk token a.ts"]) {
+		const t = trace([read(1, 5), shell(command), read(6, 5)]);
+		const n = normalized(t);
+		assert.equal(n.events.length, 3, command);
+		assert.equal(n.events[1]?.signature, n.steps[1]?.signature, command);
+		assert.equal(n.events[1]?.action, n.steps[1]?.action, command);
+		assert.equal(n.events[1]?.rule, null, command);
+	}
+});
+
+test("allowlisted arguments cannot overwrite a blocked source classification", () => {
+	const t = trace([read(1, 5), read(6, 5), read(11, 5)]);
+	(t.steps[1] as Step).attributes[ATTR.GUARD_TRIPPED] = true;
+	(t.steps[1] as Step).attributes[ATTR.GUARD_NAME] = "synthetic-guard";
+	const n = normalized(t);
+	assert.equal(n.steps[1]?.action, "blocked");
+	assert.equal(n.events.length, 3);
+	assert.equal(n.events[1]?.action, "other");
+	assert.ok(n.incompleteReasons.includes("unsupported-source"));
 });
 
 test("expand round-trips every synthetic case and every existing fixture builder variant", () => {

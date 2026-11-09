@@ -1,6 +1,6 @@
 import { ATTR, type Step } from "../../types.ts";
-import { classifyCommand, relPath, sourceNormalizationTruncated, splitStages } from "../normalize.ts";
-import { isFailure, type DiffStep } from "../types.ts";
+import { sourceNormalizationTruncated } from "../normalize.ts";
+import type { DiffAction, DiffStep } from "../types.ts";
 import { canCommute } from "./rules.ts";
 import type { CanonicalEvent, EquivalentNormalization, ReadRange } from "./types.ts";
 
@@ -10,16 +10,20 @@ interface Replacement {
 	next: string;
 }
 interface Evidence {
+	action?: DiffAction;
 	target?: string | null;
 	range?: ReadRange | null;
 	key: string;
 	edit?: Replacement[];
 }
-interface ShellRead {
-	target: string | null;
-	range: ReadRange | null;
+/** Tool arguments must be plain data objects, never arrays or class instances. */
+function plainObject(v: unknown): v is Json {
+	if (v === null || typeof v !== "object") return false;
+	const prototype = Object.getPrototypeOf(v);
+	return prototype === Object.prototype || prototype === null;
 }
-const object = (v: unknown): Json => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Json : {};
+const object = (v: unknown): Json => plainObject(v) ? v : {};
+const onlyKeys = (args: Json, keys: readonly string[]) => Object.keys(args).every((k) => keys.includes(k));
 
 /** Collision-free, browser-safe structural encoding, also used for unknown args. */
 function stable(v: unknown): string {
@@ -92,118 +96,24 @@ function composition(edits: Replacement[]): Replacement[] {
 	return result;
 }
 
+/** Only single-occurrence, literal structured replacements are allowlisted. */
 function replacement(v: unknown): Replacement | undefined {
-	const a = object(v);
-	if (Object.keys(a).some((k) => !["old_string", "new_string", "replace_all", "file_path", "path"].includes(k))) return undefined;
-	return typeof a.old_string === "string" && a.old_string.length > 0 &&
-		typeof a.new_string === "string" && (a.replace_all === undefined || a.replace_all === false)
-		? { old: a.old_string, next: a.new_string } : undefined;
+	if (!plainObject(v) || !onlyKeys(v, ["old_string", "new_string", "replace_all"])) return undefined;
+	return typeof v.old_string === "string" && v.old_string.length > 0 &&
+		typeof v.new_string === "string" && (v.replace_all === undefined || v.replace_all === false)
+		? { old: v.old_string, next: v.new_string } : undefined;
 }
 
 function editEvidence(name: unknown, args: Json): Replacement[] | undefined {
-	if (name === "Edit") {
-		const edit = replacement(args);
+	if (name === "Edit" && onlyKeys(args, ["file_path", "old_string", "new_string", "replace_all"])) {
+		const { file_path: _file, ...body } = args;
+		const edit = replacement(body);
 		return edit ? [edit] : undefined;
 	}
-	if (name !== "MultiEdit" || !Array.isArray(args.edits) || args.edits.length === 0 ||
-		Object.keys(args).some((k) => !["file_path", "path", "edits"].includes(k))) return undefined;
-	const result: Replacement[] = [];
-	for (const raw of args.edits) {
-		const next = replacement(raw);
-		if (!next) return undefined;
-		result.push(next);
-	}
-	return composition(result);
-}
-
-function command(args: Json): string | undefined {
-	const cmd = args.cmd ?? args.command;
-	if (typeof cmd === "string") return cmd;
-	if (!Array.isArray(cmd) || !cmd.every((x) => typeof x === "string")) return undefined;
-	if (cmd.length === 3 && /sh$/.test(cmd[0] ?? "") && /^-l?c$/.test(cmd[1] ?? "")) return cmd[2];
-	return cmd.join(" ");
-}
-
-/** Potential effects/scope hidden behind a file-only shell classification. */
-function unknownShellScope(text: string): boolean {
-	if (/^(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|function)\b/.test(text.trim())) return true;
-	let quote: string | null = null;
-	for (const char of text) {
-		if (quote === "'") {
-			if (char === "'") quote = null;
-			continue;
-		}
-		if (char === "$" || char === "`" || char === "\\") return true;
-		if (quote === '"') {
-			if (char === '"') quote = null;
-			continue;
-		}
-		if (char === "'" || char === '"') quote = char;
-		else if (/[|<>&;*?\[\]]/.test(char)) return true;
-	}
-	return quote !== null;
-}
-
-/** Only separate, plainly quoted literal words are interpreted as arguments. */
-function literalWords(stage: string): string[] | undefined {
-	if (unknownShellScope(stage) || !/^(?:'[^']*'|"[^"]*"|[^\s'"]+)(?:\s+(?:'[^']*'|"[^"]*"|[^\s'"]+))*$/.test(stage)) return undefined;
-	return stage.match(/'[^']*'|"[^"]*"|[^\s'"]+/g)?.map((word) => word.replace(/^["']|["']$/g, ""));
-}
-
-/** Unknown search options can execute programs or write files: fail closed. */
-function readOnlySearch(stage: string): boolean {
-	const words = literalWords(stage);
-	const [name, ...args] = words ?? [];
-	if (name !== "rg" && name !== "grep" && name !== "find") return false;
-	// A bare find uses its implicit print action. All explicit expressions are
-	// opaque here, including -exec, -delete and platform-specific extensions.
-	if (name === "find") return args.every((arg) => !arg.startsWith("-"));
-	const flags = new Set([
-		"--files", "-n", "--line-number", "-i", "--ignore-case", "-l", "--files-with-matches",
-		"-c", "--count", "-q", "--quiet", "-v", "--invert-match", "-F", "--fixed-strings",
-		"-w", "--word-regexp", "-x", "--line-regexp",
-	]);
-	let operands = false;
-	for (const arg of args) {
-		if (operands) continue;
-		if (arg === "--") operands = true;
-		else if (arg.startsWith("-") && !flags.has(arg)) return false;
-	}
-	return true;
-}
-
-/** Inspect even shell stages that the Run Diff normalizer drops as noise. */
-function opaqueSource(source: Step, members: DiffStep[], cwd?: string | null): boolean {
-	if (source.attributes[ATTR.TOOL_NAME] === "exec") return true;
-	const cmd = command(object(source.attributes[ATTR.TOOL_ARGS]));
-	if (cmd === undefined) {
-		// Polls settle an earlier source and do not introduce an independent effect.
-		return members.length === 0 && source.attributes[ATTR.TOOL_NAME] !== "write_stdin";
-	}
-	return splitStages(cmd).some((stage) => unknownShellScope(stage) ||
-		classifyCommand(stage, cwd).some((part) => part.action === "search") && !readOnlySearch(stage));
-}
-
-/**
- * Associate simple shell stages only when the full classified sequence matches.
- * Exec cells, dynamic directories, pipelines and capped/multi-source mappings
- * retain exact raw arguments instead of borrowing another stage's range/query.
- */
-function shellStages(source: Step, members: DiffStep[], cwd?: string | null): Map<DiffStep, string> {
-	const args = object(source.attributes[ATTR.TOOL_ARGS]);
-	const cmd = command(args);
-	const found = new Map<DiffStep, string>();
-	if (!cmd || args.workdir !== undefined || args.cwd !== undefined || args.working_directory !== undefined) return found;
-	const stages = splitStages(cmd);
-	if (stages.some((s) => /^(?:cd|pushd|popd)\b/.test(s.trim()) ||
-		unknownShellScope(s) && classifyCommand(s, cwd).length === 0)) return found;
-	const parts = stages.flatMap((stage) => classifyCommand(stage, cwd).map((part) => ({ part, stage })));
-	if (parts.length !== members.length || parts.some(({ part }, i) => part.action !== members[i]?.action || part.target !== members[i]?.target)) return found;
-	parts.forEach(({ stage }, i) => {
-		const member = members[i];
-		if (member) found.set(member, stage);
-	});
-	return found;
+	if (name !== "MultiEdit" || !onlyKeys(args, ["file_path", "edits"]) ||
+		!Array.isArray(args.edits) || args.edits.length === 0) return undefined;
+	const edits = args.edits.map(replacement);
+	return edits.every((edit) => edit !== undefined) ? composition(edits) : undefined;
 }
 
 function bounds(start: unknown, count: unknown): ReadRange | null {
@@ -212,79 +122,112 @@ function bounds(start: unknown, count: unknown): ReadRange | null {
 		? { start, end: start + count - 1 } : null;
 }
 
-function shellRead(stage: string, target: string | null, cwd?: string | null): ShellRead | undefined {
-	const words = literalWords(stage);
-	if (!words) return undefined;
-	let files: string[];
-	let range: ReadRange | null = null;
-	if (words[0] === "cat") files = words.slice(1);
-	else if (words[0] === "head" && words[1] === "-n" && /^[0-9]+$/.test(words[2] ?? "")) {
-		files = words.slice(3);
-		range = bounds(1, Number(words[2]));
-	} else if (words[0] === "sed" && words[1] === "-n") {
-		const match = /^([0-9]+)(?:,([0-9]+))?p$/.exec(words[2] ?? "");
-		if (!match) return undefined;
-		files = words.slice(3);
-		// sed numbers the combined stream, so a per-file range is only proven
-		// for one input. Multi-file requests retain their exact raw identity.
-		if (files.length === 1) range = bounds(Number(match[1]), Number(match[2] ?? match[1]) - Number(match[1]) + 1);
-	} else return undefined;
-	if (!files.length || files.some((file) => file.startsWith("-"))) return undefined;
-	const identities = files.map((file) => ({
-		identity: fileIdentity(file, cwd),
-		// The base normalizer resolves relative paths, but preserves dot segments
-		// in absolute display paths. Match its spelling before replacing it.
-		display: relPath(file.startsWith("/") ? file : fileIdentity(file, cwd) ?? file, cwd),
-	}));
-	const matches = identities.filter((file) => file.display === target);
-	if (matches.length !== 1) return undefined;
-	return { target: matches[0]?.identity ?? null, range };
+const positiveInteger = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
+const pathValue = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+
+/** Fixed Claude search schemas: unknown options are unsupported, not equality data. */
+function nativeSearch(name: unknown, args: Json, cwd?: string | null): Evidence | undefined {
+	const strings = ["pattern", "path", "glob", "type"];
+	const booleans = ["-n", "-i", "multiline"];
+	const counts = ["-A", "-B", "-C", "context", "head_limit", "offset"];
+	const keys = name === "Glob" ? ["pattern", "path"] : [...strings, ...booleans, ...counts, "output_mode"];
+	if (!onlyKeys(args, keys) || typeof args.pattern !== "string") return undefined;
+	if (strings.some((k) => args[k] !== undefined && typeof args[k] !== "string")) return undefined;
+	if (booleans.some((k) => args[k] !== undefined && typeof args[k] !== "boolean")) return undefined;
+	if (counts.some((k) => args[k] !== undefined && !(typeof args[k] === "number" && Number.isSafeInteger(args[k]) && args[k] >= 0))) return undefined;
+	if (args.output_mode !== undefined && (typeof args.output_mode !== "string" ||
+		!["content", "files_with_matches", "count"].includes(args.output_mode))) return undefined;
+	const { path, ...options } = args;
+	if (path !== undefined && !pathValue(path)) return undefined;
+	return { action: "search", key: key("search", name, typeof path === "string" ? fileKey(path, cwd) : ".", options) };
 }
 
-function enrich(step: DiffStep, source: Step | undefined, ordinal: number, stage: string | undefined, cwd?: string | null): Evidence {
-	const args = object(source?.attributes[ATTR.TOOL_ARGS]);
-	const name = source?.attributes[ATTR.TOOL_NAME];
-	const raw = key(step.action, step.target, "source", name, source?.attributes[ATTR.TOOL_ARGS] ?? source?.attributes, ordinal);
-	const file = args.file_path ?? args.path ?? args.notebook_path;
-	const fileAction = ["read", "edit", "write"].includes(step.action);
-	let target = fileAction ? null : step.target;
-	if (typeof file === "string" && ["Read", "read_file", "Edit", "MultiEdit", "Write", "NotebookEdit"].includes(String(name))) target = fileIdentity(file, cwd);
-	if (step.action === "read") {
-		let range: ReadRange | null = null;
-		if (name === "Read" && Object.keys(args).every((k) => ["file_path", "offset", "limit"].includes(k)))
-			range = bounds(args.offset ?? 1, args.limit);
-		else if (stage) {
-			const read = shellRead(stage, step.target, cwd);
-			if (read) {
-				range = read.range;
-				target = read.target;
-			}
+/** No string wrappers or arbitrary argv joins: unwrap exactly these three shells. */
+function literalCommand(args: Json): string | undefined {
+	if (!onlyKeys(args, ["cmd", "command"]) || Object.keys(args).length !== 1) return undefined;
+	const cmd = args.cmd ?? args.command;
+	if (typeof cmd === "string") return cmd;
+	if (!Array.isArray(cmd) || cmd.length !== 3 ||
+		!["sh", "bash", "zsh"].includes(cmd[0]) || !["-c", "-lc"].includes(cmd[1]) || typeof cmd[2] !== "string") return undefined;
+	return cmd[2];
+}
+
+// An intentionally narrow token alphabet excludes expansion, quoting, comments,
+// shell operators and globbing. Paths cannot start with an option or tilde.
+const plainToken = (v: string) => /^[A-Za-z0-9_./:@%+,=-]+$/.test(v) && !v.startsWith("-");
+const RG_FLAGS = new Set(["-n", "-i", "-w", "-l", "-F", "--no-heading"]);
+
+/** Recognize entire literal read/search commands; never split shell stages. */
+function shellEvidence(args: Json, cwd?: string | null): Evidence | undefined {
+	const cmd = literalCommand(args);
+	if (cmd === undefined) return undefined;
+	let file: string | undefined;
+	let range: ReadRange | null = null;
+	const sed = /^sed -n '([0-9]+)(?:,([0-9]+))?p' ([^ ]+)$/.exec(cmd);
+	const head = /^head -n ([0-9]+) ([^ ]+)$/.exec(cmd);
+	const cat = /^cat ([^ ]+)$/.exec(cmd);
+	if (sed) {
+		file = sed[3];
+		range = bounds(Number(sed[1]), Number(sed[2] ?? sed[1]) - Number(sed[1]) + 1);
+		if (!range) return undefined;
+	} else if (head) {
+		file = head[2];
+		range = bounds(1, Number(head[1]));
+		if (!range) return undefined;
+	} else if (cat) file = cat[1];
+	if (file !== undefined) {
+		if (!plainToken(file)) return undefined;
+		const target = fileIdentity(file, cwd);
+		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-shell", fileKey(file, cwd)) };
+	}
+	const words = cmd.split(" ");
+	const name = words.shift();
+	if (name === "rg") {
+		while (words[0]?.startsWith("-")) {
+			if (!RG_FLAGS.has(words.shift() as string)) return undefined;
 		}
-		return { target, range, key: range && target !== null ? readKey(target, range, cwd) : raw };
+	} else if (name === "grep" && words.shift() === "-rn") {
+		// grep has exactly one supported option spelling.
+	} else return undefined;
+	if (words.length === 0 || !words.every(plainToken)) return undefined;
+	return { action: "search", key: key("search-shell", cmd) };
+}
+
+/** The only sources eligible for enrichment and subsequent merging. */
+function allowlistedEvidence(source: Step, cwd?: string | null): Evidence | undefined {
+	const args = source.attributes[ATTR.TOOL_ARGS];
+	if (!plainObject(args)) return undefined;
+	const name = source.attributes[ATTR.TOOL_NAME];
+	if (name === "Grep" || name === "Glob") return nativeSearch(name, args, cwd);
+	if (["Bash", "shell", "shell_command", "exec_command"].includes(String(name))) return shellEvidence(args, cwd);
+	const codex = name === "read_file" || name === "write_file";
+	const file = codex ? args.path ?? args.file_path : args.file_path;
+	if (!pathValue(file) || codex && args.path !== undefined && args.file_path !== undefined) return undefined;
+	const target = fileIdentity(file, cwd);
+	if (name === "Read" || name === "read_file") {
+		if (!onlyKeys(args, codex ? ["path", "file_path", "offset", "limit"] : ["file_path", "offset", "limit"]) ||
+			args.offset !== undefined && !positiveInteger(args.offset) || args.limit !== undefined && !positiveInteger(args.limit)) return undefined;
+		const range = bounds(args.offset ?? 1, args.limit);
+		if (args.limit !== undefined && range === null) return undefined;
+		return { action: "read", target, range, key: range && target !== null ? readKey(target, range, cwd) : key("read-native", name, fileKey(file, cwd), args) };
 	}
-	if (step.action === "search" && (name === "Grep" || name === "Glob") && typeof args.pattern === "string") {
-		const { path, ...options } = args;
-		// Omitted path is the run root. All remaining options, including unknown
-		// future options, participate in equality so none silently disappear.
-		if (path !== undefined && typeof path !== "string") return { key: raw };
-		return { key: key("search", name, typeof path === "string" ? fileKey(path, cwd) : ".", options) };
+	if (name === "Edit" || name === "MultiEdit") {
+		const edits = editEvidence(name, args);
+		return edits ? { action: "edit", target, key: editKey(target, edits, cwd), edit: target !== null ? edits : undefined } : undefined;
 	}
-	if (step.action === "search" && stage && /^(?:rg|grep)\s/.test(stage) && !/[$`\\<>|;&*?\[\]]/.test(stage)) {
-		const words = stage.match(/'[^']*'|"[^"]*"|[^\s]+/g);
-		const { cmd: _cmd, command: _command, ...options } = args;
-		// Keep every token: query, paths, flags, and their ordering. No shell
-		// option interpretation is needed to prove identical literal requests.
-		return { key: key("search-shell", words, options) };
+	if ((name === "Write" || name === "write_file") &&
+		onlyKeys(args, codex ? ["path", "file_path", "content"] : ["file_path", "content"]) && typeof args.content === "string") {
+		return { action: "write", target, key: key("write-content", fileKey(file, cwd), contentHash(args.content), args.content) };
 	}
-	if ((step.action === "edit" || step.action === "write") && step.target !== null && target !== null) {
-		const edit = editEvidence(name, args);
-		if (edit) return { target, key: editKey(target, edit, cwd), edit: step.status === "ok" && target !== null ? edit : undefined };
-		// Keep exact content alongside its fingerprint so a hash collision can
-		// never turn different writes into equivalent work.
-		if (name === "Write" && typeof args.content === "string" && Object.keys(args).every((k) => ["file_path", "content"].includes(k)))
-			return { target, key: key(step.action, "write-content", target === null ? null : fileKey(target, cwd), contentHash(args.content), args.content) };
-	}
-	return { target, key: raw };
+	return undefined;
+}
+
+/** Only explicitly empty input with known poll fields is harmless. */
+function statusPoll(source: Step): boolean {
+	const args = source.attributes[ATTR.TOOL_ARGS];
+	return source.attributes[ATTR.TOOL_NAME] === "write_stdin" && plainObject(args) && args.chars === "" &&
+		onlyKeys(args, ["session_id", "chars", "yield_time_ms", "max_output_tokens"]) &&
+		(typeof args.session_id === "number" || typeof args.session_id === "string");
 }
 
 function merge(a: CanonicalEvent, b: CanonicalEvent, evidenceKey: string, rule: CanonicalEvent["rule"]): CanonicalEvent {
@@ -297,8 +240,7 @@ function merge(a: CanonicalEvent, b: CanonicalEvent, evidenceKey: string, rule: 
 		rule,
 		members: pairs.map((p) => p.index),
 		memberStepIds: pairs.map((p) => p.id),
-		status: isFailure(a.status) ? a.status : isFailure(b.status) ? b.status :
-			a.status === "unknown" || b.status === "unknown" ? "unknown" : "ok",
+		status: "ok",
 	};
 }
 
@@ -316,16 +258,11 @@ export function normalizeEquivalent(
 ): EquivalentNormalization {
 	const grouped = new Map<string, DiffStep[]>();
 	for (const step of steps) grouped.set(step.stepId, [...(grouped.get(step.stepId) ?? []), step]);
-	const stages = new Map<DiffStep, string>();
-	for (const [id, members] of grouped) {
-		const source = sources.get(id);
-		if (source) {
-			for (const [step, stage] of shellStages(source, members, cwd)) stages.set(step, stage);
-		}
-	}
+	const evidenceBySource = new Map<string, Evidence>();
 	const edits = new Map<string, Replacement[]>();
 	const reasons = new Set<string>();
 	const opaqueSources = new Set<string>();
+	const normalizedRuns = new Set<string>();
 	const segments = new Map<string, number>();
 	let segment = 0;
 	// Map iteration follows source trace order, including calls with no DiffSteps.
@@ -335,9 +272,22 @@ export function normalizeEquivalent(
 		if (source.subagent_id || source.kind !== "tool_call") continue;
 		const members = grouped.get(id) ?? [];
 		if (sourceNormalizationTruncated(source, cwd)) reasons.add("normalizer-cap-or-unsupported-shape");
-		if (opaqueSource(source, members, cwd)) {
+		const evidence = allowlistedEvidence(source, cwd);
+		const normalizedRun = members.length > 0 && members.every((step) => step.action === "test" || step.action === "run") &&
+			!["exec", "write_stdin"].includes(String(source.attributes[ATTR.TOOL_NAME]));
+		if (normalizedRun) normalizedRuns.add(id);
+		const member = members[0];
+		// Preserve guard/blocked classification. Write may already be classified
+		// as an edit; write_file is deliberately additive over Run Diff's other.
+		const compatible = member && (member.action === evidence?.action || evidence?.action === "write" &&
+			(member.action === "edit" || member.action === "other" && source.attributes[ATTR.TOOL_NAME] === "write_file"));
+		if (evidence && members.length === 1 && compatible) evidenceBySource.set(id, evidence);
+		else if (!(normalizedRun && members.every((step) => step.action === "test")) && !statusPoll(source)) {
+			// `run` is also the base normalizer's catch-all for arbitrary shell
+			// syntax (awk, xargs, wrappers). Keep its signature, but do not treat
+			// that classification alone as proof of supported source coverage.
 			opaqueSources.add(id);
-			reasons.add("unclassified-shell-scope");
+			reasons.add("unsupported-source");
 			if (members.length === 0) segment++;
 		}
 		segments.set(id, segment);
@@ -347,19 +297,19 @@ export function normalizeEquivalent(
 	const events = steps.map((step, index): CanonicalEvent => {
 		const source = sources.get(step.stepId);
 		if (!source) reasons.add("missing-source");
-		if (step.action === "other" || ((step.action === "read" || step.action === "edit" || step.action === "write") && step.target === null)) reasons.add("unclassified-step");
-		if (["edit", "write", "test", "run", "delegate", "blocked"].includes(step.action) && step.status === "unknown") reasons.add("unknown-mutator-status");
-		const stage = stages.get(step);
-		const opaque = opaqueSources.has(step.stepId);
-		// A pipeline can hide an arbitrary writer after a read; a redirect can
-		// write a file omitted by the base normalizer. Keep these as barriers.
-		if (opaque) reasons.add("unclassified-shell-scope");
-		const evidence = enrich(step, source, grouped.get(step.stepId)?.indexOf(step) ?? 0, stage, cwd);
+		const allowed = evidenceBySource.get(step.stepId);
+		const opaque = !source || opaqueSources.has(step.stepId) && !normalizedRuns.has(step.stepId);
+		const action = opaque ? "other" : allowed?.action ?? step.action;
+		if ((action === "read" || action === "edit" || action === "write") && allowed?.target === null) reasons.add("unclassified-step");
+		if (["edit", "write", "test", "run", "delegate", "blocked"].includes(action) && step.status === "unknown") reasons.add("unknown-mutator-status");
+		const evidence: Evidence = opaque
+			? { target: null, range: null, key: key("unsupported-source", step.signature, source?.attributes, grouped.get(step.stepId)?.indexOf(step)) }
+			: allowed ?? { key: step.signature };
 		const id = `event-${index}`;
-		if (evidence.edit) edits.set(id, evidence.edit);
+		if (evidence.edit && step.status === "ok") edits.set(id, evidence.edit);
 		return {
 			id,
-			action: opaque ? "other" : step.action,
+			action,
 			target: "target" in evidence ? evidence.target ?? null : step.target,
 			...("range" in evidence ? { range: evidence.range } : {}),
 			key: evidence.key,
@@ -397,11 +347,11 @@ export function normalizeEquivalent(
 		outer:
 		for (let i = 0; i < events.length; i++) {
 			const a = events[i] as CanonicalEvent;
-			if (a.action !== "read" && a.action !== "search") continue;
+			if (a.status !== "ok" || a.action !== "read" && a.action !== "search") continue;
 			for (let j = i + 1; j < events.length; j++) {
 				const b = events[j] as CanonicalEvent;
 				if (!sameSegment(a, b) || !canCommute(a, b)) break;
-				if (b.action !== a.action || a.target !== b.target) continue;
+				if (b.status !== "ok" || b.action !== a.action || a.target !== b.target) continue;
 				const range = a.range && b.range && a.range.start <= b.range.end + 1 && b.range.start <= a.range.end + 1
 					? { start: Math.min(a.range.start, b.range.start), end: Math.max(a.range.end, b.range.end) } : null;
 				if (a.action === "read" ? !(a.target !== null && range || !a.range && !b.range && a.key === b.key) : a.key !== b.key) continue;

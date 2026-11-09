@@ -33,6 +33,9 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 	const aligned = alignSteps(alignmentSteps(left), alignmentSteps(right));
 	const rows = aligned.rows.map((row) => ({
 		...row,
+		// Work Equivalence preserves each outcome, including missing evidence.
+		// Run Diff's failure-only comparison intentionally remains unchanged.
+		statusDiffers: row.left !== null && row.right !== null && row.left.status !== row.right.status,
 		left: row.left ? left.events[row.left.index] as CanonicalEvent : null,
 		right: row.right ? right.events[row.right.index] as CanonicalEvent : null,
 	}));
