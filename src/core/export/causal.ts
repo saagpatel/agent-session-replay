@@ -244,12 +244,14 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 	}
 
 	const operations = trace.steps.map((step) => ({ step, evidence: operationEvidence(step, cwd) }));
-	type Writer = { id: string; start: number; end: number; confirmed: boolean };
+	type Writer = { id: string; start: number; end: number; noTimes: boolean; confirmed: boolean };
 	const interval = (step: Step) => {
 		const start = step.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] === true ? NaN : Date.parse(step.started_at);
 		const end = Date.parse(step.ended_at ?? "");
+		const noTimes = step.started_at == null && step.ended_at == null &&
+			step.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED] !== true;
 		return Number.isFinite(start) && Number.isFinite(end) && end < start
-			? { start: NaN, end: NaN } : { start, end };
+			? { start: NaN, end: NaN, noTimes } : { start, end, noTimes };
 	};
 	const writes = new Map<string, Writer[]>();
 	for (const { step, evidence } of operations) {
@@ -267,31 +269,35 @@ export function buildCausalGraph(trace: Trace): CausalGraph {
 			writes.set(path, writers);
 		}
 	}
-	// Unknown starts stay eligible; known future starts can be skipped per path.
+	// Sort by start for deterministic replacement selection; unknown starts remain eligible.
 	for (const writers of writes.values()) writers.sort((a, b) =>
 		(Number.isFinite(a.start) ? a.start : -Infinity) - (Number.isFinite(b.start) ? b.start : -Infinity));
 	const uncertainAccesses = new Set<string>();
 	const observe = (writers: Writer[], step: Step, kind: "file-read" | "test-write", evidence: string) => {
-		const { start, end } = interval(step);
+		const { start, end, noTimes } = interval(step);
 		const possible: Writer[] = [];
 		let replacement: Writer | undefined;
 		let previous: Writer | undefined;
 		for (const writer of writers) {
-			if (Number.isFinite(end) && Number.isFinite(writer.start) && writer.start > end) break;
 			if (writer.id === step.step_id) continue;
-			if ([writer.start, writer.end, start, end].every(Number.isFinite) && writer.start < end && start < writer.end) {
+			const before = Number.isFinite(writer.end) && Number.isFinite(start) && writer.end <= start;
+			const after = Number.isFinite(end) && Number.isFinite(writer.start) && end <= writer.start;
+			if (!before && after) continue;
+			const sourceOrdered = writer.noTimes && noTimes && indices.get(writer.id)! < indices.get(step.step_id)!;
+			if (!before && !(writer.noTimes && noTimes)) {
 				const key = JSON.stringify([writer.id, step.step_id, evidence]);
 				if (!uncertainAccesses.has(key)) {
 					uncertainAccesses.add(key);
 					diagnostics.push({
 						reason: "uncertain-access",
-						message: `${label(writer.id)} overlaps ${label(step.step_id)}; access order is uncertain (${evidence}).`,
+						message: `${label(writer.id)} and ${label(step.step_id)} have uncertain access order (${evidence}).`,
 						step: step.step_id,
 						writer: writer.id,
 					});
 				}
 				continue;
 			}
+			if (!before && !sourceOrdered) continue;
 			possible.push(writer);
 			if (!writer.confirmed || !Number.isFinite(writer.start) || !Number.isFinite(writer.end) ||
 				!Number.isFinite(start) || writer.end > start) continue;

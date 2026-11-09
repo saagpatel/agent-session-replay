@@ -34,6 +34,8 @@ function toolStep(
 ): Step {
 	return makeStep(id, {
 		kind: "tool_call",
+		// Untimed synthetic operations exercise the source-order fallback.
+		started_at: extra.ended_at != null ? "2026-01-01T00:00:00Z" : null as unknown as string,
 		attributes: {
 			[ATTR.TOOL_NAME]: name,
 			[ATTR.TOOL_ARGS]: args,
@@ -851,13 +853,13 @@ test("uncertain overwrites preserve every possible writer for reads and tests", 
 		const trace = makeTrace([
 			toolStep("first", "Write", args, { status: "ok", ended_at: "2026-01-01T00:00:01Z" }),
 			overwrite,
-			toolStep("read", "Read", { file_path: "src/a.ts" }),
-			toolStep("test", "Bash", { command: "pnpm test" }),
-			toolStep("later-test", "Bash", { command: "pnpm test" }),
+			toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:03Z" }),
+			toolStep("test", "Bash", { command: "pnpm test" }, { started_at: "2026-01-01T00:00:03Z" }),
+			toolStep("later-test", "Bash", { command: "pnpm test" }, { started_at: "2026-01-01T00:00:03Z" }),
 		]);
 		const graph = buildCausalGraph(trace);
 		for (const from of ["first", "operation"]) for (const [to, kind] of [["read", "file-read"], ["test", "test-write"], ["later-test", "test-write"]]) {
-			assert.ok(graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), `${nested} ${status} ${from} ${to}`);
+			assert.equal(graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), from === "first" || nested, `${nested} ${status} ${from} ${to}`);
 		}
 		const result = validateExport(oneScene(trace, ["operation", "read", "first", "test", "later-test"]), trace);
 		assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "first" && failure.b === "read"));
@@ -895,7 +897,7 @@ test("confirmed writes with tied zero-duration intervals never retire each other
 	assert.ok(validateExport(oneScene(trace, ["write2", "read", "write1", "test"]), trace).failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "write1"));
 });
 
-test("confirmed overwrites retain overlapping and unordered writers for reads and tests", () => {
+test("confirmed overwrites retain overlapping writers and warn on unordered writers", () => {
 	const args = { file_path: "src/a.ts", content: "new" };
 	for (const nested of [false, true]) for (const end of ["2026-01-01T00:00:10Z", undefined, "invalid"]) {
 		const first = nested ? nestedStep("Write", args) : toolStep("first", "Write", args);
@@ -912,10 +914,10 @@ test("confirmed overwrites retain overlapping and unordered writers for reads an
 		]);
 		const edges = buildCausalGraph(trace).edges;
 		for (const from of ["first", "replacement"]) for (const [to, kind] of [["read", "file-read"], ["test", "test-write"]]) {
-			assert.ok(edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), `${nested} ${end} ${from} ${to}`);
+			assert.equal(edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind), from === "replacement" || end === "2026-01-01T00:00:10Z", `${nested} ${end} ${from} ${to}`);
 		}
 		const result = validateExport(oneScene(trace, ["replacement", "read", "first", "test"]), trace);
-		assert.ok(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "first" && failure.b === "read"));
+		assert.equal(result.failures.some((failure) => failure.reason === "reversed-causal-order" && failure.a === "first" && failure.b === "read"), end === "2026-01-01T00:00:10Z");
 	}
 });
 
@@ -940,6 +942,7 @@ test("reads and tests overlapping a replacement retain the original writer regar
 			const args = { file_path: "src/a.ts", content: "original" };
 			const original = nestedWriter ? nestedStep("Write", args) : toolStep("original", "Write", args);
 			original.step_id = "original";
+			original.started_at = "2026-01-01T00:00:00Z";
 			original.ended_at = "2026-01-01T00:00:01Z";
 			const replacement = toolStep("replacement", "Write", args, {
 				status: "ok", started_at: "2026-01-01T00:00:02Z", ended_at: "2026-01-01T00:00:10Z",
@@ -997,6 +1000,49 @@ test("overlapping accesses allow either playback order but cannot prove a becaus
 	}
 });
 
+test("a parsed unfinished read does not prove a later write caused it", () => {
+	const events = [
+		{ type: "assistant", uuid: "read-event", timestamp: "2026-01-01T00:00:00Z", cwd: "/work/project", message: { content: [
+			{ type: "tool_use", id: "read", name: "Read", input: { file_path: "/work/project/src/a.ts" } },
+		] } },
+		{ type: "assistant", uuid: "write-event", timestamp: "2026-01-01T00:00:05Z", cwd: "/work/project", message: { content: [
+			{ type: "tool_use", id: "write", name: "Write", input: { file_path: "/work/project/src/a.ts", content: "synthetic" } },
+		] } },
+		{ type: "user", uuid: "write-result", timestamp: "2026-01-01T00:00:06Z", message: { content: [
+			{ type: "tool_result", tool_use_id: "write", content: "ok" },
+		] } },
+	];
+	const trace = parseClaudeCodeTranscript(events.map((event) => JSON.stringify(event)).join("\n"));
+	const faithful = validateExport(oneScene(trace, ["read", "write"]), trace);
+	assert.equal(faithful.ok, true);
+	assert.ok(faithful.warnings.some((warning) => warning.reason === "uncertain-access" && warning.writer === "write"));
+	const reversed = oneScene(trace, ["write", "read"]);
+	reversed.captions.push({ id: "claim", sceneId: "scene-main", kind: "because", text: "The write caused the read.", cause: "write", effect: "read" });
+	assert.ok(validateExport(reversed, trace).failures.some((failure) => failure.reason === "caption-unsupported-claim"));
+});
+
+test("partial bounds prove only the order they establish for reads and tests", () => {
+	for (const nested of [false, true]) for (const kind of ["read", "test"] as const) {
+		const writer = nested ? nestedStep("Write", { file_path: "src/a.ts" }) : toolStep("write", "Write", { file_path: "src/a.ts" });
+		writer.step_id = "write";
+		const observer = nested ? nestedStep(kind === "read" ? "Read" : "Bash", kind === "read" ? { file_path: "src/a.ts" } : { command: "pnpm test" }) :
+			toolStep("observer", kind === "read" ? "Read" : "Bash", kind === "read" ? { file_path: "src/a.ts" } : { command: "pnpm test" });
+		observer.step_id = "observer";
+		writer.started_at = "invalid";
+		writer.ended_at = "2026-01-01T00:00:01Z";
+		observer.started_at = "2026-01-01T00:00:02Z";
+		observer.ended_at = null;
+		assert.ok(happensBefore(buildCausalGraph(makeTrace([observer, writer])), "write", "observer"));
+		writer.started_at = "2026-01-01T00:00:05Z";
+		writer.ended_at = null;
+		observer.started_at = "invalid";
+		observer.ended_at = "2026-01-01T00:00:05Z";
+		const graph = buildCausalGraph(makeTrace([writer, observer]));
+		assert.equal(graph.edges.length, 0);
+		assert.equal(graph.diagnostics.length, 0);
+	}
+});
+
 test("missing, invalid, inferred, or reversed replacement timestamps cannot retire an original writer", () => {
 	for (const change of [
 		(step: Step) => { step.ended_at = null; },
@@ -1014,11 +1060,13 @@ test("missing, invalid, inferred, or reversed replacement timestamps cannot reti
 			replacement,
 			toolStep("read", "Read", { file_path: "src/a.ts" }, { started_at: "2026-01-01T00:00:11Z", ended_at: "2026-01-01T00:00:12Z" }),
 		]);
-		assert.deepEqual(buildCausalGraph(trace).edges.map((edge) => edge.from).sort(), ["original", "replacement"]);
+		const graph = buildCausalGraph(trace);
+		assert.ok(graph.edges.some((edge) => edge.from === "original"));
+		assert.equal(graph.edges.some((edge) => edge.from === "replacement"), Number.isFinite(Date.parse(replacement.ended_at ?? "")) && replacement.ended_at !== "2026-01-01T00:00:01Z");
 	}
 });
 
-test("writers starting after an observer ends are excluded, while missing observer times retain possibilities", () => {
+test("writers starting after an observer ends are excluded, while missing observer ends warn", () => {
 	for (const nested of [false, true]) for (const status of ["ok", "error", undefined] as const) {
 		const writer = nested ? nestedStep("Write", { file_path: "src/a.ts" }) : toolStep("writer", "Write", { file_path: "src/a.ts" });
 		writer.step_id = "writer";
@@ -1032,7 +1080,9 @@ test("writers starting after an observer ends are excluded, while missing observ
 			assert.deepEqual(buildCausalGraph(trace).edges, []);
 			for (const end of [undefined, "invalid"]) {
 				observer.ended_at = end;
-				assert.ok(happensBefore(buildCausalGraph(trace), "writer", observer.step_id));
+				const graph = buildCausalGraph(trace);
+				assert.equal(happensBefore(graph, "writer", observer.step_id), false);
+				assert.ok(graph.diagnostics.some((diagnostic) => diagnostic.reason === "uncertain-access"));
 			}
 		}
 	}
