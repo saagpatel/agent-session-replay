@@ -111,3 +111,18 @@ Each live tick exclusively locks the normalized absolute state path for its full
 ## Privacy and release
 
 Parsing and rendering happen locally. The app does not upload transcripts or AFR archives. Keep test fixtures synthetic and never commit session data. Use the repository's maintained macOS release process for signing, notarization, packaging, and publication; this repository's checks do not perform those actions.
+
+## Export Equivalence
+
+A replay is equivalent when it preserves evidenced causal order and its caption references; this is not frame equality. A version 1 manifest identifies the source by run ID, step count and digest, then lists scenes with inclusive source ranges, played step IDs and optional `durationMs`, plus `shows` captions with references or `because` captions with a cause and effect. The digest detects changes but is not a security hash.
+
+Validation reports source mismatches, unknown steps, invalid ranges, duplicate steps, reversed causal order, absent caption references, reversed or unsupported causal claims, dropped prerequisites and graph evidence gaps. An unresolved operation can be a warning when validation does not depend on it. Missing evidence is never inferred.
+
+```sh
+pnpm export:replay --session 01-parser --out exports/example
+pnpm export:replay trace.json manifest.json --out exports/example
+pnpm test:export
+pnpm test:video
+```
+
+The command writes `evidence.json` and readable `evidence.md` locally, then renders `replay.mp4` using Chrome and ffmpeg. The sidecar records source ranges and timestamps, playback positions, labels, statuses, caption verdicts and causal paths. Range endpoints and causal path intermediates describe source evidence and need not be played; caption references must be played. A failing manifest is refused unless `--allow-invalid` is supplied, in which case the video and sidecar are stamped INVALID. Chrome and ffmpeg are required for video; evidence is written even when either tool is missing. The export contains transcript-derived information, so handle it as local session data.

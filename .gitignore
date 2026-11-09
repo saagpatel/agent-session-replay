@@ -26,3 +26,7 @@ coverage/
 
 dist-receipts/
 fixtures/generated/
+
+# local replay exports
+*.mp4
+exports/

@@ -143,5 +143,5 @@ test("fixture generation is deterministic", () => {
 	const second = generateReplayFixtures();
 	assert.deepEqual(second, first);
 	const digest = createHash("sha256").update(JSON.stringify(first)).digest("hex");
-	assert.equal(digest, "18f9fa95edf92b87447d0cbdff0ab103ae82c2742a619a4bd2d01b1e4f52b694");
+	assert.equal(digest, "e05a277a2131f0ffdf06340635068ff011b7510f8e5e159055266839515cd7fe");
 });

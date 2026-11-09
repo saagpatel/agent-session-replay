@@ -41,9 +41,9 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 				const ids = workerSteps.get(agent) ?? [];
 				const suffix = String.fromCharCode(97 + i);
 				if (phase === 0) tool(`${suffix}-read`, "Read", { file_path: `${cwd}/src/${suffix}.ts` }, { subagent_id: agent });
-				else if (phase === 1) add(`${suffix}-plan`, "decision", {}, { subagent_id: agent, caused_by: i === 1 ? "a-plan" : `${suffix}-read` });
-				else if (phase === 2) add(`${suffix}-done`, "agent", {}, { subagent_id: agent, caused_by: `${suffix}-plan` });
-				else add(`consume-${suffix}`, "decision", {}, { caused_by: `${suffix}-done` });
+				else if (phase === 1) add(`${suffix}-plan`, "decision", { description: `Plan the change to src/${suffix}.ts` }, { subagent_id: agent, caused_by: i === 1 ? "a-plan" : `${suffix}-read` });
+				else if (phase === 2) add(`${suffix}-done`, "agent", { description: `Worker ${suffix} reports back` }, { subagent_id: agent, caused_by: `${suffix}-plan` });
+				else add(`consume-${suffix}`, "decision", { description: `Use worker ${suffix} findings` }, { caused_by: `${suffix}-done` });
 				ids.push(phase === 3 ? `consume-${suffix}` : `${suffix}-${["read", "plan", "done"][phase]}`);
 				workerSteps.set(agent, ids);
 			}
@@ -60,8 +60,8 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 			tool(`retest-${cycle}`, "Bash", { command: "pnpm test" }, { caused_by: editId });
 		}
 		if (cycleCount === 1) {
-			add("review", "decision", {}, { caused_by: "test" });
-			add("result", "llm", {}, { caused_by: "review" });
+			add("review", "decision", { description: "Review the test result" }, { caused_by: "test" });
+			add("result", "llm", { text: "Summarize the outcome" }, { caused_by: "review" });
 		}
 		const finishStart = cycleCount > 1 ? "fix" : "review";
 		addCompact();
@@ -76,7 +76,7 @@ export function generateReplayFixtures(): GeneratedReplayFixtures {
 		const parallelEnd = steps.findIndex((step) => step.step_id === parallelIds.at(-1));
 		// Keep compaction within the finish scene while moving its position.
 		steps.splice(finishIndex + Math.floor((parallelEnd - finishIndex) * compactAt / 4), 0, compact!);
-		for (let i = 0; i < 17 + n % 5; i++) add(`note-${i}`, i % 3 === 0 ? "llm" : "decision");
+		for (let i = 0; i < 17 + n % 5; i++) add(`note-${i}`, i % 3 === 0 ? "llm" : "decision", { description: `Working note ${i + 1}` });
 		steps.forEach((step, index) => {
 			const time = new Date(Date.UTC(2026, 0, 1, 0, 0, index * 2)).toISOString();
 			step.started_at = time;

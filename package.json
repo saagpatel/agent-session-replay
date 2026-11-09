@@ -25,7 +25,9 @@
 		"watchdog": "node --experimental-strip-types src/watchdog/main.ts",
 		"parse:real": "node --experimental-strip-types scripts/parse-real.ts",
 		"render:smoke": "node scripts/ssr-run.mjs",
-		"tauri": "tauri"
+		"tauri": "tauri",
+		"export:replay": "node --experimental-strip-types scripts/export-replay.ts",
+		"test:video": "node --test --experimental-strip-types scripts/export-replay.test.ts"
 	},
 	"engines": {
 		"node": ">=22.12"
