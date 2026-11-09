@@ -82,6 +82,7 @@ test("exec commit evidence is bound to its own literal call and output", () => {
 test("branch claims stop at the exec call that actually produced the commit header", () => {
 	const input = 'text(await tools.write_file({path:"src/a.ts",content:"idea\\n"})); text(await tools.exec_command({cmd:"git commit -m fixture"})); text(await tools.write_file({path:"src/later.ts",content:"later\\n"}));';
 	const trace = parseCodexEvents([
+		{ timestamp, type: "session_meta", payload: { id: "fixture", cwd: "/work/fixture" } },
 		event({ type: "function_call", name: "exec", call_id: "cell", arguments: JSON.stringify({ input }) }),
 		event({ type: "function_call_output", call_id: "cell", output: [
 			{ type: "text", text: "Script completed\n" },

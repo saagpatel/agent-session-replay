@@ -5,10 +5,10 @@ import {
 	classifyCommand,
 	literalExecCalls,
 	normalizeTrace,
-	relPath,
 	splitStages,
 } from "../normalize.ts";
 import type { DiffAction, DiffStatus } from "../types.ts";
+import { lineagePath, workingDirectory } from "./path.ts";
 import type {
 	Branch,
 	BranchGraph,
@@ -35,8 +35,8 @@ interface Operation {
 	evidence?: ShellEvidence;
 	call?: number;
 	unparsed?: string;
-	directoryStages?: string[];
 	patch?: string;
+	directory?: string | null;
 }
 interface FileState {
 	text: string;
@@ -69,6 +69,7 @@ function operations(trace: Trace): Operation[] {
 		if (step.kind === "llm") continue;
 		const name = str(step.attributes[ATTR.TOOL_NAME]) ?? "";
 		const args = obj(step.attributes[ATTR.TOOL_ARGS]);
+		const directory = workingDirectory(cwd, args);
 		const settled =
 			Boolean(step.ended_at) ||
 			step.status === "error" ||
@@ -84,6 +85,7 @@ function operations(trace: Trace): Operation[] {
 			out.push({
 				name,
 				args,
+				directory,
 				...extra,
 				node: {
 					stepId: step.step_id,
@@ -136,13 +138,13 @@ function operations(trace: Trace): Operation[] {
 					? args["edits"]
 					: [{}];
 			for (const edit of edits)
-				add("edit", file ? relPath(file, cwd) : null, { args: obj(edit) });
+				add("edit", file ? lineagePath(file, cwd, directory) : null, { args: obj(edit) });
 		} else if (["Edit", "Write", "write_file"].includes(name)) {
 			add(
 				name === "write_file"
 					? "write"
 					: (own[0]?.action ?? (name === "Edit" ? "edit" : "write")),
-				file ? relPath(file, cwd) : null,
+				file ? lineagePath(file, cwd, directory) : null,
 			);
 		} else if (name === "apply_patch") {
 			const patch = str(args["input"]) ?? str(args["patch"]) ?? "";
@@ -151,7 +153,7 @@ function operations(trace: Trace): Operation[] {
 				.filter((p) => /^\*\*\* (?:Add|Update|Delete) File: /m.test(p));
 			for (const p of sections.length ? sections : [patch]) {
 				const m = /^\*\*\* (Add|Update|Delete) File: (.+)$/m.exec(p);
-				const target = m?.[2] ? relPath(m[2], cwd) : null;
+				const target = m?.[2] ? lineagePath(m[2], cwd, directory) : null;
 				add(
 					own.find((n) => n.target === target)?.action ??
 						(m?.[1] === "Add" ? "write" : "edit"),
@@ -203,7 +205,7 @@ function operations(trace: Trace): Operation[] {
 					add(
 						own[at]?.action ?? c.action,
 						at >= 0 ? (own[at]?.target ?? null) : c.target,
-						{ command: stage, evidence: shellEvidence(stage) ?? undefined, unparsed, directoryStages: [...directoryStages] },
+						{ command: stage, evidence: shellEvidence(stage) ?? undefined, unparsed },
 						own[at]?.status ?? (stages.length === 1 ? status : "unknown"),
 					);
 				}
@@ -326,6 +328,10 @@ export function buildBranchGraph(
 	};
 	const applyEdit = (op: Operation, file: string): void => {
 		const effect = effectFor(op, file);
+		if (file.startsWith("external:")) {
+			invalidate(file);
+			return;
+		}
 		if (op.node.status === "error" || op.node.status === "interrupted") {
 			effect.lineage = "abandoned";
 			return;
@@ -374,7 +380,12 @@ export function buildBranchGraph(
 	const applyPatch = (op: Operation, file: string): void => {
 		const effect = effectFor(op, file);
 		const movePath = /^\*\*\* Move to: (.+)$/m.exec(op.patch ?? "")?.[1];
-		const move = movePath ? relPath(movePath, trace.run.workspace?.cwd) : undefined;
+		const move = movePath ? lineagePath(movePath, trace.run.workspace?.cwd, op.directory) : undefined;
+		if (file.startsWith("external:") || move?.startsWith("external:") || (movePath && !move)) {
+			invalidate(file);
+			if (move) invalidate(move);
+			return;
+		}
 		if (op.node.status === "error" || op.node.status === "interrupted") {
 			effect.lineage = "abandoned";
 			return;
@@ -484,6 +495,10 @@ export function buildBranchGraph(
 		if (op.unparsed) {
 			unparsedReasons.add(`Unparsed writer: ${op.unparsed}.`);
 			invalidateTree();
+		} else if ((op.patch !== undefined || ["Edit", "MultiEdit", "Write", "write_file"].includes(name)) && !file) {
+			// Preserve the operation as unknown without inventing a repository path.
+			effectFor(op, `unknown:${key(node)}`);
+			invalidateTree();
 		} else if (op.patch !== undefined && file) applyPatch(op, file);
 		else if (
 			["Edit", "MultiEdit", "Write", "write_file"].includes(name) &&
@@ -492,6 +507,10 @@ export function buildBranchGraph(
 			applyEdit(op, file);
 		else if (op.command) {
 			const evidence = op.evidence;
+			const location = lineagePath(".", trace.run.workspace?.cwd, op.directory);
+			if (!location) invalidateTree();
+			// A command in another directory cannot restore or claim this repository.
+			if (!location || location.startsWith("external:")) continue;
 			if (evidence?.staged) indexChanged = true;
 			const restore = evidence?.kind === "restore" ? evidence.paths : undefined;
 			const whole = evidence?.kind === "whole-restore";
@@ -504,10 +523,7 @@ export function buildBranchGraph(
 				for (const raw of paths) {
 					const target = whole
 						? raw
-						: classifyCommand(
-								[...(op.directoryStages ?? []), `cat ${raw}`].join(" && "),
-								trace.run.workspace?.cwd,
-							)[0]?.target;
+						: lineagePath(raw, trace.run.workspace?.cwd, op.directory);
 					if (!target) {
 						for (const path of new Set([
 							...Object.keys(base),
