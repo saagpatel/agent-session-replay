@@ -2216,6 +2216,8 @@ body {
 /* comparison modes */
 .rd-modes {
 	display: flex;
+	/* Never let a long diff squeeze the mode switch out of view. */
+	flex-shrink: 0;
 	flex-wrap: wrap;
 	width: fit-content;
 	max-width: calc(100% - 40px);

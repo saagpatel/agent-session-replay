@@ -313,4 +313,12 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.equal(crowdedHtml.includes('<details class="rd-branch-drop" open="">'), false);
 }
 
+{
+	// Long diffs must never squeeze the mode switch out of view (it lives in a height-limited column).
+	const { readFileSync } = await import("node:fs");
+	const css = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+	const rule = css.match(/\.rd-modes\s*\{([^}]*)\}/)?.[1] ?? "";
+	assert.match(rule, /flex-shrink:\s*0/);
+}
+
 console.log("UI SSR replay checks passed");
