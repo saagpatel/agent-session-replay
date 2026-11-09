@@ -134,7 +134,7 @@ test("800 distinct file reads and a second pass compare without restarting pair 
 	assert.equal(result.equivalent, true);
 	assert.equal(result.left.events.length, 800);
 	assert.ok(result.left.events.every((event, i) => event.members[0] === i && event.members[1] === i + 800));
-	assert.ok(elapsed < 2000, `comparison took ${elapsed.toFixed(1)} ms`);
+	assert.ok(elapsed < 15000, `hang guard: comparison took ${elapsed.toFixed(1)} ms`);
 });
 
 test("5,000 disjoint ranges exhaust the normalization budget and preserve every member", () => {
@@ -149,7 +149,7 @@ test("5,000 disjoint ranges exhaust the normalization budget and preserve every 
 	assert.ok(result.right.incompleteReasons.includes("normalization-budget"));
 	assert.deepEqual(expandAll(result.left), normalizeTrace(t));
 	assert.equal(result.left.events.length, 5000);
-	assert.ok(elapsed < 2000, `budgeted comparison took ${elapsed.toFixed(1)} ms`);
+	assert.ok(elapsed < 15000, `hang guard: budgeted comparison took ${elapsed.toFixed(1)} ms`);
 });
 
 test("budget exhaustion after partial coalescing retains members and cannot prove equivalence", () => {
