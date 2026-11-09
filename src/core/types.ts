@@ -110,6 +110,8 @@ export const ATTR = {
 	TOOL_RESULT_KIND: "tool.result.kind",
 	/** UUIDs of Claude user events whose tool results were merged into this step. */
 	CLAUDE_RESULT_EVENT_UUIDS: "claude.result_event_uuids",
+	/** Whether an Agent result conveys completed output or only a launch receipt. */
+	CLAUDE_AGENT_RESULT_KIND: "claude.agent_result_kind",
 	/** Kind of a parser-observed parent event omitted from steps. */
 	CLAUDE_PARENT_EVENT_KIND: "claude.parent_event_kind",
 	TOOL_ERROR: "tool.error.message",

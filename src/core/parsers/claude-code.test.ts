@@ -335,6 +335,54 @@ test("Agent tool becomes an agent step enriched with subagent telemetry", () => 
 	assert.equal(ag.attributes[ATTR.AGENT_MODEL], "claude-sonnet-4-6");
 	assert.equal(ag.attributes[ATTR.AGENT_TOTAL_TOKENS], 12345);
 	assert.equal(ag.attributes[ATTR.AGENT_DURATION_MS], 6000);
+	assert.equal(ag.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND], "completed");
+});
+
+test("Agent results distinguish completed output, launch receipts and unknown evidence", () => {
+	const call = { type: "assistant", uuid: "dispatch", timestamp: TS1, message: { content: [
+		{ type: "tool_use", id: "agent-call", name: "Agent", input: { subagent_type: "Explore" } },
+	] } };
+	const cases: { content: unknown; result?: Record<string, unknown>; error?: boolean; expected: string }[] = [
+		{ content: "Synthetic inspection completed.", expected: "completed" },
+		{ content: [{ type: "text", text: "Synthetic findings." }], result: { isAsync: false }, expected: "completed" },
+		{ content: "Async agent launched successfully.", expected: "launched" },
+		{ content: [{ type: "text", text: "Agent launched in the background." }], expected: "launched" },
+		{ content: "Background agent started.", expected: "launched" },
+		{ content: "The agent has been launched in the background.", expected: "launched" },
+		{ content: "Synthetic receipt.", result: { isAsync: true }, expected: "launched" },
+		{ content: "Synthetic receipt.", result: { status: "async_launched" }, expected: "launched" },
+		{ content: "Synthetic receipt.", result: { status: "launched" }, expected: "launched" },
+		{ content: undefined, expected: "unknown" },
+		{ content: "  ", expected: "unknown" },
+		{ content: [{ type: "image" }], expected: "unknown" },
+		{ content: "Synthetic error.", error: true, expected: "unknown" },
+		{ content: "Synthetic interruption.", result: { interrupted: true }, expected: "unknown" },
+		{ content: "Synthetic pending result.", result: { status: "running" }, expected: "unknown" },
+		{ content: "Synthetic ambiguous result.", result: { isAsync: "unknown" }, expected: "unknown" },
+	];
+	for (const entry of cases) {
+		const result = { type: "user", uuid: "agent-result", timestamp: TS2,
+			toolUseResult: { agentId: "child", ...entry.result }, message: { content: [
+				{ type: "tool_result", tool_use_id: "agent-call", content: entry.content, is_error: entry.error },
+			] } };
+		const agent = find(parseClaudeCodeEvents([call, result]).steps, (step) => step.kind === "agent");
+		assert.equal(agent.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND], entry.expected, JSON.stringify(entry));
+	}
+	const agent = find(parseClaudeCodeEvents([call]).steps, (step) => step.kind === "agent");
+	assert.equal(agent.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND], "unknown");
+});
+
+test("multiple Agent result events leave completion evidence unknown", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", timestamp: TS1, message: { content: [
+			{ type: "tool_use", id: "agent-call", name: "Agent", input: {} },
+		] } },
+		...["launch", "completion"].map((uuid) => ({ type: "user", uuid, timestamp: TS2,
+			toolUseResult: { agentId: "child" }, message: { content: [
+				{ type: "tool_result", tool_use_id: "agent-call", content: uuid === "launch" ? "Async agent launched successfully." : "Synthetic output." },
+			] } })),
+	]);
+	assert.equal(find(trace.steps, (step) => step.kind === "agent").attributes[ATTR.CLAUDE_AGENT_RESULT_KIND], "unknown");
 });
 
 test("a stop-hook system event with preventedContinuation becomes a deny hook step", () => {

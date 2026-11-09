@@ -95,6 +95,22 @@ function resultText(content: unknown): string | undefined {
 	return parts.length ? parts.join("\n") : undefined;
 }
 
+/** Launch receipts are control messages, not the child agent's output. */
+function agentResultKind(block: Json, result: Json): "completed" | "launched" | "unknown" {
+	const text = resultText(block["content"])?.trim();
+	const status = str(result["status"]);
+	if (result["isAsync"] === true || status === "async_launched" || status === "launched" ||
+		/^(?:(?:an?|the)\s+)?(?:(?:async(?:hronous)?|background)\s+)?agent\s+(?:(?:has\s+been|was)\s+)?(?:launched|started)\b/i.test(text ?? "")) {
+		return "launched";
+	}
+	if (block["is_error"] || result["interrupted"] ||
+		(status !== undefined && status !== "completed") ||
+		(result["isAsync"] !== undefined && result["isAsync"] !== false)) return "unknown";
+	// A successful, nonempty ordinary Agent response carries synchronous output.
+	// Missing output and unrecognized structured states do not prove completion.
+	return text ? "completed" : "unknown";
+}
+
 function attribution(ev: Json): Step["attribution"] | undefined {
 	const pairs: Array<[keyof NonNullable<Step["attribution"]>, string]> = [
 		["skill", "attributionSkill"],
@@ -172,7 +188,10 @@ function toolStep(
 	let attrs: Json;
 	if (name === "Agent") {
 		kind = "agent";
-		attrs = { [ATTR.AGENT_TYPE]: str(input["subagent_type"]) ?? "unknown" };
+		attrs = {
+			[ATTR.AGENT_TYPE]: str(input["subagent_type"]) ?? "unknown",
+			[ATTR.CLAUDE_AGENT_RESULT_KIND]: "unknown",
+		};
 		if (str(input["name"])) attrs[ATTR.AGENT_NAME] = input["name"];
 		if (str(input["model"])) attrs[ATTR.AGENT_MODEL] = input["model"];
 	} else {
@@ -233,6 +252,11 @@ function mergeResult(
 		step.attributes[ATTR.TEST_PASSES] = true;
 
 	if (step.kind === "agent") {
+		// A single merged timestamp/kind cannot identify which of multiple result
+		// events conveyed completion. Keep those ambiguous references unresolved.
+		const uuids = step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] as string[] | undefined;
+		step.attributes[ATTR.CLAUDE_AGENT_RESULT_KIND] = (uuids?.length ?? 0) > 1
+			? "unknown" : agentResultKind(block, result);
 		if (str(result["agentId"]))
 			step.attributes[ATTR.AGENT_SPAWNS] = result["agentId"];
 		if (str(result["resolvedModel"]))
