@@ -220,17 +220,19 @@ function tokens(cmd: string): Array<{ text: string; quoted: boolean }> {
 	return out;
 }
 
-/** Split a stage into pipeline commands on `|` outside quotes. */
+/** Split a stage into pipeline commands on `|` or `|&` outside quotes. */
 function pipeline(stage: string): string[] {
 	const out: string[] = [];
 	let quote: string | null = null;
 	let cur = "";
-	for (const ch of stage) {
+	for (let i = 0; i < stage.length; i++) {
+		const ch = stage[i]!;
 		if (quote) {
 			if (ch === quote) quote = null;
 		} else if (ch === '"' || ch === "'") {
 			quote = ch;
 		} else if (ch === "|") {
+			if (stage[i + 1] === "&") i++;
 			out.push(cur.trim());
 			cur = "";
 			continue;

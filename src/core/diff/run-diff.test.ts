@@ -1294,6 +1294,17 @@ test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
 	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
 });
 
+test("Bash |& is treated as a pipe", () => {
+	const failing = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q |& tail -n 5", output: "1 failed in 0.12s" }]),
+	);
+	assert.equal(diffRuns(failing, failing).left.verdict, "failed");
+	const passing = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q |& tail -n 5", output: "3 passed in 0.12s" }]),
+	);
+	assert.equal(diffRuns(passing, passing).left.verdict, "unclear");
+});
+
 test("runner summaries are recognized in piped pytest and unittest output", () => {
 	assert.equal(hasTestPasses("3 passed in 0.12s"), true);
 	assert.equal(hasTestFailures("1 failed, 2 passed in 0.31s"), true);
