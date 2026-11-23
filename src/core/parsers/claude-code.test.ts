@@ -6,6 +6,7 @@ import {
 	parseClaudeCodeEvents,
 	parseClaudeCodeTranscript,
 } from "./claude-code.ts";
+import { buildCausalGraph } from "../export/causal.ts";
 
 const TS1 = "2026-06-20T10:00:00.000Z";
 const TS2 = "2026-06-20T10:00:01.000Z";
@@ -220,6 +221,35 @@ test("a real fragment timestamp is retained when it equals an inferred start", (
 	const llm = find(trace.steps, (step) => step.kind === "llm");
 	assert.equal(llm.started_at, TS1);
 	assert.equal(llm.ended_at, TS1);
+	assert.equal(llm.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED], undefined);
+});
+
+test("coalesced fragment parents use the first parent outside the message", () => {
+	for (const events of [
+		[
+			{ type: "assistant", uuid: "fragment-a", parentUuid: "root", timestamp: TS1, message: { id: "message", content: "A" } },
+			{ type: "assistant", uuid: "fragment-b", parentUuid: "fragment-a", timestamp: TS2, message: { id: "message", content: "B" } },
+		],
+		[
+			{ type: "assistant", uuid: "fragment-b", parentUuid: "fragment-a", timestamp: TS2, message: { id: "message", content: "B" } },
+			{ type: "assistant", uuid: "fragment-a", parentUuid: "root", timestamp: TS1, message: { id: "message", content: "A" } },
+		],
+	]) {
+		const trace = parseClaudeCodeEvents(events);
+		const message = find(trace.steps, (step) => step.kind === "llm");
+		assert.equal(message.parent_step_id, "root");
+		assert.ok(!buildCausalGraph(trace).diagnostics.some((item) => item.reason === "causal-cycle"));
+	}
+});
+
+test("coalesced parents ignore non-assistant records and retain generated-message parents", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "user", uuid: "user-event", parentUuid: "unrelated-parent", message: { id: "shared-message", content: "Reply." } },
+		{ type: "assistant", uuid: "fragment", parentUuid: "recorded-parent", timestamp: TS1, message: { id: "shared-message", content: "A" } },
+		{ type: "assistant", parentUuid: "generated-parent", timestamp: TS2, message: { id: "generated-message", content: "Standalone." } },
+	]);
+	assert.equal(find(trace.steps, (step) => step.step_id === "fragment").parent_step_id, "recorded-parent");
+	assert.equal(find(trace.steps, (step) => step.step_id === "ev2").parent_step_id, "generated-parent");
 });
 
 test("usage counters on coalesced message fragments keep the greatest cumulative value", () => {

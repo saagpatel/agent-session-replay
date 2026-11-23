@@ -482,6 +482,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	let modeSeq = 0;
 	const messageSteps = new Map<string, Step>();
 	const messageAliases = new Map<string, string>();
+	const messageParentCandidates = new Map<string, string[]>();
 	let malformedResultLines = 0;
 
 	events.forEach((ev, idx) => {
@@ -494,14 +495,22 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 		if (etype === "assistant") {
 			const messageId = str(asObj(ev["message"])["id"]);
 			const fragment = llmStep(ev, subId, ts, idx);
+			const parentId = str(ev["parentUuid"]);
+			if (messageId && parentId) {
+				const candidates = messageParentCandidates.get(messageId) ?? [];
+				candidates.push(parentId);
+				messageParentCandidates.set(messageId, candidates);
+			}
 			const invocation = messageId && messageSteps.get(messageId);
 			if (invocation) {
 				messageAliases.set(fragment.step_id, invocation.step_id);
 				const time = Date.parse(fragment.ended_at ?? "");
 				if (fragment.ended_at && Number.isFinite(time)) {
 					const end = Date.parse(invocation.ended_at ?? "");
-					if (!Number.isFinite(end) || time < Date.parse(invocation.started_at))
+					if (!Number.isFinite(end) || time <= Date.parse(invocation.started_at)) {
 						invocation.started_at = fragment.ended_at;
+						delete invocation.attributes[ATTR.CLAUDE_TIMESTAMP_INFERRED];
+					}
 					if (!Number.isFinite(end) || time > end) invocation.ended_at = fragment.ended_at;
 				}
 				for (const [key, value] of Object.entries(fragment.attributes)) {
@@ -539,6 +548,12 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 			}
 		}
 	});
+	for (const [messageId, invocation] of messageSteps) {
+		const parent = messageParentCandidates.get(messageId)?.find((candidate) =>
+			(messageAliases.get(candidate) ?? candidate) !== invocation.step_id,
+		);
+		invocation.parent_step_id = parent ?? null;
+	}
 
 	// Stable sort: equal timestamps keep insertion (~event) order.
 	steps.sort((a, b) =>
