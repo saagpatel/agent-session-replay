@@ -12,13 +12,14 @@
  */
 
 const PYTEST_COUNT = String.raw`\d+ (?:failed|errors?|passed|skipped|xfailed|xpassed|deselected|warnings?)`;
+const UNITTEST_COUNT = String.raw`(?:failures|errors|skipped|expected failures|unexpected successes)=\d+`;
 const FAIL_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail [1-9]/m, // node --test
 	/^# fail [1-9]/m, // node --test (TAP)
 	/^=+ .*\b[1-9]\d* (?:failed|errors?)\b.*=+[ \t]*$/m, // pytest
 	// pytest -q: one positive failure or error count anywhere in the outcome list.
 	new RegExp(String.raw`^(?=[^\r\n]*\b[1-9]\d* (?:failed|errors?)\b)[ \t]*${PYTEST_COUNT}(?:, ${PYTEST_COUNT})* in \d+(?:\.\d+)?s[ \t]*$`, "m"),
-	/^Ran \d+ tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?FAILED \((?:failures|errors)=[1-9]\d*(?:, errors=\d+)?\)[ \t]*$/m, // unittest
+	new RegExp(String.raw`^Ran \d+ tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?FAILED \((?:${UNITTEST_COUNT}, )*(?:failures|errors|unexpected successes)=[1-9]\d*(?:, ${UNITTEST_COUNT})*\)[ \t]*$`, "m"),
 	/^[ \t]*Tests?[ \t]+.*\b[1-9]\d* failed\b/m, // vitest
 	/^Tests:[ \t]+[1-9]\d* failed/m, // jest
 	/^[ \t]*[1-9]\d* failing[ \t]*$/m, // mocha
