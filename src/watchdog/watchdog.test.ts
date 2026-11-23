@@ -760,6 +760,59 @@ test("weekly eviction cannot infer a vanished finding from an unverifiable trans
 	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
 });
 
+test("weekly eviction keeps a pending alert when a windowed lookup hides its finding", async (t) => {
+	const { config, claudeRoot } = fixture({ maxSessionBytes: 1024 });
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path);
+	retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(report.findings, 0);
+	assert.equal(report.retainedPayloads, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+});
+
+test("cap eviction keeps an alert after its windowed scan hid the finding", async (t) => {
+	const { config, codexRoot } = fixture({ maxSessionBytes: 1024, stallQuietSeconds: 0 });
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const path = Object.keys(state.sessions)[0];
+	if (!path) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(config.claudeProjectsDir, "retained-project"), { recursive: true });
+	writeFileSync(path, ccGrindTranscript(300));
+	const key = "grind_loop@warning";
+	const payload = state.sessions[path]!.pendingPayloads![key]!;
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
+	state.sessions[path]!.pending = true;
+	writeCodexSession(codexRoot, codexStallTranscript());
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(report.windowedSessions, 1);
+	assert.ok(report.findings > 0);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(report.malformedLines, 0);
+	assert.equal(report.incompleteRecords, 0);
+	assert.equal(report.unsupportedRecords, 0);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	const queriesPath = config.localReceiptStore + ".queries";
+	assert.equal(existsSync(queriesPath), true);
+	assert.ok(!readFileSync(queriesPath, "utf8").includes(eventIdFor(path, key)));
+});
+
 function damagedGrindTranscript(): Buffer {
 	const complete = ccGrindTranscript(300);
 	assert.ok(detect(parseClaudeCodeTranscript(complete)).some((finding) => finding.kind === "grind_loop"));

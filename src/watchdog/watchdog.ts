@@ -311,9 +311,9 @@ async function tickWithProgress(
 	const keysFor = (session: SessionFile): Set<string> | undefined => {
 		if (!observedKeys.has(session.path)) {
 			try {
-				const { trace } = parseSession(session, config.maxSessionBytes);
+				const { trace, windowed } = parseSession(session, config.maxSessionBytes);
 				const captureGap = recordCoverage(session.path, trace);
-				observedKeys.set(session.path, captureGap
+				observedKeys.set(session.path, captureGap || windowed
 					? undefined
 					: new Set(detect(trace).map(findingKey)));
 				if (captureGap) {
@@ -396,11 +396,13 @@ async function tickWithProgress(
 
 		let trace: Trace;
 		let captureGap: boolean;
+		let windowed = false;
 		try {
 			const parsed = parseSession(session, config.maxSessionBytes);
 			trace = parsed.trace;
 			captureGap = recordCoverage(session.path, trace);
-			if (parsed.windowed) report.windowedSessions += 1;
+			windowed = parsed.windowed;
+			if (windowed) report.windowedSessions += 1;
 		} catch (err) {
 			if (err instanceof TranscriptBudgetError) {
 				observedKeys.set(session.path, undefined);
@@ -445,7 +447,7 @@ async function tickWithProgress(
 		}
 
 		const findings = detect(trace);
-		observedKeys.set(session.path, captureGap
+		observedKeys.set(session.path, captureGap || windowed
 			? undefined
 			: new Set(findings.map(findingKey)));
 		report.findings += findings.length;
