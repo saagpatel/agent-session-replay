@@ -27,7 +27,7 @@ const html = renderToStaticMarkup(
 			onSelect={() => {}}
 			focusedFindingId={null}
 		/>
-		<FindingsPanel findings={findings} activeId={null} onSelect={() => {}} />
+		<FindingsPanel trace={trace} findings={findings} activeId={null} onSelect={() => {}} />
 	</>,
 );
 

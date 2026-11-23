@@ -216,6 +216,7 @@ export function App() {
 							/>
 						</div>
 						<FindingsPanel
+							trace={loaded.trace}
 							findings={loaded.findings}
 							activeId={focusedFindingId}
 							onSelect={focusFinding}

@@ -12,6 +12,7 @@ import {
 	DecisionFlightDeck,
 } from "../src/ui/components/DecisionFlightDeck.tsx";
 import { afrInput, combine, droppedFiles, readEntry, type DroppedFile } from "../src/ui/components/DropZone.tsx";
+import { FindingsPanel } from "../src/ui/components/FindingsPanel.tsx";
 
 function dropped(path: string, name: string, text: string): DroppedFile {
 	const file = new File([text], name);
@@ -112,6 +113,16 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	assert.match(mixedSessionError, /these files belong to different sessions/i);
 	assert.equal(mixedSessionLoaded, false);
 	const captureGap = JSON.stringify({ type: "data-flow-incomplete", sessionId: "session-a", uuid: "gap-1" });
+	for (const [text, expected] of [
+		[firstSession, "No findings — this run looks clean."],
+		[firstSession + "\n" + captureGap, "No findings in the parsed records."],
+		[firstSession + "\n{", "No findings in the parsed records."],
+	] as const) {
+		const html = renderToStaticMarkup(
+			<FindingsPanel trace={parseTranscript(text).trace} findings={[]} activeId={null} onSelect={() => {}} />,
+		);
+		assert.ok(html.includes(expected), `Expected findings panel to say "${expected}". Got ${html}`);
+	}
 	const gapErrors: string[] = [];
 	await takeRunFiles([dropped("gap.jsonl", "gap.jsonl", captureGap)], {
 		onRun: () => assert.fail("a capture gap has no replayable steps"),
