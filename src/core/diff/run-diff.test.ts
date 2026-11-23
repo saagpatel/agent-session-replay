@@ -1314,6 +1314,17 @@ test("a rejected Claude test tool call is not reported as a failed test run", ()
 	assert.equal(summaryResult.steps.find((step) => step.action === "test")?.status, "unknown");
 });
 
+test("a failing summary without a numeric exit stays unclear for a standalone test", () => {
+	const events = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "1 failed in 0.12s" },
+	]);
+	delete events.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const trace = parseClaudeCodeEvents(events);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "unclear");
+	assert.equal(result.steps.find((item) => item.action === "test")?.status, "unknown");
+});
+
 test("a background test keeps its summary without borrowing an exit status", () => {
 	const traceFor = (path: string) => {
 		const events = ccEvents(PROMPT, [
@@ -1357,7 +1368,35 @@ test("definitely skipped test commands do not replace the last evidenced test", 
 	}
 	const stages = classifyCommand("pytest; false && pytest", null).filter((part) => part.action === "test");
 	assert.deepEqual(stages.map((part) => part.executed), [undefined, false]);
+	assert.equal(classifyCommand("true || pytest -q", null).at(-1)?.executed, false);
+	assert.equal(classifyCommand("false || false && pytest -q", null).at(-1)?.executed, false);
 	assert.notEqual(classifyCommand("true || false && pytest", null).at(-1)?.executed, false);
+	assert.equal(classifyCommand("false || pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("true && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("maybe || false && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("maybe && true || pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("false # comment && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("false \\&& pytest -q", null).at(-1)?.executed, undefined);
+});
+
+test("regex braces keep Codex cell call execution unknown", () => {
+	const cell = rawCell(
+		'{ if (false) { const pattern = /{/; } text(await tools.exec_command({cmd:"pytest -q"})); }',
+		parts("Script completed\nOutput:\n", JSON.stringify({ chunk_id: "1", exit_code: 0, test_passes: true })),
+	);
+	const testStep = normalizeTrace(cell).find((item) => item.action === "test");
+	assert.equal(testStep?.executed, undefined);
+	assert.equal(testStep?.status, "unknown");
+});
+
+test("nested template literals keep Codex cell call execution unknown", () => {
+	const cell = rawCell(
+		'{ if (false) { const s = `outer ${`{`}`; } text(await tools.exec_command({cmd:"pytest"})); }',
+		parts("Script completed\nOutput:\n", JSON.stringify({ chunk_id: "1", exit_code: 0, test_passes: true })),
+	);
+	const testStep = normalizeTrace(cell).find((item) => item.action === "test");
+	assert.equal(testStep?.executed, undefined);
+	assert.equal(testStep?.status, "unknown");
 });
 
 test("a file in an unknown directory is never named or vouched for", () => {

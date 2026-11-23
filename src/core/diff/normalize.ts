@@ -561,13 +561,16 @@ function commandParts(
 	const stages = raw.map((x) => (/^(?:for|case|select)\s/.test(x) ? "" : x.replace(CONTROL_RE, "").trim()));
 	const parts: Classified[] = [];
 	let printing = 0;
-	let shortCircuited = false;
+	let canSucceed = true;
+	let canFail = true;
 	stages.forEach((stage, i) => {
 		const last = i === stages.length - 1;
-		const previous = stages[i - 1];
-		// In an AND list a failing literal false skips the remaining operands.
-		shortCircuited = !control && seps[i - 1] === "&&" &&
-			(shortCircuited || (previous === "false" && seps[i - 2] !== "||"));
+		const separator = control ? undefined : seps[i - 1];
+		// AND-OR lists are left associative. Skipping the right operand
+		// preserves the left status. Only bare true/false have a known exit.
+		const mayRun = separator === "&&" ? canSucceed : separator === "||" ? canFail : true;
+		canSucceed = (separator === "||" && canSucceed) || (mayRun && stage !== "false");
+		canFail = (separator === "&&" && canFail) || (mayRun && stage !== "true");
 		// A `cd` moves where the following stages run; it stays a stage, so a
 		// failing `cd dir && npm test` never runs (or fails) the test.
 		const w = words(stage);
@@ -580,7 +583,7 @@ function commandParts(
 		}
 		else if (stage) printing++;
 		for (const c of classifyStage(stage, where, coverage)) {
-			if (shortCircuited && c.action === "test") c.executed = false;
+			if (!mayRun && c.action === "test") c.executed = false;
 			parts.push(last ? c : { ...c, last });
 		}
 	});
@@ -953,6 +956,9 @@ function straightLine(masked: string, calls: RegExpMatchArray[]): boolean {
 }
 
 function inLiteralFalseBranch(masked: string, callIndex: number): boolean {
+	// Regexes and nested template expressions can contain braces that this
+	// lightweight scan cannot distinguish from block boundaries.
+	if (masked.includes("/") || masked.includes("`")) return false;
 	if (/\bif\s*\(\s*false\s*\)\s*(?:text\s*\(\s*)?(?:await\s+)?$/.test(masked.slice(0, callIndex))) return true;
 	for (const match of masked.matchAll(/\bif\s*\(\s*false\s*\)\s*\{/g)) {
 		const open = (match.index ?? 0) + match[0].lastIndexOf("{");
@@ -1213,7 +1219,9 @@ function toolUnits(step: Step, cwd: string | null | undefined, coverage?: Normal
 				const raw = [args["workdir"], args["working_directory"], args["cwd"]].find(
 					(v) => v !== undefined && v !== null && v !== "",
 				);
-				const workdir = raw === undefined ? undefined : (str(raw) ?? null);
+				const receiptCwd = str(step.attributes[ATTR.CODEX_RECEIPT_CWD]);
+				const workdir = receiptCwd !== undefined && raw !== receiptCwd
+					? null : raw === undefined ? undefined : (str(raw) ?? null);
 				return [{ ...commandParts(cmd, cwd, workdir, coverage), ...yieldedOr(step) }];
 			}
 			return one([{ action: "other", target: name || null }]);
@@ -1313,7 +1321,7 @@ export function resolveStatuses(
 	// printed it (`cat old.log; npm test` could).
 	if (
 		solo && testFailures && parts[0]?.executed !== false && parts[0]?.summarySource !== false &&
-		(failedResult || (hasCleanExit && result === "ok") || parts[0]?.piped === true)
+		((failedResult && hasFailedExit) || (hasCleanExit && result === "ok") || parts[0]?.piped === true)
 	)
 		out[0] = failedResult ? (result as DiffStatus) : "error";
 	return out;
@@ -1389,7 +1397,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 	const out: DiffStep[] = [];
 	const seen = new Set<string>();
 	// Yielded commands waiting for a later write_stdin poll to report their exit.
-	const pending = new Map<string, { unit: Unit; steps: DiffStep[]; error?: string }>();
+	const pending = new Map<string, { unit: Unit; steps: DiffStep[]; receipt?: UnitResult }>();
 	for (const step of trace.steps) {
 		if (step.subagent_id) continue;
 		const error = str(step.attributes[ATTR.TOOL_ERROR]);
@@ -1400,8 +1408,13 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 				// Test summaries can arrive in any poll; keep them all.
 				waiting.unit.testFailures ||= unit.testFailures;
 				waiting.unit.testPasses ||= unit.testPasses;
-				if (unit.result === "pending") continue;
+				if (unit.exitCode === undefined) continue;
 				const { unit: orig, steps } = waiting;
+				// A matching receipt can fill a missing summary only for the same exit.
+				if (!orig.testFailures && !orig.testPasses && waiting.receipt?.exitCode === unit.exitCode) {
+					orig.testFailures = waiting.receipt.testFailures;
+					orig.testPasses = waiting.receipt.testPasses;
+				}
 				const statuses = resolveStatuses(
 					orig.parts,
 					orig.chain,
@@ -1416,30 +1429,37 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 					d.status = statuses[i] ?? "unknown";
 					const sum = sums[i];
 					if (sum) d.summary = sum;
+					else delete d.summary;
 					if (isFailure(d.status) && error) d.error = clip(error.trim(), ERROR_MAX);
+					else delete d.error;
 				});
 				pending.delete(unit.pollOf);
 				continue;
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
+			// A paired receipt supplies provisional evidence for a plain shell call.
+			// Keep the yielded chunk itself available for a later matching poll.
+			const receipt = unit.result === "pending" && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash"
+				? stepResult(step) : undefined;
+			const evidence = receipt ?? unit;
 			const statuses = resolveStatuses(
 				parts,
 				unit.chain,
-				unit.result,
-				unit.testFailures,
+				evidence.result,
+				evidence.testFailures,
 				unit.solo,
-				unit.exitCode === 0,
-				typeof unit.exitCode === "number" && unit.exitCode !== 0,
+				evidence.exitCode === 0,
+				typeof evidence.exitCode === "number" && evidence.exitCode !== 0,
 			);
-			const sums = summaries(parts, unit.testFailures, unit.testPasses, unit.solo);
+			const sums = summaries(parts, evidence.testFailures, evidence.testPasses, unit.solo);
 			const made = parts.map((c, i) =>
 				make(
 					step,
 					out.length + i,
 					c,
 					statuses[i] ?? "unknown",
-					isFailure(statuses[i] ?? "ok") && !error && unit.testFailures
+					isFailure(statuses[i] ?? "ok") && !error && evidence.testFailures
 						? "output reports failing tests"
 						: error,
 				),
@@ -1450,7 +1470,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			});
 			out.push(...made);
 			if (unit.result === "pending" && unit.sessionId)
-				pending.set(unit.sessionId, { unit: { ...unit, parts }, steps: made });
+				pending.set(unit.sessionId, { unit: { ...unit, parts }, steps: made, receipt });
 		}
 	}
 	return out;

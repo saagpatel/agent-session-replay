@@ -139,6 +139,8 @@ export const ATTR = {
 	 * yielded command has a session_id and no exit_code yet.
 	 */
 	EXEC_RESULTS: "codex.exec.results",
+	/** Working directory reported by a Codex CommandExecution receipt. */
+	CODEX_RECEIPT_CWD: "codex.command_execution.cwd",
 	/** The exec cell's script ran to completion. */
 	EXEC_COMPLETED: "codex.exec.completed",
 	/**
