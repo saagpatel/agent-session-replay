@@ -220,7 +220,7 @@ function mergeResult(
 	block: Json,
 	ev: Json,
 	result: Json,
-	bashResultSteps: Set<Step>,
+	bashResultExits: Map<Step, number | undefined>,
 ): boolean {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
 	if (!step) return false;
@@ -231,8 +231,15 @@ function mergeResult(
 		step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] = uuids;
 	}
 	const isBash = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash";
-	if (isBash && bashResultSteps.has(step)) return true;
-	if (isBash) bashResultSteps.add(step);
+	if (isBash) {
+		const duplicate = bashResultExits.has(step);
+		const firstExit = bashResultExits.get(step);
+		const exit = result["exitCode"];
+		if (firstExit !== undefined && typeof exit === "number" && exit !== firstExit)
+			step.attributes[ATTR.SHELL_EXIT_CONFLICT] = true;
+		bashResultExits.set(step, firstExit ?? (typeof exit === "number" ? exit : undefined));
+		if (duplicate) return true;
+	}
 	const output = resultText(block["content"]) ?? str(result["stdout"]);
 	const backgroundTaskId = str(result["backgroundTaskId"]);
 	if (backgroundTaskId && isBash) {
@@ -561,7 +568,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	);
 	const stepIds = new Set(steps.map((step) => step.step_id));
 	const omittedEventKinds = new Map<string, "user" | "system" | "summary" | "unmatched-tool-result">();
-	const bashResultSteps = new Set<Step>();
+	const bashResultExits = new Map<Step, number | undefined>();
 	// Resolve results only after every tool call is indexed, regardless of input
 	// order. Result events are causal evidence, never ordinary user context.
 	for (const event of events) {
@@ -577,7 +584,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 				malformedResultLine = true;
 				continue;
 			}
-			if (mergeResult(toolSteps, block, event, eventResult, bashResultSteps))
+			if (mergeResult(toolSteps, block, event, eventResult, bashResultExits))
 				malformedResultLine = true;
 		}
 		if (malformedResultLine) malformedResultLines += 1;

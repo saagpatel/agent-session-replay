@@ -7,6 +7,7 @@ import {
 	parseClaudeCodeTranscript,
 } from "./claude-code.ts";
 import { buildCausalGraph } from "../export/causal.ts";
+import { diffRuns } from "../diff/run-diff.ts";
 
 const TS1 = "2026-06-20T10:00:00.000Z";
 const TS2 = "2026-06-20T10:00:01.000Z";
@@ -397,30 +398,28 @@ test("wrong-typed duplicate tool result is malformed and does not replace valid 
 	assert.equal(step.attributes[ATTR.TEST_FAILURES], undefined);
 });
 
-test("a later Claude result does not replace the first result for a tool use", () => {
-	const trace = parseClaudeCodeEvents([
-		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
-		{ type: "user", uuid: "first-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 failed in 0.12s" }] }, toolUseResult: { exitCode: 7 } },
-		{ type: "user", uuid: "duplicate-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 passed in 0.12s" }] }, toolUseResult: { exitCode: 0 } },
-	]);
-	const step = find(trace.steps, (item) => item.step_id === "bash-test");
-	assert.equal(step.status, "error");
-	assert.equal(step.attributes[ATTR.SHELL_EXIT_CODE], 7);
-	assert.deepEqual(step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["first-result", "duplicate-result"]);
-	assert.equal(trace.malformed_lines, 1);
-});
-
-test("the first Bash result remains authoritative when duplicate exits are reversed", () => {
-	const trace = parseClaudeCodeEvents([
-		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
-		{ type: "user", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 passed in 0.12s" }] }, toolUseResult: { exitCode: 0 } },
-		{ type: "user", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 failed in 0.12s" }] }, toolUseResult: { exitCode: 7 } },
-	]);
-	const step = find(trace.steps, (item) => item.step_id === "bash-test");
-	assert.equal(step.status, "ok");
-	assert.equal(step.attributes[ATTR.SHELL_EXIT_CODE], 0);
-	assert.equal(trace.malformed_lines, 1);
-});
+for (const [first, duplicate, verdict] of [
+	[0, 7, "unclear"], [7, 0, "unclear"], [0, 0, "passed"], [7, 7, "failed"],
+] as const) {
+	test(`duplicate Bash results with exits ${first} and ${duplicate} give verdict ${verdict}`, () => {
+		const result = (uuid: string, exitCode: number) => ({
+			type: "user", uuid, timestamp: TS2, toolUseResult: { exitCode },
+			message: { content: [{ type: "tool_result", tool_use_id: "bash-test",
+				content: exitCode === 0 ? "1 passed in 0.12s" : "1 failed in 0.12s" }] },
+		});
+		const trace = parseClaudeCodeEvents([
+			{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
+			result("first-result", first), result("duplicate-result", duplicate),
+		]);
+		const step = find(trace.steps, (item) => item.step_id === "bash-test");
+		assert.equal(diffRuns(trace, trace).left.verdict, verdict);
+		assert.equal(step.attributes[ATTR.SHELL_EXIT_CONFLICT], first !== duplicate ? true : undefined);
+		assert.equal(step.status, first === 0 ? "ok" : "error");
+		assert.equal(step.attributes[ATTR.SHELL_EXIT_CODE], first);
+		assert.deepEqual(step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["first-result", "duplicate-result"]);
+		assert.equal(trace.malformed_lines, 1);
+	});
+}
 
 test("multiple malformed tool results on one line count once", () => {
 	const trace = parseClaudeCodeTranscript([
