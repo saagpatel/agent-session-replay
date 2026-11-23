@@ -33,6 +33,12 @@ const SUMMARY_MAX = 600;
 const PLAN_MAX = 2000;
 const ERROR_MAX = 500;
 const REASON_MAX = 300;
+const CUMULATIVE_USAGE_ATTRIBUTES = new Set<string>([
+	ATTR.INPUT_TOKENS,
+	ATTR.OUTPUT_TOKENS,
+	ATTR.CACHE_READ_TOKENS,
+	ATTR.CACHE_CREATION_TOKENS,
+]);
 
 /** Final-turn stop_reason -> outcome status; only end_turn is a claimed completion. */
 const STOP_REASON_STATUS: Record<string, string> = { end_turn: "completed" };
@@ -213,6 +219,7 @@ function mergeResult(
 	toolSteps: Map<string, Step>,
 	block: Json,
 	ev: Json,
+	result: Json,
 ): void {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
 	if (!step) return;
@@ -222,7 +229,6 @@ function mergeResult(
 		if (!uuids.includes(eventUuid)) uuids.push(eventUuid);
 		step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] = uuids;
 	}
-	const result = asObj(ev["toolUseResult"]);
 	const output = resultText(block["content"]) ?? str(result["stdout"]);
 	const backgroundTaskId = str(result["backgroundTaskId"]);
 	const isBash = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash";
@@ -231,8 +237,13 @@ function mergeResult(
 		const path = str(result["outputFile"]) ?? (receipt?.[1] === backgroundTaskId ? receipt[2] : undefined);
 		step.attributes[ATTR.CLAUDE_BACKGROUND_TASK_ID] = backgroundTaskId;
 		if (path) step.attributes[ATTR.CLAUDE_BACKGROUND_OUTPUT_FILE] = path;
-		delete step.status;
-		return;
+		const terminalFailure = result["interrupted"] || block["is_error"] === true ||
+			(typeof result["exitCode"] === "number" && result["exitCode"] !== 0);
+		if (!terminalFailure) {
+			delete step.status;
+			return;
+		}
+		if (output) step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
 	}
 	if (isBash && typeof result["exitCode"] === "number")
 		step.attributes[ATTR.SHELL_EXIT_CODE] = result["exitCode"];
@@ -483,8 +494,12 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 			if (invocation) {
 				messageAliases.set(fragment.step_id, invocation.step_id);
 				for (const [key, value] of Object.entries(fragment.attributes)) {
-					if (key === ATTR.FINISH_REASONS || invocation.attributes[key] === undefined)
+					const prior = invocation.attributes[key];
+					if (key === ATTR.FINISH_REASONS || prior === undefined)
 						invocation.attributes[key] = value;
+					else if (CUMULATIVE_USAGE_ATTRIBUTES.has(key) && typeof value === "number" && typeof prior === "number") {
+						invocation.attributes[key] = Math.max(prior, value);
+					}
 				}
 			} else {
 				steps.push(fragment);
@@ -528,13 +543,14 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 		const results = kind === "user"
 			? contentBlocks(event).filter((block) => block["type"] === "tool_result")
 			: [];
+		const eventResult = results.length > 1 ? {} : asObj(event["toolUseResult"]);
 		let malformedResultLine = false;
 		for (const block of results) {
 			if (block["is_error"] !== undefined && typeof block["is_error"] !== "boolean") {
 				malformedResultLine = true;
 				continue;
 			}
-			mergeResult(toolSteps, block, event);
+			mergeResult(toolSteps, block, event, eventResult);
 		}
 		if (malformedResultLine) malformedResultLines += 1;
 		if (!id || stepIds.has(id)) continue;

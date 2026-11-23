@@ -198,6 +198,15 @@ test("assistant message fragments count usage once and keep each tool call", () 
 	assert.ok(!trace.external_parent_ids?.includes("fragment-2"));
 });
 
+test("usage counters on coalesced message fragments keep the greatest cumulative value", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "usage-first", timestamp: TS1, message: { id: "usage-message", usage: { input_tokens: 20, output_tokens: 0, cache_read_input_tokens: 10 }, content: [{ type: "text", text: "First fragment." }] } },
+		{ type: "assistant", uuid: "usage-final", timestamp: TS2, message: { id: "usage-message", usage: { input_tokens: 20, output_tokens: 42, cache_read_input_tokens: 10 }, content: [{ type: "text", text: "Final fragment." }] } },
+	]);
+	const llm = find(trace.steps, (step) => step.kind === "llm");
+	assert.equal(llm.attributes[ATTR.OUTPUT_TOKENS], 42);
+});
+
 test("background Bash launch stays pending and preserves its task output path", () => {
 	const trace = parseClaudeCodeEvents([
 		{ type: "assistant", uuid: "launch-call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-launch", name: "Bash", input: { command: "pytest -q > /tmp/example-tests.log 2>&1 &" } }] } },
@@ -208,6 +217,55 @@ test("background Bash launch stays pending and preserves its task output path", 
 	assert.equal(launch.ended_at, undefined);
 	assert.equal(launch.attributes["claude.background_task_id"], "task-1");
 	assert.equal(launch.attributes["claude.background_output_file"], "/tmp/example-tests.log");
+});
+
+test("background Bash launch with an explicit error or interruption is terminal", () => {
+	for (const [result, isError, expectedStatus] of [
+		[{ backgroundTaskId: "task-error", outputFile: "/tmp/example-error.log" }, true, "error"],
+		[{ backgroundTaskId: "task-interrupted", outputFile: "/tmp/example-interrupted.log", interrupted: true }, false, "interrupted"],
+		[{ backgroundTaskId: "task-exit", outputFile: "/tmp/example-exit.log", exitCode: 17 }, undefined, "error"],
+	] as const) {
+		const trace = parseClaudeCodeEvents([
+			{ type: "assistant", uuid: "background-error-call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "background-error-tool", name: "Bash", input: { command: "pytest -q" } }] } },
+			{ type: "user", uuid: "background-error-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "background-error-tool", is_error: isError, content: "Synthetic launch failure." }] }, toolUseResult: result },
+		]);
+		const launch = find(trace.steps, (step) => step.step_id === "background-error-tool");
+		assert.equal(launch.status, expectedStatus);
+		assert.equal(launch.ended_at, TS2);
+		assert.equal(launch.attributes[ATTR.CLAUDE_BACKGROUND_TASK_ID], result.backgroundTaskId);
+		assert.equal(launch.attributes[ATTR.TOOL_ERROR], "Synthetic launch failure.");
+		if ("exitCode" in result) assert.equal(launch.attributes[ATTR.SHELL_EXIT_CODE], 17);
+		assert.equal(launch.attributes[ATTR.GUARD_TRIPPED], undefined);
+	}
+});
+
+test("event-level exit metadata does not certify multiple Bash results", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "batch-call-a", timestamp: TS1, message: { content: [{ type: "tool_use", id: "batch-a", name: "Bash", input: { command: "cat example.txt" } }] } },
+		{ type: "assistant", uuid: "batch-call-test", timestamp: TS1, message: { content: [{ type: "tool_use", id: "batch-test", name: "Bash", input: { command: "pytest -q" } }] } },
+		{ type: "user", uuid: "batch-results", timestamp: TS2, toolUseResult: { exitCode: 0 }, message: { content: [
+			{ type: "tool_result", tool_use_id: "batch-a", content: "Synthetic file contents." },
+			{ type: "tool_result", tool_use_id: "batch-test", content: "3 passed in 0.12s" },
+		] } },
+	]);
+	const test = find(trace.steps, (step) => step.step_id === "batch-test");
+	assert.equal(test.attributes[ATTR.SHELL_EXIT_CODE], undefined);
+	assert.equal(test.status, undefined);
+	assert.equal(test.attributes[ATTR.TEST_PASSES], true);
+});
+
+test("event-level interruption metadata does not terminate multiple tool results", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "batch-interrupted-a", timestamp: TS1, message: { content: [{ type: "tool_use", id: "batch-interrupted-a-tool", name: "Bash", input: { command: "cat example.txt" } }] } },
+		{ type: "assistant", uuid: "batch-interrupted-test", timestamp: TS1, message: { content: [{ type: "tool_use", id: "batch-interrupted-test-tool", name: "Bash", input: { command: "pytest -q" } }] } },
+		{ type: "user", uuid: "batch-interrupted-results", timestamp: TS2, toolUseResult: { interrupted: true, stdout: "Synthetic event-level output." }, message: { content: [
+			{ type: "tool_result", tool_use_id: "batch-interrupted-a-tool", content: "Synthetic file contents." },
+			{ type: "tool_result", tool_use_id: "batch-interrupted-test-tool", content: "3 passed in 0.12s" },
+		] } },
+	]);
+	const test = find(trace.steps, (step) => step.step_id === "batch-interrupted-test-tool");
+	assert.equal(test.status, undefined);
+	assert.equal(test.attributes[ATTR.TEST_PASSES], true);
 });
 
 test("background Bash result text supplies its exact output path", () => {
