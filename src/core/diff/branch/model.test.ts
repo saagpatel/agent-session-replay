@@ -438,7 +438,7 @@ test("unparsed writers cannot imply that unnamed files remain absent", () => {
 });
 
 test("capture gaps make end-state lineage unknown while preserving observed edits", () => {
-	for (const diagnostic of [{ incomplete_records: 1 }, { malformed_lines: 1 }]) {
+	for (const diagnostic of [{ incomplete_records: 1 }, { malformed_lines: 1 }, { unsupported_records: 1 }]) {
 		const input = { ...trace(edit("observed", "base", "idea")), ...diagnostic };
 		const graph = buildBranchGraph(input, base);
 		assert.equal(graph.nodes[0]?.stepId, "observed");

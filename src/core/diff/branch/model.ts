@@ -357,7 +357,8 @@ export function buildBranchGraph(
 		]))
 			invalidate(path);
 	};
-	const hasCaptureGap = (trace.incomplete_records ?? 0) > 0 || (trace.malformed_lines ?? 0) > 0;
+	const hasCaptureGap = (trace.incomplete_records ?? 0) > 0 ||
+		(trace.malformed_lines ?? 0) > 0 || (trace.unsupported_records ?? 0) > 0;
 	if (hasCaptureGap) invalidateTree();
 	const effectFor = (op: Operation, file: string): Effect => {
 		const effect: Effect = {
