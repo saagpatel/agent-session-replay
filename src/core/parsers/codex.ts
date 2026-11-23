@@ -22,6 +22,7 @@
  */
 
 import { literalExecCalls } from "../diff/normalize.ts";
+import { legacyShellHeader } from "./codex-shell-header.ts";
 import { commandWorkdir } from "../diff/branch/path.ts";
 import { argvShellScript, commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
@@ -62,27 +63,6 @@ const RESULT_KIND: Record<string, string> = {
 	read_file: "read",
 	web_search: "search",
 };
-
-/**
- * A legacy shell tool output carries this header before its `Output:` body; a
- * non-zero code is a failed call. Only the header is searched, so a command
- * that prints an old log containing the phrase is never misread.
- */
-const EXIT_RE = /^Process exited with code (\d+)\s*$/m;
-const SESSION_RE = /^Process running with session ID ([\w-]+)\s*$/m;
-const HEADER_MAX = 400;
-function legacySession(output: string): string | null {
-	const framed = output.slice(0, HEADER_MAX);
-	const boundary = /^(?:Final output|Output):[ \t]*\r?$/m.exec(framed);
-	if (!boundary) return null;
-	const header = framed.slice(0, boundary.index);
-	return SESSION_RE.exec(header)?.[1] ?? null;
-}
-function legacyExit(raw: unknown): RegExpExecArray | null {
-	if (typeof raw !== "string") return null;
-	const header = raw.slice(0, HEADER_MAX).split(/^(?:Final output|Output):/m, 1)[0] ?? "";
-	return EXIT_RE.exec(header);
-}
 
 /** Every numeric `exit_code` anywhere inside a parsed JSON value. */
 function nestedExitCodes(v: unknown, out: number[] = []): number[] {
@@ -176,13 +156,14 @@ function mergeShellResult(step: Step, incoming: ExecResult, source: "chunk" | "o
 		incoming.exit_code ?? (typeof priorExit === "number" ? priorExit : null);
 	const failed = incoming.test_failures || prior?.test_failures === true || attrs[ATTR.TEST_FAILURES] === true;
 	const passed = !failed && (incoming.test_passes || prior?.test_passes === true || attrs[ATTR.TEST_PASSES] === true);
-	// A receipt updates step-level evidence. Keep the yielded chunk so its own
-	// output can still be matched to write_stdin by session ID.
-	const keepYield = source === "receipt" && prior?.exit_code === null && prior.session_id !== null;
+	// Terminal evidence stays on the step. Preserve the yielded chunk for poll correlation.
+	const command = attrs[ATTR.TOOL_RESULT_KIND] === "bash";
+	const keepYield = command && prior?.session_id != null && (source === "receipt" || exit !== null);
 	if (!keepYield && (source !== "output" || prior)) {
+		const yieldedId = incoming.exit_code === null && (command || exit === null) ? incoming.session_id : null;
 		attrs[ATTR.EXEC_RESULTS] = [{
-			exit_code: exit,
-			session_id: exit === null ? incoming.session_id ?? prior?.session_id ?? null : null,
+			exit_code: yieldedId !== null ? null : exit,
+			session_id: yieldedId ?? (exit === null ? prior?.session_id ?? null : null),
 			test_failures: failed,
 			test_passes: passed,
 		}];
@@ -338,6 +319,13 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	const steps: Step[] = [];
 	const toolSteps = new Map<string, Step>();
 	const receipts: { step: Step; item: Json; ts: string }[] = [];
+	const firstExit = new Map<Step, number>();
+	const observeExit = (step: Step, exit: number | null) => {
+		if (exit === null) return;
+		const prior = firstExit.get(step);
+		if (prior === undefined) firstExit.set(step, exit);
+		else if (prior !== exit) step.attributes[ATTR.SHELL_EXIT_CONFLICT] = true;
+	};
 
 	let runId = "unknown";
 	let version: string | undefined;
@@ -381,8 +369,10 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		if (status === "incomplete" || status === "failed") step.status = "error";
 		// A legacy string output carries its exit code in the header; current
 		// exec cells (a list of parts) carry one JSON chunk per inner command.
-		const m = legacyExit(rawOutput);
-		const parsed = m ? { results: [], aggregateExits: [] } : execResults(rawOutput);
+		const header = legacyShellHeader(output);
+		const exits = typeof rawOutput === "string" ? header.exits : [];
+		const legacyExit = exits[0];
+		const parsed = legacyExit !== undefined ? { results: [], aggregateExits: [] } : execResults(rawOutput);
 		const { results } = parsed;
 		// JSON a cell prints is only a result aggregate when the cell itself fanned
 		// out tool calls (`Promise.allSettled([tools.exec_command(…), …])`); any
@@ -390,19 +380,23 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
 		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
 		const aggregateExits = fansOut ? parsed.aggregateExits : [];
+		if (shell) {
+			for (const exit of exits) observeExit(step, exit);
+			for (const result of results) observeExit(step, result.exit_code);
+		}
 		if (shell && results.length <= 1) {
 			const incoming = results[0];
-			const exit = m ? Number(m[1]) : incoming?.exit_code;
+			const exit = legacyExit ?? incoming?.exit_code;
 			mergeShellResult(step, {
 				exit_code: exit ?? null,
-				session_id: incoming?.session_id ?? legacySession(output),
+				session_id: incoming?.session_id ?? header.sessionId,
 				test_failures: incoming?.test_failures ?? hasTestFailures(output),
 				test_passes: incoming?.test_passes ?? hasTestPasses(output),
-			}, !m && (step.status !== "error" || !!incoming) ? "chunk" : "output");
+			}, legacyExit === undefined && (step.status !== "error" || !!incoming) ? "chunk" : "output");
 		} else if (results.length) {
 			step.attributes[ATTR.EXEC_RESULTS] = results;
 		}
-		if (!m && /^Script completed\b/.test(output.trimStart()))
+		if (legacyExit === undefined && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
 		if (Array.isArray(rawOutput) && step.attributes[ATTR.TOOL_NAME] === "exec")
 			step.attributes[ATTR.EXEC_PARTS] = execParts(rawOutput);
@@ -413,12 +407,12 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			...aggregateExits,
 		].some((code) => code !== null && code !== 0);
 		// A cell whose script threw (`Script failed … Script error: …`) failed.
-		const scriptFailed = !m && /^Script failed\b/.test(output.trimStart());
-		if ((m && m[1] !== "0") || failedInner || scriptFailed) {
+		const scriptFailed = legacyExit === undefined && /^Script failed\b/.test(output.trimStart());
+		if (exits.some(code => code !== 0) || failedInner || scriptFailed) {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
-		const successfulShellResult = m ? m[1] === "0" : results.length > 0 && results.every((result) => result.exit_code === 0);
+		const successfulShellResult = exits.length ? exits.every(code => code === 0) : results.length > 0 && results.every((result) => result.exit_code === 0);
 		const cellCommit = toolName === "exec" ? execCellCommitOutput(input, rawOutput) : null;
 		const commitOutput =
 			toolName === "exec"
@@ -651,6 +645,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				step.attributes[ATTR.TOOL_ARGS] = { ...args, workdir };
 		}
 		recordCommandEnd(step, ts);
+		if (typeof exit === "number") observeExit(step, exit);
 		mergeShellResult(step, {
 			exit_code: typeof exit === "number" ? exit : null,
 			session_id: null,

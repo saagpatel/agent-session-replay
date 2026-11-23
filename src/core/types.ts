@@ -116,6 +116,8 @@ export const ATTR = {
 	CLAUDE_RESULT_EVENT_UUIDS: "claude.result_event_uuids",
 	/** Process exit recorded by the harness for a direct shell command. */
 	SHELL_EXIT_CODE: "tool.exit_code",
+	/** At least two explicit exits attributed to this command disagree. */
+	SHELL_EXIT_CONFLICT: "tool.exit_conflict",
 	CLAUDE_BACKGROUND_TASK_ID: "claude.background_task_id",
 	CLAUDE_BACKGROUND_OUTPUT_FILE: "claude.background_output_file",
 	/** Whether an Agent result conveys completed output or only a launch receipt. */

@@ -880,6 +880,7 @@ interface Unit {
 	solo?: boolean;
 	result: DiffStatus | "pending";
 	exitCode?: number;
+	exitConflict?: boolean;
 	testFailures: boolean;
 	testPasses: boolean;
 	/** A yielded command waiting on this session's final result. */
@@ -888,7 +889,7 @@ interface Unit {
 	pollOf?: string;
 }
 
-type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId" | "exitCode">;
+type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId" | "exitCode" | "exitConflict">;
 
 
 /** Calls in an exec cell that write one result chunk each. */
@@ -1186,7 +1187,8 @@ function stepResult(step: Step): Pick<Unit, "testFailures" | "testPasses" | "exi
 function yieldedOr(step: Step): UnitResult {
 	const raw = step.attributes[ATTR.EXEC_RESULTS];
 	const only = Array.isArray(raw) && raw.length === 1 ? (raw[0] as ExecResult) : undefined;
-	return only ? chunkResult(only) : stepResult(step);
+	const result = only ? chunkResult(only) : stepResult(step);
+	return step.attributes[ATTR.SHELL_EXIT_CONFLICT] === true ? { ...result, exitConflict: true } : result;
 }
 
 function toolUnits(step: Step, cwd: string | null | undefined, coverage?: NormalizationCoverage): Unit[] {
@@ -1420,17 +1422,29 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 	const cwd = trace.run.workspace?.cwd ?? null;
 	const out: DiffStep[] = [];
 	const seen = new Set<string>();
-	// Yielded commands waiting for a later write_stdin poll to report their exit.
-	const pending = new Map<string, { unit: Unit; steps: DiffStep[]; receipt?: UnitResult }>();
+	// Keep the first terminal poll so a later explicit exit can be checked against it.
+	const sessions = new Map<string, { unit: Unit; steps: DiffStep[]; receipt?: UnitResult; pollExit?: number }>();
 	for (const step of trace.steps) {
 		if (step.subagent_id) continue;
 		const error = str(step.attributes[ATTR.TOOL_ERROR]);
 		for (const unit of stepUnits(step, cwd)) {
 			if (unit.pollOf !== undefined) {
-				const waiting = pending.get(unit.pollOf);
+				const waiting = sessions.get(unit.pollOf);
 				if (!waiting) continue;
 				if (unit.result === "pending" && unit.sessionId !== unit.pollOf) continue;
 				const { unit: orig, steps } = waiting;
+				if (orig.exitConflict) continue;
+				const priorExit = waiting.pollExit ?? waiting.receipt?.exitCode;
+				if (unit.exitConflict || (priorExit !== undefined && unit.exitCode !== undefined && unit.exitCode !== priorExit)) {
+					orig.exitConflict = true;
+					for (const step of steps) {
+						step.status = "unknown";
+						delete step.summary;
+						delete step.error;
+					}
+					continue;
+				}
+				if (waiting.pollExit !== undefined) continue;
 				// Test summaries can arrive in any poll; keep them all.
 				orig.testFailures ||= unit.testFailures;
 				orig.testPasses ||= unit.testPasses;
@@ -1460,7 +1474,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 					if (isFailure(d.status) && error) d.error = clip(error.trim(), ERROR_MAX);
 					else delete d.error;
 				});
-				pending.delete(unit.pollOf);
+				waiting.pollExit = unit.exitCode;
 				continue;
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
@@ -1470,7 +1484,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			const candidate = unit.result === "pending" && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash"
 				? stepResult(step) : undefined;
 			const receipt = typeof candidate?.exitCode === "number" ? candidate : undefined;
-			const evidence = receipt ?? unit;
+			const evidence = unit.exitConflict ? UNKNOWN : receipt ?? unit;
 			const statuses = resolveStatuses(
 				parts,
 				unit.chain,
@@ -1498,7 +1512,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			});
 			out.push(...made);
 			if (unit.result === "pending" && unit.sessionId)
-				pending.set(unit.sessionId, { unit: { ...unit, parts }, steps: made, receipt });
+				sessions.set(unit.sessionId, { unit: { ...unit, parts }, steps: made, receipt });
 		}
 	}
 	return out;

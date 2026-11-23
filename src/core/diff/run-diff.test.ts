@@ -825,6 +825,17 @@ function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; 
 	]);
 }
 
+test("a copied session ID after inline Output cannot steal another command's poll", () => {
+	const trace = plainCalls([
+		{ name: "exec_command", args: { cmd: "npm run build" }, output: "Process running with session ID 42\nOutput:\n" },
+		{ name: "exec_command", args: { cmd: "pytest -q" }, output: "Output: restored log\nProcess running with session ID 42\nOutput:\n" },
+		{ name: "write_stdin", args: { session_id: 42 }, output: "Process exited with code 0\nOutput:\n3 passed in 0.12s" },
+	]);
+	const run = diffRuns(trace, trace).left;
+	assert.equal(run.verdict, "unclear");
+	assert.deepEqual(run.steps.map(s => s.status), ["ok", "unknown"]);
+});
+
 test("a yielded plain-format command is settled by its structured write_stdin poll", () => {
 	const chunk = (value: Record<string, unknown>) => [{ text: JSON.stringify({ chunk_id: "plain", ...value }) }];
 	const run = (final: Record<string, unknown> | null) => plainCalls([
