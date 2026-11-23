@@ -67,6 +67,8 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 	// also omit capped inner stages, whose raw source cannot safely be re-parsed
 	// here; keep this comparison incomplete rather than assume coverage.
 	for (const trace of [leftTrace, rightTrace]) {
+		if (trace.unsupported_records) reasons.add("unsupported-transcript-records");
+		if (trace.incomplete_records) reasons.add("incomplete-transcript-capture");
 		if (trace.steps.some((s) => !s.subagent_id && s.attributes[ATTR.TOOL_NAME] === "exec")) reasons.add("exec-source-coverage-unknown");
 	}
 	const divergences = rows.filter((row) => row.relation !== "same" || row.statusDiffers);

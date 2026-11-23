@@ -13,6 +13,28 @@ export interface JsonlParseResult {
 	malformed: number;
 }
 
+export function decodeJsonl(bytes: Uint8Array): string {
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	try {
+		return decoder.decode(bytes);
+	} catch {
+		// Keep each damaged line unparseable so it counts once in the JSONL report.
+		const lines: string[] = [];
+		let start = 0;
+		while (start < bytes.length) {
+			const newline = bytes.indexOf(10, start);
+			const end = newline < 0 ? bytes.length : newline;
+			try {
+				lines.push(decoder.decode(bytes.subarray(start, end)));
+			} catch {
+				lines.push("[invalid UTF-8]");
+			}
+			start = end + 1;
+		}
+		return lines.join("\n");
+	}
+}
+
 /** Parse JSONL and report how many non-blank lines were unparseable. */
 export function parseJsonlWithStats(text: string): JsonlParseResult {
 	const records: unknown[] = [];
