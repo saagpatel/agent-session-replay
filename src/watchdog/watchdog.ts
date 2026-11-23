@@ -244,6 +244,7 @@ async function tickWithProgress(
 		parseFailures: 0,
 		malformedLines: 0,
 		incompleteRecords: 0,
+		unsupportedRecords: 0,
 		findings: 0,
 		alertsPosted: 0,
 		alertsDeduped: 0,
@@ -259,10 +260,12 @@ async function tickWithProgress(
 	const coverageCounted = new Set<string>();
 	const recordCoverage = (path: string, trace: Trace): boolean => {
 		const captureGap = (trace.malformed_lines ?? 0) > 0 ||
-			(trace.incomplete_records ?? 0) > 0;
+			(trace.incomplete_records ?? 0) > 0 ||
+			(trace.unsupported_records ?? 0) > 0;
 		if (captureGap && !coverageCounted.has(path)) {
 			report.malformedLines += trace.malformed_lines ?? 0;
 			report.incompleteRecords += trace.incomplete_records ?? 0;
+			report.unsupportedRecords += trace.unsupported_records ?? 0;
 			coverageCounted.add(path);
 		}
 		return captureGap;

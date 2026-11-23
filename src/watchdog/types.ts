@@ -93,6 +93,8 @@ export interface TickReport {
 	malformedLines: number;
 	/** Explicit transcript markers reporting incomplete capture. */
 	incompleteRecords: number;
+	/** Records whose format is not understood by the transcript parser. */
+	unsupportedRecords: number;
 	findings: number;
 	alertsPosted: number;
 	alertsDeduped: number;

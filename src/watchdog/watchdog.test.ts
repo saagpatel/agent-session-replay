@@ -819,6 +819,38 @@ test("capture gaps stay visible across unchanged-session ticks", async (t) => {
 	assert.equal(secondTerminal.state, "partial");
 });
 
+function unsupportedCodexTranscript(): string {
+	return `${JSON.stringify({
+		timestamp: ts(),
+		type: "world_state",
+		payload: { fixture: "synthetic" },
+	})}\n`;
+}
+
+test("weekly eviction keeps an alert when unsupported records make capture incomplete", async (t) => {
+	const { config, codexRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCodexSession(codexRoot, unsupportedCodexTranscript());
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path, key);
+	retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	const terminal = reportTerminal(report, config);
+	assert.equal(report.skippedUnchanged, 1);
+	assert.equal(report.retainedPayloads, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+	assert.equal(terminal.state, "partial");
+	assert.equal(terminal.destination_readback.evidence.unsupported_records, 1);
+});
+
 function fullRetention(config: WatchdogConfig, now: number): WatchdogState {
 	const state: WatchdogState = { sessions: {} };
 	let i = 0;
@@ -886,6 +918,38 @@ test("cap eviction keeps a pending alert when a damaged transcript hides its fin
 	assert.ok(!readFileSync(config.localReceiptStore + ".queries", "utf8").includes(
 		eventIdFor(damagedPath, "grind_loop@warning"),
 	));
+});
+
+test("cap eviction keeps a pending alert when unsupported records hide its finding", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const [unsupportedPath] = Object.keys(state.sessions);
+	if (!unsupportedPath) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(claudeRoot, "retained-project"), { recursive: true });
+	writeFileSync(unsupportedPath, `${JSON.stringify({
+		type: "system",
+		subtype: "api_error",
+		sessionId: "synthetic-session",
+		uuid: "synthetic-api-error",
+		timestamp: ts(),
+		error: "synthetic capture error",
+	})}\n`);
+	const key = "grind_loop@warning";
+	// Make one retained payload correspond to the unsupported active session.
+	state.sessions[unsupportedPath]!.processedMtimeMs = statSync(unsupportedPath).mtimeMs;
+	state.sessions[unsupportedPath]!.pending = false;
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), unsupportedPath, key),
+		state.sessions[unsupportedPath]!.pendingPayloads![key]);
+	assert.equal(reportTerminal(report, config).state, "partial");
+	assert.equal(reportTerminal(report, config).destination_readback.evidence.unsupported_records, 1);
+	assert.ok(!readFileSync(config.localReceiptStore + ".queries", "utf8").includes(eventIdFor(unsupportedPath, key)));
 });
 
 test("cap pressure keeps failed status lookups, reports retention, and logs one operator line", async (t) => {
