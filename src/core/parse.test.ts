@@ -29,6 +29,15 @@ test("detectHarness identifies a Codex rollout", () => {
 	assert.equal(detectHarness(codexLine), "codex");
 });
 
+test("a Claude permission-mode record alone identifies the transcript", () => {
+	for (const record of [{ type: "permission-mode", permissionMode: "plan" }, { type: "mode", mode: "plan" }]) {
+		const event = { ...record, uuid: "mode-a", sessionId: "example" };
+		const { harness, trace } = parseTranscript(JSON.stringify(event));
+		assert.equal(harness, "claude-code");
+		assert.equal(trace.steps[0]?.kind, "mode_change");
+	}
+});
+
 test("detectHarness returns unknown for empty or unrecognizable input", () => {
 	assert.equal(detectHarness(""), "unknown");
 	assert.equal(detectHarness('{"foo":"bar"}'), "unknown");

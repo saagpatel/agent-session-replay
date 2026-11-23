@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 
 import type { AfrInput } from "../../core/afr/parse.ts";
 import { decodeJsonl, parseJsonl } from "../../core/jsonl.ts";
+import { type Harness, recordHarness } from "../../core/parse.ts";
 
 const JSONL = /\.jsonl?$/i;
 const AFR_TRACE = "trace.afr.jsonl";
@@ -99,28 +100,29 @@ export async function combine(
 	jsonl.sort((a, b) => b.size - a.size); // largest = the main transcript
 	const texts = await Promise.all(jsonl.map((f) => f.text()));
 	const main = jsonl[0]?.name ?? "session";
-	if (texts.length === 1) return { name: main, text: texts[0]! };
 	const sessionIds = new Set<string>();
+	const harnesses = new Set<Harness>();
 	for (const text of texts) {
 		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
 			const record = parseJsonl(line)[0];
 			if (typeof record !== "object" || record === null) continue;
+			const harness = recordHarness(record);
+			if (harness !== "unknown") harnesses.add(harness);
 			if ("sessionId" in record && typeof record.sessionId === "string") {
-				sessionIds.add(`claude:${record.sessionId}`);
-				break;
+				sessionIds.add(record.sessionId);
+				harnesses.add("claude-code");
 			}
 			if ("type" in record && record.type === "session_meta" && "payload" in record &&
 				typeof record.payload === "object" && record.payload && "id" in record.payload &&
 				typeof record.payload.id === "string") {
-				sessionIds.add(`codex:${record.payload.id}`);
-				break;
+				sessionIds.add(record.payload.id);
 			}
+			if (sessionIds.size > 1 || harnesses.size > 1)
+				throw new Error("These files belong to different sessions. Drop one session at a time.");
 		}
 	}
-	if (sessionIds.size > 1) {
-		throw new Error("These files belong to different sessions. Drop one session at a time.");
-	}
+	if (texts.length === 1) return { name: main, text: texts[0]! };
 	return { name: `${main} +${jsonl.length - 1}`, text: texts.join("\n") };
 }
 

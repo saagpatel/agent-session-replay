@@ -23,17 +23,24 @@ const CODEX_TYPES = new Set([
 /** Claude Code events carry one of these top-level `type`s. */
 const CC_TYPES = new Set(["assistant", "user", "system"]);
 
+export function recordHarness(record: unknown): Harness {
+	if (typeof record !== "object" || record === null || !("type" in record)) return "unknown";
+	const type = record.type;
+	if (typeof type !== "string") return "unknown";
+	if (CODEX_TYPES.has(type) && "payload" in record) return "codex";
+	if (!("sessionId" in record || "uuid" in record)) return "unknown";
+	if (CC_TYPES.has(type)) return "claude-code";
+	if (type === "permission-mode" && "permissionMode" in record && typeof record.permissionMode === "string")
+		return "claude-code";
+	if (type === "mode" && "mode" in record && typeof record.mode === "string") return "claude-code";
+	return "unknown";
+}
+
 /** Sniff the harness from the first identifiable event. */
 export function detectHarness(text: string): Harness {
 	for (const ev of parseJsonl(text)) {
-		if (typeof ev !== "object" || ev === null) continue;
-		const e = ev as Record<string, unknown>;
-		const type = typeof e["type"] === "string" ? (e["type"] as string) : "";
-		// Codex: envelope { timestamp, type, payload } with a known type.
-		if (CODEX_TYPES.has(type) && "payload" in e) return "codex";
-		// Claude Code: an event type plus a session/uuid marker.
-		if (CC_TYPES.has(type) && ("sessionId" in e || "uuid" in e))
-			return "claude-code";
+		const harness = recordHarness(ev);
+		if (harness !== "unknown") return harness;
 	}
 	return "unknown";
 }

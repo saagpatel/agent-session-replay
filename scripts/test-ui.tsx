@@ -111,9 +111,21 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	});
 	assert.match(mixedSessionError, /these files belong to different sessions/i);
 	assert.equal(mixedSessionLoaded, false);
+	const fragment = JSON.stringify({ type: "response_item", payload: { type: "reasoning" } });
+	for (const texts of [
+		[firstSession, firstSession + "\n" + otherSession],
+		[firstSession + "\n" + otherSession],
+		[firstSession, fragment],
+		[firstSession + "\n" + fragment],
+	]) {
+		const files = texts.map((text, i) => dropped("sample-" + i, "sample-" + i + ".jsonl", text));
+		await assert.rejects(combine(files), /different sessions|different harnesses/i);
+	}
 	const rollouts = ["a", "b"].map((id) => dropped(id, id + ".jsonl",
 		JSON.stringify({ type: "session_meta", payload: { id } })));
 	await assert.rejects(combine(rollouts), /these files belong to different sessions/i);
+	const mixedRollout = (await Promise.all(rollouts.map((file) => file.text()))).join("\n");
+	await assert.rejects(combine([dropped("mixed.jsonl", "mixed.jsonl", mixedRollout)]), /different sessions/i);
 	const sidechainTraces: import("../src/core/types.ts").Trace[] = [];
 	const sidechainMain = JSON.stringify({ type: "assistant", sessionId: "session-a", uuid: "a1", timestamp: "2026-06-20T10:00:00.000Z", message: { content: [{ type: "text", text: "Synthetic main session" }] } });
 	const sidechain = JSON.stringify({ type: "assistant", isSidechain: true, agentId: "agent-synthetic", uuid: "sa1", timestamp: "2026-06-20T10:00:01.000Z", message: { content: [{ type: "tool_use", id: "tool-synthetic", name: "Grep", input: { pattern: "synthetic" } }] } });
