@@ -220,18 +220,21 @@ function mergeResult(
 	block: Json,
 	ev: Json,
 	result: Json,
-): void {
+	bashResultSteps: Set<Step>,
+): boolean {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
-	if (!step) return;
+	if (!step) return false;
 	const eventUuid = str(ev["uuid"]);
 	if (eventUuid) {
 		const uuids = (step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] ?? []) as string[];
 		if (!uuids.includes(eventUuid)) uuids.push(eventUuid);
 		step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS] = uuids;
 	}
+	const isBash = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash";
+	if (isBash && bashResultSteps.has(step)) return true;
+	if (isBash) bashResultSteps.add(step);
 	const output = resultText(block["content"]) ?? str(result["stdout"]);
 	const backgroundTaskId = str(result["backgroundTaskId"]);
-	const isBash = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash";
 	if (backgroundTaskId && isBash) {
 		const receipt = output?.trim().match(/^Command running in background with ID: (\S+)\. Output is being written to: (\/[^\r\n]+)$/);
 		const path = str(result["outputFile"]) ?? (receipt?.[1] === backgroundTaskId ? receipt[2] : undefined);
@@ -241,7 +244,7 @@ function mergeResult(
 			(typeof result["exitCode"] === "number" && result["exitCode"] !== 0);
 		if (!terminalFailure) {
 			delete step.status;
-			return;
+			return false;
 		}
 		if (output) step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
 	}
@@ -299,6 +302,7 @@ function mergeResult(
 		if (typeof result["totalDurationMs"] === "number")
 			step.attributes[ATTR.AGENT_DURATION_MS] = result["totalDurationMs"];
 	}
+	return false;
 }
 
 function systemStep(
@@ -493,6 +497,13 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 			const invocation = messageId && messageSteps.get(messageId);
 			if (invocation) {
 				messageAliases.set(fragment.step_id, invocation.step_id);
+				const time = Date.parse(fragment.ended_at ?? "");
+				if (fragment.ended_at && Number.isFinite(time)) {
+					const end = Date.parse(invocation.ended_at ?? "");
+					if (!Number.isFinite(end) || time < Date.parse(invocation.started_at))
+						invocation.started_at = fragment.ended_at;
+					if (!Number.isFinite(end) || time > end) invocation.ended_at = fragment.ended_at;
+				}
 				for (const [key, value] of Object.entries(fragment.attributes)) {
 					const prior = invocation.attributes[key];
 					if (key === ATTR.FINISH_REASONS || prior === undefined)
@@ -535,6 +546,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 	);
 	const stepIds = new Set(steps.map((step) => step.step_id));
 	const omittedEventKinds = new Map<string, "user" | "system" | "summary" | "unmatched-tool-result">();
+	const bashResultSteps = new Set<Step>();
 	// Resolve results only after every tool call is indexed, regardless of input
 	// order. Result events are causal evidence, never ordinary user context.
 	for (const event of events) {
@@ -550,7 +562,8 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 				malformedResultLine = true;
 				continue;
 			}
-			mergeResult(toolSteps, block, event, eventResult);
+			if (mergeResult(toolSteps, block, event, eventResult, bashResultSteps))
+				malformedResultLine = true;
 		}
 		if (malformedResultLine) malformedResultLines += 1;
 		if (!id || stepIds.has(id)) continue;

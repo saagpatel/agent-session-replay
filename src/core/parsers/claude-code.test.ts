@@ -190,12 +190,36 @@ test("assistant message fragments count usage once and keep each tool call", () 
 	assert.equal(llm.attributes[ATTR.CACHE_READ_TOKENS], 9);
 	assert.equal(llm.attributes[ATTR.REASONING], true);
 	assert.deepEqual(llm.attributes[ATTR.FINISH_REASONS], ["tool_use"]);
+	assert.equal(llm.started_at, TS1);
+	assert.equal(llm.ended_at, TS2);
 	assert.deepEqual(
 		trace.steps.filter((step) => step.kind === "tool_call").map((step) => step.step_id),
 		["tool-1", "tool-2"],
 	);
 	assert.equal(find(trace.steps, (step) => step.step_id === "child").parent_step_id, "fragment-1");
 	assert.ok(!trace.external_parent_ids?.includes("fragment-2"));
+});
+
+test("a fragment without a timestamp does not inherit an intervening event time", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "fragment-first", timestamp: TS1, message: { id: "timestamped-message", content: "First fragment." } },
+		{ type: "user", uuid: "intervening-event", timestamp: TS2, message: { content: "Other activity." } },
+		{ type: "assistant", uuid: "fragment-untimed", message: { id: "timestamped-message", content: "Last fragment." } },
+	]);
+	const llm = find(trace.steps, (step) => step.kind === "llm");
+	assert.equal(llm.started_at, TS1);
+	assert.equal(llm.ended_at, TS1);
+});
+
+test("a real fragment timestamp is retained when it equals an inferred start", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "system", uuid: "timed-context", timestamp: TS1, subtype: "other" },
+		{ type: "assistant", uuid: "fragment-inferred", message: { id: "inferred-message", content: "First fragment." } },
+		{ type: "assistant", uuid: "fragment-actual", timestamp: TS1, message: { id: "inferred-message", content: "Second fragment." } },
+	]);
+	const llm = find(trace.steps, (step) => step.kind === "llm");
+	assert.equal(llm.started_at, TS1);
+	assert.equal(llm.ended_at, TS1);
 });
 
 test("usage counters on coalesced message fragments keep the greatest cumulative value", () => {
@@ -341,6 +365,31 @@ test("wrong-typed duplicate tool result is malformed and does not replace valid 
 	const step = find(trace.steps, (item) => item.step_id === "bash-test");
 	assert.equal(step.status, "ok");
 	assert.equal(step.attributes[ATTR.TEST_FAILURES], undefined);
+});
+
+test("a later Claude result does not replace the first result for a tool use", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
+		{ type: "user", uuid: "first-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 failed in 0.12s" }] }, toolUseResult: { exitCode: 7 } },
+		{ type: "user", uuid: "duplicate-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 passed in 0.12s" }] }, toolUseResult: { exitCode: 0 } },
+	]);
+	const step = find(trace.steps, (item) => item.step_id === "bash-test");
+	assert.equal(step.status, "error");
+	assert.equal(step.attributes[ATTR.SHELL_EXIT_CODE], 7);
+	assert.deepEqual(step.attributes[ATTR.CLAUDE_RESULT_EVENT_UUIDS], ["first-result", "duplicate-result"]);
+	assert.equal(trace.malformed_lines, 1);
+});
+
+test("the first Bash result remains authoritative when duplicate exits are reversed", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
+		{ type: "user", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 passed in 0.12s" }] }, toolUseResult: { exitCode: 0 } },
+		{ type: "user", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "1 failed in 0.12s" }] }, toolUseResult: { exitCode: 7 } },
+	]);
+	const step = find(trace.steps, (item) => item.step_id === "bash-test");
+	assert.equal(step.status, "ok");
+	assert.equal(step.attributes[ATTR.SHELL_EXIT_CODE], 0);
+	assert.equal(trace.malformed_lines, 1);
 });
 
 test("multiple malformed tool results on one line count once", () => {
