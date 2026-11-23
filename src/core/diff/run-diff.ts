@@ -28,9 +28,14 @@ export function runVerdict(
 	trace: Trace,
 	steps: DiffStep[],
 ): { verdict: RunVerdict; reason: string } {
+	let skippedTest: DiffStep | undefined;
 	for (let i = steps.length - 1; i >= 0; i--) {
 		const s = steps[i] as DiffStep;
 		if (s.action !== "test") continue;
+		if (s.executed === false) {
+			skippedTest ??= s;
+			continue;
+		}
 		const name = `\`${clipForDisplay(s.target ?? "tests")}\``;
 		if (isFailure(s.status))
 			return {
@@ -43,7 +48,11 @@ export function runVerdict(
 			return { verdict: "unclear", reason: `last test run ${name} exited cleanly but printed no passing summary` };
 		if (s.summary === "pass")
 			return { verdict: "unclear", reason: `last test run ${name} reported passing tests but its exit status is unknown` };
-		return { verdict: "unclear", reason: `last test run ${name} has no clear result` };
+		return { verdict: "unclear", reason: `test invocation ${name} has no clear result` };
+	}
+	if (skippedTest) {
+		const name = `\`${clipForDisplay(skippedTest.target ?? "tests")}\``;
+		return { verdict: "unclear", reason: `test invocation ${name} was not evidenced as executed` };
 	}
 	if (trace.run.outcome?.status === "completed")
 		return { verdict: "completed", reason: "the agent reported the task complete" };

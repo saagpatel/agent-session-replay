@@ -15,6 +15,8 @@ const FAIL_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail [1-9]/m, // node --test
 	/^# fail [1-9]/m, // node --test (TAP)
 	/^=+ .*\b[1-9]\d* (?:failed|errors?)\b.*=+[ \t]*$/m, // pytest
+	/^[ \t]*[1-9]\d* failed(?:, \d+ passed)? in \d+(?:\.\d+)?s[ \t]*$/m, // pytest -q
+	/^Ran \d+ tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?FAILED \((?:failures|errors)=[1-9]\d*(?:, errors=\d+)?\)[ \t]*$/m, // unittest
 	/^[ \t]*Tests?[ \t]+.*\b[1-9]\d* failed\b/m, // vitest
 	/^Tests:[ \t]+[1-9]\d* failed/m, // jest
 	/^[ \t]*[1-9]\d* failing[ \t]*$/m, // mocha
@@ -28,6 +30,8 @@ const PASS_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail 0[ \t]*$/m, // node --test
 	/^# fail 0[ \t]*$/m, // node --test (TAP)
 	/^=+ .*\b\d+ passed\b.*=+[ \t]*$/m, // pytest
+	/^[ \t]*[1-9]\d* passed in \d+(?:\.\d+)?s[ \t]*$/m, // pytest -q
+	/^Ran [1-9]\d* tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?OK[ \t]*$/m, // unittest
 	/^[ \t]*Tests?[ \t]+\d+ passed\b/m, // vitest
 	/^Tests:[ \t]+\d+ passed, \d+ total/m, // jest
 	/^[ \t]*\d+ passing\b/m, // mocha

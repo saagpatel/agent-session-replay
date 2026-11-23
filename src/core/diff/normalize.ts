@@ -339,6 +339,10 @@ interface Classified {
 	unlocated?: boolean;
 	/** False for a shell stage before the last one (dropped stages included). */
 	last?: boolean;
+	/** False only when shell syntax proves this invocation was skipped. */
+	executed?: boolean;
+	/** A downstream stage can synthesize output instead of passing runner output through. */
+	summarySource?: boolean;
 }
 
 /** Classify one pipeline (`a | b`); a pipeline is judged by its first command. */
@@ -360,6 +364,11 @@ function classifyStage(stage: string, where: Where, coverage?: NormalizationCove
 	return base;
 }
 
+function passesRunnerOutput(command: string): boolean {
+	// Only stdin filters with literal line counts preserve the source of a summary.
+	return /^(?:cat|(?:head|tail)(?:[ \t]+(?:-\d+|(?:-n|--lines)[ \t]+\d+))?)$/.test(command.trim());
+}
+
 /** Classify a stage by the first command of its pipeline. */
 function classifyFirst(stage: string, where: Where, coverage?: NormalizationCoverage): Classified[] {
 	const cmds = pipeline(stage);
@@ -372,7 +381,13 @@ function classifyFirst(stage: string, where: Where, coverage?: NormalizationCove
 		// `pnpm run test` and `pnpm test` are one suite; `test:unit` is another.
 		const target = test[0].replace(/\s+run\s+/, " ").replace(/\s+/g, " ");
 		const piped = cmds.length > 1;
-		return [piped ? { action: "test", target, piped } : { action: "test", target }];
+		const summarySource = !piped || cmds.slice(1).every(passesRunnerOutput);
+		return [{
+			action: "test",
+			target,
+			...(piped ? { piped: true } : {}),
+			...(summarySource ? {} : { summarySource: false }),
+		}];
 	}
 	const head = (ws[0] ?? "").replace(/^.*\//, "");
 	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
@@ -546,8 +561,13 @@ function commandParts(
 	const stages = raw.map((x) => (/^(?:for|case|select)\s/.test(x) ? "" : x.replace(CONTROL_RE, "").trim()));
 	const parts: Classified[] = [];
 	let printing = 0;
+	let shortCircuited = false;
 	stages.forEach((stage, i) => {
 		const last = i === stages.length - 1;
+		const previous = stages[i - 1];
+		// In an AND list a failing literal false skips the remaining operands.
+		shortCircuited = !control && seps[i - 1] === "&&" &&
+			(shortCircuited || (previous === "false" && seps[i - 2] !== "||"));
 		// A `cd` moves where the following stages run; it stays a stage, so a
 		// failing `cd dir && npm test` never runs (or fails) the test.
 		const w = words(stage);
@@ -559,7 +579,10 @@ function commandParts(
 			where.dir = to;
 		}
 		else if (stage) printing++;
-		for (const c of classifyStage(stage, where, coverage)) parts.push(last ? c : { ...c, last });
+		for (const c of classifyStage(stage, where, coverage)) {
+			if (shortCircuited && c.action === "test") c.executed = false;
+			parts.push(last ? c : { ...c, last });
+		}
 	});
 	if (coverage && parts.some((c, i) => i >= MAX_STAGES && c.action !== "test" && c.last === false))
 		coverage.truncated = true;
@@ -828,6 +851,7 @@ interface Unit {
 	/** See `CommandParts.solo`: only then can a test summary speak for the test. */
 	solo?: boolean;
 	result: DiffStatus | "pending";
+	exitCode?: number;
 	testFailures: boolean;
 	testPasses: boolean;
 	/** A yielded command waiting on this session's final result. */
@@ -836,7 +860,7 @@ interface Unit {
 	pollOf?: string;
 }
 
-type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId">;
+type UnitResult = Pick<Unit, "result" | "testFailures" | "testPasses" | "sessionId" | "exitCode">;
 
 
 /** Calls in an exec cell that write one result chunk each. */
@@ -847,7 +871,7 @@ const UNKNOWN: UnitResult = { result: "unknown", testFailures: false, testPasses
 function chunkResult(r: ExecResult | undefined): UnitResult {
 	if (!r) return UNKNOWN;
 	const evidence = { testFailures: r.test_failures, testPasses: r.test_passes };
-	if (r.exit_code !== null) return { result: r.exit_code === 0 ? "ok" : "error", ...evidence };
+	if (r.exit_code !== null) return { result: r.exit_code === 0 ? "ok" : "error", exitCode: r.exit_code, ...evidence };
 	if (r.session_id) return { result: "pending", ...evidence, sessionId: r.session_id };
 	return { result: "unknown", ...evidence };
 }
@@ -926,6 +950,23 @@ function straightLine(masked: string, calls: RegExpMatchArray[]): boolean {
 		else if (ch === "}") depth--;
 	}
 	return k === calls.length;
+}
+
+function inLiteralFalseBranch(masked: string, callIndex: number): boolean {
+	if (/\bif\s*\(\s*false\s*\)\s*(?:text\s*\(\s*)?(?:await\s+)?$/.test(masked.slice(0, callIndex))) return true;
+	for (const match of masked.matchAll(/\bif\s*\(\s*false\s*\)\s*\{/g)) {
+		const open = (match.index ?? 0) + match[0].lastIndexOf("{");
+		let depth = 1;
+		for (let i = open + 1; i < masked.length; i++) {
+			if (masked[i] === "{") depth++;
+			if (masked[i] === "}") depth--;
+			if (depth === 0) {
+				if (callIndex > open && callIndex < i) return true;
+				break;
+			}
+		}
+	}
+	return false;
 }
 
 /** Decode literal data for export checks without evaluating any cell source. */
@@ -1063,6 +1104,9 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 				? { ...commandParts(cmd.value, cwd, workdir, coverage), ...res }
 				: // A command we cannot read statically still happened: keep it, unresolved.
 					{ parts: [{ action: "run" as const, target: null, note: "unparsed command" }], chain: "single" as const, ...res };
+			if (!linear && inLiteralFalseBranch(masked, call.index ?? -1))
+				for (const part of unit.parts)
+					if (part.action === "test") part.executed = false;
 			out.push(unit);
 		} else if (tool === "write_stdin") {
 			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
@@ -1089,13 +1133,16 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 	return out;
 }
 
-function stepResult(step: Step): { result: DiffStatus; testFailures: boolean; testPasses: boolean } {
+function stepResult(step: Step): Pick<Unit, "testFailures" | "testPasses" | "exitCode"> & { result: DiffStatus } {
 	// Parsers start a call as ok and settle it when its result arrives; a call
 	// whose result never arrived (a run cut off mid-command) proves nothing.
 	const awaited = step.kind === "tool_call" || step.kind === "agent";
 	const settled = Boolean(step.ended_at) || (step.status ?? "ok") !== "ok";
+	const status = step.status ?? (step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" ? "unknown" : "ok");
+	const exit = step.attributes[ATTR.SHELL_EXIT_CODE];
 	return {
-		result: awaited && !settled ? "unknown" : (step.status ?? "ok"),
+		result: awaited && !settled ? "unknown" : status,
+		exitCode: typeof exit === "number" ? exit : undefined,
 		testFailures: step.attributes[ATTR.TEST_FAILURES] === true,
 		testPasses: step.attributes[ATTR.TEST_PASSES] === true,
 	};
@@ -1214,6 +1261,7 @@ function make(
 		startedAt: step.started_at,
 		signature: `${c.action}:${target ?? ""}`,
 	};
+	if (c.executed !== undefined) out.executed = c.executed;
 	if (c.note) out.note = c.note;
 	if (isFailure(status) && error) out.error = clip(error.trim(), ERROR_MAX);
 	return out;
@@ -1235,6 +1283,7 @@ export function resolveStatuses(
 	result: DiffStatus | "pending",
 	testFailures: boolean,
 	solo = false,
+	hasCleanExit = true,
 ): DiffStatus[] {
 	const n = parts.length;
 	const known = result === "ok" || result === "error" || result === "interrupted";
@@ -1251,7 +1300,8 @@ export function resolveStatuses(
 		return c.last !== false && (result === "ok" || i === n - 1);
 	};
 	const out: DiffStatus[] = parts.map((c, i) => {
-		if (c.unlocated) return "unknown";
+		if (c.unlocated || c.executed === false) return "unknown";
+		if (c.action === "test" && result === "ok" && !hasCleanExit) return "unknown";
 		if (owns(i)) return result as DiffStatus;
 		// No other part is vouched for: a `;` chain keeps going after a failed
 		// stage (`cat missing.ts; true`, `echo x > missing/f; true`).
@@ -1259,7 +1309,11 @@ export function resolveStatuses(
 	});
 	// A failing summary speaks for the test only when nothing else could have
 	// printed it (`cat old.log; npm test` could).
-	if (solo && testFailures) out[0] = failedResult ? (result as DiffStatus) : "error";
+	if (
+		solo && testFailures && parts[0]?.executed !== false && parts[0]?.summarySource !== false &&
+		(failedResult || (hasCleanExit && result === "ok") || parts[0]?.piped === true)
+	)
+		out[0] = failedResult ? (result as DiffStatus) : "error";
 	return out;
 }
 
@@ -1275,7 +1329,7 @@ function summaries(
 	solo = false,
 ): Array<DiffStep["summary"]> {
 	const sum = testFailures ? "fail" : testPasses ? "pass" : undefined;
-	return parts.map(() => (solo ? sum : undefined));
+	return parts.map((part) => (solo && part.summarySource !== false ? sum : undefined));
 }
 
 function stepUnits(step: Step, cwd: string | null | undefined, coverage?: NormalizationCoverage): Unit[] {
@@ -1346,7 +1400,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 				waiting.unit.testPasses ||= unit.testPasses;
 				if (unit.result === "pending") continue;
 				const { unit: orig, steps } = waiting;
-				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures, orig.solo);
+				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures, orig.solo, unit.exitCode === 0);
 				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses, orig.solo);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
@@ -1359,7 +1413,7 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
-			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures, unit.solo);
+			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures, unit.solo, unit.exitCode === 0);
 			const sums = summaries(parts, unit.testFailures, unit.testPasses, unit.solo);
 			const made = parts.map((c, i) =>
 				make(

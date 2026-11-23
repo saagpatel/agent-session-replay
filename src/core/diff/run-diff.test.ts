@@ -1212,6 +1212,108 @@ test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
 	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
 });
 
+test("runner summaries are recognized in piped pytest and unittest output", () => {
+	assert.equal(hasTestPasses("3 passed in 0.12s"), true);
+	assert.equal(hasTestFailures("1 failed, 2 passed in 0.31s"), true);
+	assert.equal(hasTestPasses("Ran 4 tests in 0.010s\n\nOK"), true);
+	assert.equal(hasTestFailures("Ran 4 tests in 0.010s\n\nFAILED (failures=1)"), true);
+	assert.equal(hasTestFailures("FAILED (failures=1)"), false);
+	assert.equal(hasTestPasses("Ran 0 tests in 0.010s\nOK"), false);
+	assert.equal(hasTestPasses("0 passed in 0.12s"), false);
+
+	const verdict = (command: string, output: string) => {
+		const trace = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command, output }]));
+		return diffRuns(trace, trace).left;
+	};
+	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").verdict, "unclear");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 failed, 2 passed in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").steps[0]?.summary, "pass");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nOK").verdict, "unclear");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1)").verdict, "failed");
+	const downstream = verdict("pytest -q | printf 'not ok 1\\n'", "not ok 1");
+	assert.equal(downstream.verdict, "unclear");
+	for (const command of [
+		"pytest -q | echo '3 passed in 0.12s'",
+		"pytest -q | cat old-results.log",
+		"pytest -q | tail -n 5 old-results.log",
+	]) {
+		assert.equal(verdict(command, "3 passed in 0.12s").steps[0]?.summary, undefined, command);
+	}
+});
+
+test("a passing runner summary cannot replace missing exit evidence", () => {
+	const trace = plainCalls([
+		{ name: "exec_command", args: { cmd: "pytest -q" }, output: "Output:\n3 passed in 0.12s" },
+	]);
+	assert.equal(normalizeTrace(trace)[0]?.summary, "pass");
+	assert.equal(normalizeTrace(trace)[0]?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("Claude verdicts require an evidenced test exit", () => {
+	const pass = "3 passed in 0.12s";
+	for (const [exit, output, verdict] of [
+		[0, pass, "passed"], [7, pass, "failed"], [undefined, pass, "unclear"],
+		[undefined, "1 failed, 2 passed in 0.31s", "unclear"],
+	] as const) {
+		const events = ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q", output }]);
+		const result = events.find((event) => event["uuid"] === "r0")!;
+		if (exit === undefined) {
+			delete result["toolUseResult"];
+			const message = result["message"] as { content: Record<string, unknown>[] };
+			delete message.content[0]!["is_error"];
+		} else result["toolUseResult"] = { exitCode: exit };
+		const trace = parseClaudeCodeEvents(events);
+		assert.equal(diffRuns(trace, trace).left.verdict, verdict);
+	}
+});
+
+test("a background test keeps its summary without borrowing an exit status", () => {
+	const traceFor = (path: string) => {
+		const events = ccEvents(PROMPT, [
+			{ name: "Bash", command: "python -m unittest tests.test_dates" },
+			{ name: "Bash", command: `tail -n 5 ${path}`, output: "Ran 4 tests in 0.010s\n\nOK" },
+		]);
+		const launchResult = events.find((event) => event["uuid"] === "r0")!;
+		launchResult["toolUseResult"] = { backgroundTaskId: "job-a", outputFile: "/tmp/example/job-a.output" };
+		return parseClaudeCodeEvents(events);
+	};
+	const matching = traceFor("/tmp/example/job-a.output");
+	const test = normalizeTrace(matching).find((step) => step.action === "test");
+	assert.equal(test?.summary, "pass");
+	assert.equal(test?.status, "unknown");
+	assert.equal(diffRuns(matching, matching).left.verdict, "unclear");
+	const different = traceFor("/tmp/example/other.output");
+	assert.equal(normalizeTrace(different).find((step) => step.action === "test")?.summary, undefined);
+});
+
+test("definitely skipped test commands do not replace the last evidenced test", () => {
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [
+			{ name: "Bash", command: "pytest -q", output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" },
+			{ name: "Bash", command: "false && pytest -q" },
+		]),
+	);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "passed");
+	assert.match(result.verdictReason, /pytest/);
+	assert.doesNotMatch(result.verdictReason, /false &&/);
+	const prior = plainCalls([{ name: "exec_command", args: { cmd: "pnpm test" }, output: "Process exited with code 0\nOutput:\nℹ fail 0" }]);
+	for (const input of [
+		'if (false) { text(await tools.exec_command({cmd:"pytest -q"})); }',
+		'if (false) await tools.exec_command({cmd:"pytest -q"});',
+	]) {
+		const dead = rawCell(input, parts("Script completed\nOutput:\n"));
+		const combined = { ...prior, steps: [...prior.steps, ...dead.steps] };
+		const verdict = diffRuns(combined, combined).left;
+		assert.equal(verdict.verdict, "passed");
+		assert.match(verdict.verdictReason, /pnpm test/);
+	}
+	const stages = classifyCommand("pytest; false && pytest", null).filter((part) => part.action === "test");
+	assert.deepEqual(stages.map((part) => part.executed), [undefined, false]);
+	assert.notEqual(classifyCommand("true || false && pytest", null).at(-1)?.executed, false);
+});
+
 test("a file in an unknown directory is never named or vouched for", () => {
 	const root = WORKSPACE_CODEX;
 	const cellAt = (args: string) =>
