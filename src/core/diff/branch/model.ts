@@ -357,6 +357,8 @@ export function buildBranchGraph(
 		]))
 			invalidate(path);
 	};
+	const hasCaptureGap = (trace.incomplete_records ?? 0) > 0 || (trace.malformed_lines ?? 0) > 0;
+	if (hasCaptureGap) invalidateTree();
 	const effectFor = (op: Operation, file: string): Effect => {
 		const effect: Effect = {
 			node: ref(op.node),
@@ -795,7 +797,7 @@ export function buildBranchGraph(
 			forkAfterStepId: null,
 			rejoinAtStepId: null,
 			nodes: [],
-			structuralStatus: "retained",
+			structuralStatus: hasCaptureGap ? "unknown" : "retained",
 			reasons: ["Run end-state lineage; artifact claim not checked.", ...unparsedReasons],
 		},
 	];

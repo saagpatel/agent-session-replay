@@ -437,6 +437,18 @@ test("unparsed writers cannot imply that unnamed files remain absent", () => {
 	assert.equal(buildBranchGraph(trace(), {}).endStateComplete, true);
 });
 
+test("capture gaps make end-state lineage unknown while preserving observed edits", () => {
+	for (const diagnostic of [{ incomplete_records: 1 }, { malformed_lines: 1 }]) {
+		const input = { ...trace(edit("observed", "base", "idea")), ...diagnostic };
+		const graph = buildBranchGraph(input, base);
+		assert.equal(graph.nodes[0]?.stepId, "observed");
+		assert.equal(graph.endStateComplete, false);
+		assert.equal(graph.endState["src/a.ts"], null);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown");
+		assert.equal(graph.branches[0]?.structuralStatus, "unknown");
+	}
+});
+
 test("a failed edit is not evidence of a superseded insertion", () => {
 	const failed = edit("failed", "base", "idea");
 	failed.status = "error";
