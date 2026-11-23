@@ -23,7 +23,7 @@
 
 import { literalExecCalls } from "../diff/normalize.ts";
 import { commandWorkdir } from "../diff/branch/path.ts";
-import { commitHeader, isCommitCommand } from "../shell-evidence.ts";
+import { argvShellScript, commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
 import {
@@ -69,7 +69,15 @@ const RESULT_KIND: Record<string, string> = {
  * that prints an old log containing the phrase is never misread.
  */
 const EXIT_RE = /^Process exited with code (\d+)\s*$/m;
+const SESSION_RE = /^Process running with session ID ([\w-]+)\s*$/m;
 const HEADER_MAX = 400;
+function legacySession(output: string): string | null {
+	const framed = output.slice(0, HEADER_MAX);
+	const boundary = /^(?:Final output|Output):[ \t]*\r?$/m.exec(framed);
+	if (!boundary) return null;
+	const header = framed.slice(0, boundary.index);
+	return SESSION_RE.exec(header)?.[1] ?? null;
+}
 function legacyExit(raw: unknown): RegExpExecArray | null {
 	if (typeof raw !== "string") return null;
 	const header = raw.slice(0, HEADER_MAX).split(/^(?:Final output|Output):/m, 1)[0] ?? "";
@@ -210,6 +218,8 @@ function receiptMatchesCall(step: Step, receiptCommand: unknown): boolean {
 	const argv = Array.isArray(command) ? command : receiptCommand;
 	const text = typeof command === "string" ? command : receiptCommand;
 	if (!Array.isArray(argv) || typeof text !== "string") return false;
+	const shellScript = argv.length === 3 ? argvShellScript(argv) : undefined;
+	if (shellScript !== undefined) return shellScript === text;
 	// Only plain words can be compared across representations without interpreting shell syntax.
 	if (!/^[ \t]*[\w./:@%+-]+(?:[ \t]+[\w./:@%+-]+)*[ \t]*$/.test(text)) return false;
 	const words = text.trim().split(/[ \t]+/);
@@ -385,7 +395,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			const exit = m ? Number(m[1]) : incoming?.exit_code;
 			mergeShellResult(step, {
 				exit_code: exit ?? null,
-				session_id: incoming?.session_id ?? null,
+				session_id: incoming?.session_id ?? legacySession(output),
 				test_failures: incoming?.test_failures ?? hasTestFailures(output),
 				test_passes: incoming?.test_passes ?? hasTestPasses(output),
 			}, !m && (step.status !== "error" || !!incoming) ? "chunk" : "output");
