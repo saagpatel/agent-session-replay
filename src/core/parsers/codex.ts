@@ -158,6 +158,35 @@ function execResults(v: unknown): { results: ExecResult[]; aggregateExits: numbe
 	return { results, aggregateExits };
 }
 
+/** Combine observations of one shell process. A nonzero exit survives later
+ * success, and an exitless receipt cannot disconnect a pending poll. */
+function mergeShellResult(step: Step, incoming: ExecResult, storeChunk: boolean): void {
+	const attrs = step.attributes;
+	const results = attrs[ATTR.EXEC_RESULTS] as ExecResult[] | undefined;
+	const prior = results?.length === 1 ? results[0] : undefined;
+	const priorExit = attrs[ATTR.SHELL_EXIT_CODE] ?? prior?.exit_code;
+	const exit = typeof priorExit === "number" && priorExit !== 0 ? priorExit :
+		incoming.exit_code ?? (typeof priorExit === "number" ? priorExit : null);
+	const failed = incoming.test_failures || prior?.test_failures === true || attrs[ATTR.TEST_FAILURES] === true;
+	const passed = !failed && (incoming.test_passes || prior?.test_passes === true || attrs[ATTR.TEST_PASSES] === true);
+	if (storeChunk || prior) {
+		attrs[ATTR.EXEC_RESULTS] = [{
+			exit_code: exit,
+			session_id: exit === null ? incoming.session_id ?? prior?.session_id ?? null : null,
+			test_failures: failed,
+			test_passes: passed,
+		}];
+	}
+	if (failed) {
+		attrs[ATTR.TEST_FAILURES] = true;
+		delete attrs[ATTR.TEST_PASSES];
+	} else if (passed) attrs[ATTR.TEST_PASSES] = true;
+	if (exit !== null) {
+		attrs[ATTR.SHELL_EXIT_CODE] = exit;
+		if (step.status !== "error") step.status = exit === 0 ? "ok" : "error";
+	} else if (step.status !== "error") delete step.status;
+}
+
 /** The header an exec cell's output starts with. */
 const CELL_HEADER_RE = /^Script (?:completed|failed)\b/;
 const ERROR_TEXT_RE = /\b(?:error|failed|rejected|invalid)\b/i;
@@ -319,22 +348,25 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
 		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
 		const aggregateExits = fansOut ? parsed.aggregateExits : [];
-		if (results.length) step.attributes[ATTR.EXEC_RESULTS] = results;
-		// A plain-format command still running reports a session to poll instead
-		// of an exit code; record it like a yielded exec-cell chunk.
+		const toolName = str(step.attributes[ATTR.TOOL_NAME]);
+		const shell = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" || toolName === "write_stdin";
 		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
-		const shell = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" || step.attributes[ATTR.TOOL_NAME] === "write_stdin";
-		if (shell && m) step.attributes[ATTR.SHELL_EXIT_CODE] = Number(m[1]);
-		if (running || (shell && !results.length && !m && step.status !== "error")) {
+		if (shell && results.length <= 1) {
+			const incoming = results[0];
+			const exit = m ? Number(m[1]) : incoming?.exit_code;
+			mergeShellResult(step, {
+				exit_code: exit ?? null,
+				session_id: running?.[1] ?? incoming?.session_id ?? null,
+				test_failures: incoming?.test_failures ?? hasTestFailures(output),
+				test_passes: incoming?.test_passes ?? hasTestPasses(output),
+			}, !m && (step.status !== "error" || !!incoming || !!running));
+		} else if (results.length) {
+			step.attributes[ATTR.EXEC_RESULTS] = results;
+		} else if (running) {
 			step.attributes[ATTR.EXEC_RESULTS] = [{
-				exit_code: null,
-				session_id: running?.[1] ?? null,
-				test_failures: hasTestFailures(output),
-				test_passes: hasTestPasses(output),
+				exit_code: null, session_id: running[1]!,
+				test_failures: hasTestFailures(output), test_passes: hasTestPasses(output),
 			}];
-		}
-		if (shell && !m && step.status !== "error" && !results.some((r) => r.exit_code !== null)) {
-			delete step.status;
 		}
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
@@ -352,10 +384,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			step.status = "error";
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output.trim(), ERROR_MAX);
 		}
-		const successfulShellResult = m
-			? m[1] === "0"
-			: results.length > 0 && results.every((result) => result.exit_code === 0);
-		const toolName = str(step.attributes[ATTR.TOOL_NAME]);
+		const successfulShellResult = m ? m[1] === "0" : results.length > 0 && results.every((result) => result.exit_code === 0);
 		const cellCommit = toolName === "exec" ? execCellCommitOutput(input, rawOutput) : null;
 		const commitOutput =
 			toolName === "exec"
@@ -370,8 +399,10 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				if (cellCommit) step.attributes[ATTR.GIT_COMMIT_CALL] = cellCommit.call;
 			}
 		}
-		if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
-		else if (hasTestPasses(output)) step.attributes[ATTR.TEST_PASSES] = true;
+		if (!shell || results.length > 1) {
+			if (hasTestFailures(output)) step.attributes[ATTR.TEST_FAILURES] = true;
+			else if (hasTestPasses(output)) step.attributes[ATTR.TEST_PASSES] = true;
+		}
 	};
 
 	events.forEach((ev, idx) => {
@@ -466,11 +497,12 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				}
 			} else if (ptype === "reasoning") {
 				pendingReasoning = true;
-			} else if (ptype === "function_call") {
-				const callId = str(p["call_id"]) ?? `call${idx}`;
-				const name = str(p["name"]) ?? "";
-				const args = parseArgs(p["arguments"]);
+			} else if (ptype === "function_call" || ptype === "local_shell_call") {
+				const localShell = ptype === "local_shell_call";
 				const itemId = str(p["id"]);
+				const callId = str(p["call_id"]) ?? (localShell ? itemId : undefined) ?? `call${idx}`;
+				const name = localShell ? ptype : str(p["name"]) ?? "";
+				const args = localShell ? asObj(p["action"]) : parseArgs(p["arguments"]);
 				const existing = toolSteps.get(callId) ?? (itemId ? toolSteps.get(itemId) : undefined);
 				const step = existing ?? toolStep(name, callId, args, ts, idx);
 				if (existing) {
@@ -481,26 +513,11 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 					step.attributes[ATTR.TOOL_ARGS] = args;
 					step.attributes[ATTR.TOOL_RESULT_KIND] = RESULT_KIND[name] ?? "other";
 				} else steps.push(step);
+				if (localShell && p["status"] === "incomplete") step.status = "error";
 				toolSteps.set(callId, step);
 				if (itemId) toolSteps.set(itemId, step);
 			} else if (ptype === "function_call_output") {
 				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
-			} else if (ptype === "local_shell_call") {
-				// Current Codex rollouts use a nested action and persist the output
-				// with the item's `id` (the call_id is optional in older records).
-				const itemId = str(p["id"]);
-				const callId = str(p["call_id"]) ?? itemId ?? `call${idx}`;
-				const step = toolStep(
-					"local_shell_call",
-					callId,
-					asObj(p["action"]),
-					ts,
-					idx,
-				);
-				if (p["status"] === "incomplete") step.status = "error";
-				steps.push(step);
-				toolSteps.set(callId, step);
-				if (itemId) toolSteps.set(itemId, step);
 			} else if (ptype === "local_shell_call_output") {
 				mergeOutput(
 					str(p["call_id"]) ?? str(p["id"]) ?? "",
@@ -572,13 +589,18 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			} else if (ptype === "item_completed") {
 				const item = asObj(p["item"]);
 				if (item["type"] !== "CommandExecution") return;
-				const callId = str(item["call_id"]) ?? str(item["id"]) ?? `command${idx}`;
-				let step = toolSteps.get(callId);
+				const itemId = str(item["id"]);
+				const callId = str(item["call_id"]) ?? itemId ?? `command${idx}`;
+				let step = toolSteps.get(callId) ?? (itemId ? toolSteps.get(itemId) : undefined);
 				if (!step) {
-					step = toolStep("exec_command", callId, { cmd: item["command"] }, ts, idx);
+					const args: Json = { cmd: item["command"] };
+					const workdir = str(item["cwd"]);
+					if (workdir) args["workdir"] = workdir;
+					step = toolStep("exec_command", callId, args, ts, idx);
 					steps.push(step);
-					toolSteps.set(callId, step);
 				}
+				toolSteps.set(callId, step);
+				if (itemId) toolSteps.set(itemId, step);
 				receipts.push({ step, item, ts });
 			}
 		}
@@ -586,28 +608,17 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 
 	// A receipt and a call/output pair can describe the same command in either order.
 	for (const { step, item, ts } of receipts) {
-		const prior = (step.attributes[ATTR.EXEC_RESULTS] as ExecResult[] | undefined)?.[0];
-		const receiptExit = item["exit_code"];
-		const priorExit = step.attributes[ATTR.SHELL_EXIT_CODE] ?? prior?.exit_code;
-		// A numeric failure in either representation is contrary evidence.
-		const exit = typeof priorExit === "number" && priorExit !== 0 ? priorExit :
-			typeof receiptExit === "number" ? receiptExit : typeof priorExit === "number" ? priorExit : null;
+		const exit = item["exit_code"];
 		const output = str(item["aggregated_output"]) ?? "";
-		const failed = step.attributes[ATTR.TEST_FAILURES] === true || hasTestFailures(output);
-		const passed = !failed && (step.attributes[ATTR.TEST_PASSES] === true || hasTestPasses(output));
 		step.ended_at = ts;
-		if (exit !== null) step.attributes[ATTR.SHELL_EXIT_CODE] = exit;
-		step.attributes[ATTR.EXEC_RESULTS] = [{ exit_code: exit, session_id: null, test_failures: failed, test_passes: passed }];
-		if (failed) {
-			step.attributes[ATTR.TEST_FAILURES] = true;
-			delete step.attributes[ATTR.TEST_PASSES];
-		} else if (passed) step.attributes[ATTR.TEST_PASSES] = true;
-		if (exit === null) delete step.status;
-		else if (exit === 0) step.status = "ok";
-		else {
-			step.status = "error";
-			if (output && !step.attributes[ATTR.TOOL_ERROR]) step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
-		}
+		mergeShellResult(step, {
+			exit_code: typeof exit === "number" ? exit : null,
+			session_id: null,
+			test_failures: hasTestFailures(output),
+			test_passes: hasTestPasses(output),
+		}, true);
+		if (typeof exit === "number" && exit !== 0 && output && !step.attributes[ATTR.TOOL_ERROR])
+			step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
 	}
 
 	const run: Run = {

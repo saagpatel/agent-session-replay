@@ -758,6 +758,100 @@ test("matching item and call IDs retain contradictory exit evidence in either re
 	}
 });
 
+test("a CommandExecution receipt before local_shell_call reuses the call and keeps its failure", () => {
+	const ts = "2026-01-01T00:00:00Z";
+	const trace = parseCodexEvents([
+		sessionMeta(),
+		{ timestamp: ts, type: "event_msg", payload: { type: "item_completed", item: {
+			type: "CommandExecution", id: "shell-item", command: "pytest -q", exit_code: 7,
+			aggregated_output: "=== 1 failed in 0.12s ===",
+		} } },
+		responseItem({ type: "local_shell_call", id: "shell-item", action: { command: ["pytest", "-q"] } }, ts),
+		responseItem({ type: "local_shell_call_output", id: "shell-item", status: "completed", output: "Process exited with code 0\nOutput:\n=== 3 passed in 0.12s ===" }, ts),
+	]);
+	const tools = byKind(trace.steps, "tool_call");
+	assert.equal(tools.length, 1);
+	assert.equal(tools[0]?.attributes[ATTR.SHELL_EXIT_CODE], 7);
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "failed");
+});
+
+test("a standalone CommandExecution receipt preserves its working directory", () => {
+	const receipt = (cwd: string) => parseCodexEvents([
+		sessionMeta({ cwd: "/work/repo" }),
+		eventMsg({ type: "item_completed", item: {
+			type: "CommandExecution", id: "read-a", command: "cat src/a.ts", cwd,
+			exit_code: 0, aggregated_output: "source",
+		} }),
+	]);
+	const one = receipt("/work/repo/one");
+	const two = receipt("/work/repo/two");
+	const tool = byKind(one.steps, "tool_call")[0];
+	assert.equal((tool?.attributes[ATTR.TOOL_ARGS] as Record<string, unknown>)?.["workdir"], "/work/repo/one");
+	const oneTarget = normalizeTrace(one).map((step) => step.target);
+	const twoTarget = normalizeTrace(two).map((step) => step.target);
+	assert.deepEqual(oneTarget, ["one/src/a.ts"]);
+	assert.deepEqual(twoTarget, ["two/src/a.ts"]);
+	assert.notDeepEqual(oneTarget, twoTarget);
+});
+
+test("a receipt without an exit preserves a yielded session until a poll settles it", () => {
+	const trace = parseCodexEvents([
+		sessionMeta(),
+		responseItem({ type: "function_call", name: "exec_command", call_id: "yielded", arguments: { cmd: "pytest -q" } }),
+		responseItem({ type: "function_call_output", call_id: "yielded", output: "Process running with session ID 12\nOutput:\n" }),
+		eventMsg({ type: "item_completed", item: { id: "yielded", type: "CommandExecution", command: "pytest -q", aggregated_output: "" } }),
+		responseItem({ type: "function_call", name: "write_stdin", call_id: "poll", arguments: { session_id: 12 } }),
+		responseItem({ type: "function_call_output", call_id: "poll", output: "Process exited with code 7\nOutput:\n=== 1 failed in 0.12s ===" }),
+	]);
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "failed");
+});
+
+test("a later explicit shell exit replaces an earlier unknown result", () => {
+	const trace = parseCodexEvents([
+		sessionMeta(),
+		responseItem({ type: "function_call", name: "exec_command", call_id: "repeated-output", arguments: { cmd: "pytest -q" } }),
+		responseItem({ type: "function_call_output", call_id: "repeated-output", output: "runner output arrived" }),
+		responseItem({ type: "function_call_output", call_id: "repeated-output", output: "Process exited with code 0\nOutput:\n=== 3 passed in 0.12s ===" }),
+	]);
+	assert.equal(byKind(trace.steps, "tool_call")[0]?.status, "ok");
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "passed");
+});
+
+test("a direct shell failure survives later successful or exitless results", () => {
+	const output = (raw: unknown) => responseItem({ type: "function_call_output", call_id: "evidence", output: raw });
+	const zeroChunk = [{ type: "text", text: JSON.stringify({ chunk_id: "evidence", exit_code: 0, output: "3 passed in 0.12s" }) }];
+	for (const later of [
+		output("Process exited with code 0\nOutput:\n3 passed in 0.12s"),
+		output("later output without an exit"),
+		output(zeroChunk),
+	]) {
+		const trace = parseCodexEvents([
+			sessionMeta(),
+			responseItem({ type: "function_call", name: "exec_command", call_id: "evidence", arguments: { cmd: "pytest -q" } }),
+			output("Process exited with code 7\nOutput:\n1 failed in 0.12s"),
+			later,
+		]);
+		const tool = byKind(trace.steps, "tool_call")[0]!;
+		assert.equal(tool.attributes[ATTR.SHELL_EXIT_CODE], 7);
+		assert.match(String(tool.attributes[ATTR.TOOL_ERROR]), /exit(?:ed)? with code 7/);
+		assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "failed");
+	}
+});
+
+test("CommandExecution aliases correlate a receipt and local shell call by item id", () => {
+	const trace = parseCodexEvents([
+		sessionMeta(),
+		eventMsg({ type: "item_completed", item: {
+			type: "CommandExecution", id: "item-alias", call_id: "call-alias", command: "pytest -q",
+			exit_code: 7, aggregated_output: "1 failed in 0.12s",
+		} }),
+		responseItem({ type: "local_shell_call", id: "item-alias", action: { command: ["pytest", "-q"] } }),
+		responseItem({ type: "local_shell_call_output", id: "item-alias", output: "Process exited with code 0\nOutput:\n3 passed in 0.12s" }),
+	]);
+	assert.equal(byKind(trace.steps, "tool_call").length, 1);
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "failed");
+});
+
 test("noise events and malformed entries produce no steps and never throw", () => {
 	const { steps } = parseCodexEvents([
 		sessionMeta(),
