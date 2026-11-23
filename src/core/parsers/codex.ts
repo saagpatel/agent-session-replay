@@ -49,6 +49,7 @@ const SUPPORTED_ENVELOPE_TYPES = new Set([
 	"response_item",
 	"event_msg",
 ]);
+const IGNORED_EVENT_MSG_TYPES = new Set(["task_started", "agent_reasoning", "agent_message"]);
 
 /** Codex tool name -> coarse result kind. */
 const RESULT_KIND: Record<string, string> = {
@@ -581,6 +582,8 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 					step.status = "error";
 				step.ended_at = ts;
 				steps.push(step);
+			} else if (ptype !== undefined) {
+				unsupportedRecords += 1;
 			}
 			return;
 		}
@@ -627,6 +630,8 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				toolSteps.set(callId, step);
 				if (itemId) toolSteps.set(itemId, step);
 				receipts.push({ step, item, ts });
+			} else if (ptype !== undefined && !IGNORED_EVENT_MSG_TYPES.has(ptype)) {
+				unsupportedRecords += 1;
 			}
 		}
 	});

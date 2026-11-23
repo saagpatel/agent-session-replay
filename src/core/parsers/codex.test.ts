@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { ATTR, type Step } from "../types.ts";
 import { parseCodexEvents } from "./codex.ts";
 import { normalizeTrace } from "../diff/normalize.ts";
-import { runVerdict } from "../diff/run-diff.ts";
+import { diffRunsEquivalent, runVerdict } from "../diff/run-diff.ts";
 import { toWaitTrace } from "../wait-anatomy/export.ts";
 
 /** Build a Codex rollout envelope { timestamp, type, payload }. */
@@ -670,6 +670,29 @@ test("unsupported Codex envelopes are counted", () => {
 		ev("inter_agent_communication_metadata", {}),
 	]);
 	assert.equal(trace.unsupported_records, 3);
+});
+
+for (const envelope of ["response_item", "event_msg"]) {
+	test(`unknown ${envelope} payload makes Work Equivalence incomplete`, () => {
+		const meta = { type: "session_meta", payload: { cwd: "/workspace/project" } };
+		const baseline = parseCodexEvents([meta]);
+		const trace = parseCodexEvents([meta, { type: envelope, payload: { type: "unrecognized_action" } }]);
+		const comparison = diffRunsEquivalent(trace, baseline);
+		assert.equal(comparison.incomplete, true);
+		assert.equal(comparison.equivalent, false);
+		assert.deepEqual(comparison.incompleteReasons, ["unsupported-transcript-records"]);
+		assert.equal(trace.unsupported_records, 1);
+	});
+}
+
+test("recognized Codex noise preserves complete equivalence", () => {
+	const meta = { type: "session_meta", payload: { cwd: "/workspace/project" } };
+	const noise = ["task_started", "agent_message", "agent_reasoning"].map((type) => ({
+		type: "event_msg", payload: { type },
+	}));
+	const trace = parseCodexEvents([meta, ...noise]);
+	assert.equal(trace.unsupported_records, undefined);
+	assert.equal(diffRunsEquivalent(trace, parseCodexEvents([meta])).equivalent, true);
 });
 
 test("a Codex test summary without an exit header remains unclear", () => {
