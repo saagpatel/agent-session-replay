@@ -85,6 +85,8 @@ console.log("span           :", trace.run.started_at, "->", trace.run.ended_at);
 console.log("outcome        :", trace.run.outcome?.status);
 console.log("total steps    :", trace.steps.length);
 if (trace.malformed_lines) console.log("unparsed lines :", trace.malformed_lines);
+console.log("unsupported records:", trace.unsupported_records ?? 0);
+console.log("incomplete records :", trace.incomplete_records ?? 0);
 console.log("steps by kind  :", JSON.stringify(byKind));
 console.log("subagents      :", subagents);
 console.log("tool errors    :", errors);
@@ -108,7 +110,8 @@ console.log("cache-read tok :", cacheRead.toLocaleString());
 const findings = detect(trace);
 console.log("\n=== ranked findings (where it went wrong) ===");
 if (findings.length === 0) {
-	console.log("(none — clean run)");
+	const partial = trace.malformed_lines || trace.unsupported_records || trace.incomplete_records;
+	console.log(partial ? "(no findings in the parsed records)" : "(none — clean run)");
 } else {
 	const mark = {
 		critical: "[CRIT]",
