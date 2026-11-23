@@ -71,7 +71,8 @@ function ccEvents(tools: Tool[]) {
 	tools.forEach((tool, i) => {
 		const id = `call-${i}`;
 		out.push({ sessionId: "fixture-cc", cwd, type: "assistant", uuid: `a-${i}`, timestamp: `2026-01-01T00:00:${String(i + 1).padStart(2, "0")}Z`, message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name: tool.name, input: tool.args }] } });
-		out.push({ sessionId: "fixture-cc", cwd, type: "user", uuid: `r-${i}`, timestamp: `2026-01-01T00:01:${String(i + 1).padStart(2, "0")}Z`, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: tool.error ?? false, content: tool.result ?? (tool.name === "Bash" && /\btest\b/.test(String(tool.args.command)) ? "ℹ tests 1\nℹ pass 1\nℹ fail 0" : "synthetic result") }] } });
+		const test = tool.name === "Bash" && /\btest\b/.test(String(tool.args.command));
+		out.push({ sessionId: "fixture-cc", cwd, type: "user", uuid: `r-${i}`, timestamp: `2026-01-01T00:01:${String(i + 1).padStart(2, "0")}Z`, ...(test ? { toolUseResult: { exitCode: tool.error ? 1 : 0 } } : {}), message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: tool.error ?? false, content: tool.result ?? (test ? "ℹ tests 1\nℹ pass 1\nℹ fail 0" : "synthetic result") }] } });
 	});
 	out.push({ sessionId: "fixture-cc", cwd, type: "assistant", uuid: "done", timestamp: "2026-01-01T00:02:00Z", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "Done." }] } });
 	return out;
