@@ -47,6 +47,22 @@ function words(command: string, allowChain = false): Token[] | null {
 	return out.length ? out : null;
 }
 
+/** A literal command that prints lines from exactly one named file. */
+export function outputReadPath(command: string): string | undefined {
+	const tokens = words(command)?.map((token) => token.text);
+	if (!tokens || tokens.length < 2) return undefined;
+	const [name, ...args] = tokens;
+	const file = args.pop();
+	if (!file?.startsWith("/")) return undefined;
+	if (args.at(-1) === "--") args.pop();
+	if (name === "cat" && args.length === 0) return file;
+	if (name === "head" || name === "tail") {
+		if (args.length === 0 || (args.length === 1 && /^-\d+$/.test(args[0]!)) ||
+			(args.length === 2 && args[0] === "-n" && /^\d+$/.test(args[1]!))) return file;
+	}
+	return undefined;
+}
+
 /** Only a shell argv wrapper can contain shell text; other argv stay literal. */
 export function shellCommand(args: Args): string | undefined {
 	const value = args["command"] ?? args["cmd"];

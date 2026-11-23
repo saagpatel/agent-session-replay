@@ -147,6 +147,167 @@ test("llm step captures model, token usage incl. cache, finish reason, reasoning
 	assert.equal(llm.attributes[ATTR.REASONING], true);
 });
 
+test("assistant message fragments count usage once and keep each tool call", () => {
+	const trace = parseClaudeCodeEvents([
+		{
+			type: "assistant",
+			uuid: "fragment-1",
+			timestamp: TS1,
+			message: {
+				id: "msg-1",
+				usage: { input_tokens: 12, cache_read_input_tokens: 9 },
+				content: [
+					{ type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/tmp/example-a" } },
+				],
+			},
+		},
+		{
+			type: "assistant",
+			uuid: "fragment-2",
+			timestamp: TS2,
+			message: {
+				id: "msg-1",
+				usage: { input_tokens: 12, cache_read_input_tokens: 9, output_tokens: 4 },
+				stop_reason: "tool_use",
+				content: [
+					{ type: "thinking", thinking: "Example reasoning." },
+					{ type: "tool_use", id: "tool-2", name: "Grep", input: { pattern: "fixture" } },
+				],
+			},
+		},
+		{
+			type: "assistant",
+			uuid: "child",
+			parentUuid: "fragment-2",
+			timestamp: TS2,
+			message: { content: "Finished." },
+		},
+	]);
+	const llm = find(trace.steps, (step) => step.kind === "llm");
+	assert.equal(trace.steps.filter((step) => step.kind === "llm").length, 2);
+	assert.equal(llm.attributes[ATTR.INPUT_TOKENS], 12);
+	assert.equal(llm.attributes[ATTR.OUTPUT_TOKENS], 4);
+	assert.equal(llm.attributes[ATTR.CACHE_READ_TOKENS], 9);
+	assert.equal(llm.attributes[ATTR.REASONING], true);
+	assert.deepEqual(llm.attributes[ATTR.FINISH_REASONS], ["tool_use"]);
+	assert.deepEqual(
+		trace.steps.filter((step) => step.kind === "tool_call").map((step) => step.step_id),
+		["tool-1", "tool-2"],
+	);
+	assert.equal(find(trace.steps, (step) => step.step_id === "child").parent_step_id, "fragment-1");
+	assert.ok(!trace.external_parent_ids?.includes("fragment-2"));
+});
+
+test("background Bash launch stays pending and preserves its task output path", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "launch-call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-launch", name: "Bash", input: { command: "pytest -q > /tmp/example-tests.log 2>&1 &" } }] } },
+		{ type: "user", uuid: "launch-result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-launch", content: "Process started" }] }, toolUseResult: { backgroundTaskId: "task-1", outputFile: "/tmp/example-tests.log" } },
+	]);
+	const launch = find(trace.steps, (step) => step.step_id === "bash-launch");
+	assert.equal(launch.status, undefined);
+	assert.equal(launch.ended_at, undefined);
+	assert.equal(launch.attributes["claude.background_task_id"], "task-1");
+	assert.equal(launch.attributes["claude.background_output_file"], "/tmp/example-tests.log");
+});
+
+test("background Bash result text supplies its exact output path", () => {
+	const trace = parseClaudeCodeEvents([
+		{
+			type: "assistant",
+			uuid: "launch-call",
+			timestamp: TS1,
+			message: { content: [{ type: "tool_use", id: "bash-launch", name: "Bash", input: { command: "pytest -q" } }] },
+		},
+		{
+			type: "user",
+			uuid: "launch-result",
+			timestamp: TS2,
+			message: {
+				content: [{
+					type: "tool_result",
+					tool_use_id: "bash-launch",
+					content: "Command running in background with ID: job-a. Output is being written to: /tmp/example/job-a.output",
+				}],
+			},
+			toolUseResult: { backgroundTaskId: "job-a" },
+		},
+	]);
+	const launch = find(trace.steps, (step) => step.step_id === "bash-launch");
+	assert.equal(launch.attributes["claude.background_output_file"], "/tmp/example/job-a.output");
+});
+
+test("only a later read of the task output supplies evidence on the pending launch", () => {
+	const outputFile = "/tmp/example/job-a.output";
+	const result = (id: string, content: string, toolUseResult: Record<string, unknown>) => ({
+		type: "user", timestamp: TS2, toolUseResult,
+		message: { content: [{ type: "tool_result", tool_use_id: id, content }] },
+	});
+	const call = (id: string, command: string) => ({
+		type: "assistant", uuid: id + "-event", timestamp: TS1,
+		message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
+	});
+	for (const [command, matches] of [
+		[`tail -n 5 '${outputFile}'`, true],
+		[`cat ${outputFile}.old`, false],
+		[`cat ${outputFile} | printf '3 passed in 0.12s'`, false],
+		[`cat /tmp/example/other ${outputFile}`, false],
+	] as const) {
+		const trace = parseClaudeCodeEvents([
+			call("launch", "pytest -q"), result("launch", "Started", { backgroundTaskId: "job-a", outputFile }),
+			call("read", command), result("read", "3 passed in 0.12s", { exitCode: 0 }),
+		]);
+		const launch = find(trace.steps, (step) => step.step_id === "launch");
+		assert.equal(launch.attributes[ATTR.TEST_PASSES], matches || undefined, command);
+		assert.equal(launch.status, undefined);
+		assert.equal(launch.ended_at, undefined);
+	}
+});
+
+test("missing or nonzero Bash exit evidence does not claim success", () => {
+	for (const [result, expected] of [[{ exitCode: 7 }, "error"], [{}, undefined]] as const) {
+		const trace = parseClaudeCodeEvents([
+			{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
+			{ type: "user", uuid: "result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", content: "3 passed in 0.12s" }] }, toolUseResult: result },
+		]);
+		assert.equal(find(trace.steps, (step) => step.step_id === "bash-test").status, expected);
+	}
+});
+
+test("wrong-typed duplicate tool result is malformed and does not replace valid result", () => {
+	const trace = parseClaudeCodeTranscript([
+		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-test", name: "Bash", input: { command: "pytest -q" } }] } },
+		{ type: "user", uuid: "good", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", is_error: false, content: "3 passed in 0.12s" }] }, toolUseResult: { exitCode: 0 } },
+		{ type: "user", uuid: "bad", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-test", is_error: "false", content: "failed" }] } },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.equal(trace.malformed_lines, 1);
+	const step = find(trace.steps, (item) => item.step_id === "bash-test");
+	assert.equal(step.status, "ok");
+	assert.equal(step.attributes[ATTR.TEST_FAILURES], undefined);
+});
+
+test("multiple malformed tool results on one line count once", () => {
+	const trace = parseClaudeCodeTranscript([
+		JSON.stringify({
+			type: "user",
+			uuid: "bad-results",
+			timestamp: TS1,
+			message: { content: [
+				{ type: "tool_result", tool_use_id: "missing-a", is_error: "false" },
+				{ type: "tool_result", tool_use_id: "missing-b", is_error: 1 },
+			] },
+		}),
+	].join("\n"));
+	assert.equal(trace.malformed_lines, 1);
+});
+
+test("non-test Bash with explicit is_error false retains successful status", () => {
+	const trace = parseClaudeCodeEvents([
+		{ type: "assistant", uuid: "call", timestamp: TS1, message: { content: [{ type: "tool_use", id: "bash-routine", name: "Bash", input: { command: "git status --short" } }] } },
+		{ type: "user", uuid: "result", timestamp: TS2, message: { content: [{ type: "tool_result", tool_use_id: "bash-routine", is_error: false, content: "working tree clean" }] } },
+	]);
+	assert.equal(find(trace.steps, (step) => step.step_id === "bash-routine").status, "ok");
+});
+
 test("tool_use + matching tool_result merge into one ok tool_call step", () => {
 	const events = [
 		{
@@ -595,6 +756,15 @@ test("noise event types produce no steps", () => {
 		{ type: "ai-title", timestamp: TS1 },
 	];
 	assert.equal(parseClaudeCodeEvents(events).steps.length, 0);
+});
+
+test("unsupported Claude API errors and incomplete-flow records are counted", () => {
+	const trace = parseClaudeCodeTranscript([
+		{ type: "system", subtype: "api_error", uuid: "api-error", timestamp: TS1 },
+		{ type: "data-flow-incomplete", uuid: "flow-gap", timestamp: TS2 },
+	].map((event) => JSON.stringify(event)).join("\n"));
+	assert.equal(trace.unsupported_records, 1);
+	assert.equal(trace.incomplete_records, 1);
 });
 
 test("does not crash on events with missing or non-object message", () => {
