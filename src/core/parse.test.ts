@@ -38,6 +38,30 @@ test("a Claude permission-mode record alone identifies the transcript", () => {
 	}
 });
 
+test("a standalone incomplete Claude capture marker is recognized", () => {
+	const marker = JSON.stringify({
+		type: "data-flow-incomplete",
+		sessionId: "synthetic-session",
+		uuid: "synthetic-gap",
+	});
+	const parsed = parseTranscript(marker);
+	assert.equal(parsed.harness, "claude-code");
+	assert.equal(parsed.trace.incomplete_records, 1);
+});
+
+test("an incomplete marker requires non-empty string session identity", () => {
+	for (const marker of [
+		{ type: "data-flow-incomplete", sessionId: "synthetic-session" },
+		{ type: "data-flow-incomplete", uuid: "synthetic-gap" },
+		{ type: "data-flow-incomplete", sessionId: "", uuid: "synthetic-gap" },
+		{ type: "data-flow-incomplete", sessionId: 7, uuid: "synthetic-gap" },
+		{ type: "data-flow-incomplete", sessionId: "synthetic-session", uuid: " " },
+		{ type: "data-flow-incomplete", sessionId: "synthetic-session", uuid: 7 },
+	]) {
+		assert.throws(() => parseTranscript(JSON.stringify(marker)), /unsupported.*Claude Code or Codex/i);
+	}
+});
+
 test("detectHarness returns unknown for empty or unrecognizable input", () => {
 	assert.equal(detectHarness(""), "unknown");
 	assert.equal(detectHarness('{"foo":"bar"}'), "unknown");

@@ -28,6 +28,11 @@ export function recordHarness(record: unknown): Harness {
 	const type = record.type;
 	if (typeof type !== "string") return "unknown";
 	if (CODEX_TYPES.has(type) && "payload" in record) return "codex";
+	if (type === "data-flow-incomplete") {
+		return "sessionId" in record && typeof record.sessionId === "string" && record.sessionId.trim().length > 0 &&
+			"uuid" in record && typeof record.uuid === "string" && record.uuid.trim().length > 0
+			? "claude-code" : "unknown";
+	}
 	if (!("sessionId" in record || "uuid" in record)) return "unknown";
 	if (CC_TYPES.has(type)) return "claude-code";
 	if (type === "permission-mode" && "permissionMode" in record && typeof record.permissionMode === "string")
