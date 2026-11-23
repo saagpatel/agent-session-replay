@@ -1215,6 +1215,10 @@ test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
 test("runner summaries are recognized in piped pytest and unittest output", () => {
 	assert.equal(hasTestPasses("3 passed in 0.12s"), true);
 	assert.equal(hasTestFailures("1 failed, 2 passed in 0.31s"), true);
+	assert.equal(hasTestFailures("1 failed, 2 passed, 1 skipped in 0.31s"), true);
+	assert.equal(hasTestFailures("1 error in 0.31s"), true);
+	assert.equal(hasTestFailures("1 passed, 1 failed in 0.31s"), true);
+	assert.equal(hasTestFailures("1 skipped, 1 error, 2 failed, 3 passed in 0.31s"), true);
 	assert.equal(hasTestPasses("Ran 4 tests in 0.010s\n\nOK"), true);
 	assert.equal(hasTestFailures("Ran 4 tests in 0.010s\n\nFAILED (failures=1)"), true);
 	assert.equal(hasTestFailures("FAILED (failures=1)"), false);
@@ -1227,6 +1231,8 @@ test("runner summaries are recognized in piped pytest and unittest output", () =
 	};
 	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").verdict, "unclear");
 	assert.equal(verdict("pytest -q | tail -n 5", "1 failed, 2 passed in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 failed, 2 passed, 1 skipped in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 error in 0.31s").verdict, "failed");
 	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").steps[0]?.summary, "pass");
 	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nOK").verdict, "unclear");
 	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1)").verdict, "failed");
@@ -1266,6 +1272,46 @@ test("Claude verdicts require an evidenced test exit", () => {
 		const trace = parseClaudeCodeEvents(events);
 		assert.equal(diffRuns(trace, trace).left.verdict, verdict);
 	}
+});
+
+test("a rejected Claude test tool call is not reported as a failed test run", () => {
+	const events = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "Tool use rejected by user" },
+	]);
+	delete events.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const trace = parseClaudeCodeEvents(events);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "unclear");
+	assert.equal(result.steps[0]?.status, "unknown");
+	assert.match(String(trace.steps.find((step) => step.kind === "tool_call")?.attributes["tool.error.message"]), /Tool use rejected by user/);
+	assert.equal(result.steps[0]?.error, undefined);
+
+	const contradictory = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "Tool use rejected by user" },
+	]);
+	contradictory.find((event) => event["uuid"] === "r0")!["toolUseResult"] = { exitCode: 0 };
+	const contradictoryTrace = parseClaudeCodeEvents(contradictory);
+	assert.equal(diffRuns(contradictoryTrace, contradictoryTrace).left.verdict, "unclear");
+
+	const compound = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q && cat README.md", error: "Tool use rejected by user" },
+	]);
+	delete compound.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const compoundTrace = parseClaudeCodeEvents(compound);
+	const compoundResult = diffRuns(compoundTrace, compoundTrace).left;
+	assert.equal(compoundResult.verdict, "unclear");
+	assert.equal(compoundResult.steps.find((step) => step.action === "test")?.status, "unknown");
+	assert.equal(compoundResult.steps.find((step) => step.action === "test")?.error, undefined);
+	assert.equal(compoundResult.steps.find((step) => step.action === "read")?.error, undefined);
+
+	const summaryInCompound = ccEvents(PROMPT, [
+		{ name: "Bash", command: "cat old-results.log; pytest -q", error: "1 failed, 2 passed in 0.31s" },
+	]);
+	delete summaryInCompound.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const summaryTrace = parseClaudeCodeEvents(summaryInCompound);
+	const summaryResult = diffRuns(summaryTrace, summaryTrace).left;
+	assert.equal(summaryResult.verdict, "unclear");
+	assert.equal(summaryResult.steps.find((step) => step.action === "test")?.status, "unknown");
 });
 
 test("a background test keeps its summary without borrowing an exit status", () => {

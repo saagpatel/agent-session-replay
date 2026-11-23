@@ -1284,6 +1284,7 @@ export function resolveStatuses(
 	testFailures: boolean,
 	solo = false,
 	hasCleanExit = true,
+	hasFailedExit = true,
 ): DiffStatus[] {
 	const n = parts.length;
 	const known = result === "ok" || result === "error" || result === "interrupted";
@@ -1301,6 +1302,7 @@ export function resolveStatuses(
 	};
 	const out: DiffStatus[] = parts.map((c, i) => {
 		if (c.unlocated || c.executed === false) return "unknown";
+		if (c.action === "test" && failedResult && !hasFailedExit) return "unknown";
 		if (c.action === "test" && result === "ok" && !hasCleanExit) return "unknown";
 		if (owns(i)) return result as DiffStatus;
 		// No other part is vouched for: a `;` chain keeps going after a failed
@@ -1400,7 +1402,15 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 				waiting.unit.testPasses ||= unit.testPasses;
 				if (unit.result === "pending") continue;
 				const { unit: orig, steps } = waiting;
-				const statuses = resolveStatuses(orig.parts, orig.chain, unit.result, orig.testFailures, orig.solo, unit.exitCode === 0);
+				const statuses = resolveStatuses(
+					orig.parts,
+					orig.chain,
+					unit.result,
+					orig.testFailures,
+					orig.solo,
+					unit.exitCode === 0,
+					typeof unit.exitCode === "number" && unit.exitCode !== 0,
+				);
 				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses, orig.solo);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
@@ -1413,7 +1423,15 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			}
 			const parts = rewritesAsEdits(unit.parts, seen);
 			if (parts.length === 0) continue;
-			const statuses = resolveStatuses(parts, unit.chain, unit.result, unit.testFailures, unit.solo, unit.exitCode === 0);
+			const statuses = resolveStatuses(
+				parts,
+				unit.chain,
+				unit.result,
+				unit.testFailures,
+				unit.solo,
+				unit.exitCode === 0,
+				typeof unit.exitCode === "number" && unit.exitCode !== 0,
+			);
 			const sums = summaries(parts, unit.testFailures, unit.testPasses, unit.solo);
 			const made = parts.map((c, i) =>
 				make(
