@@ -8,13 +8,13 @@ import { detect } from "../core/detect/engine.ts";
 import { diffRuns } from "../core/diff/run-diff.ts";
 import type { RunDiff } from "../core/diff/types.ts";
 import type { Finding } from "../core/detect/types.ts";
-import { type Harness, parseTranscript } from "../core/parse.ts";
+import type { Harness } from "../core/parse.ts";
 import type { Step, Trace } from "../core/types.ts";
 import { buildTimeline, type TimelineView } from "../core/view/timeline.ts";
 import { DecisionFlightDeck } from "./components/DecisionFlightDeck.tsx";
 import { DropZone, type DropPayload } from "./components/DropZone.tsx";
 import { FindingsPanel } from "./components/FindingsPanel.tsx";
-import { type LoadedRun, RunDiffLoader } from "./components/RunDiffLoader.tsx";
+import { type LoadedRun, loadTranscript, RunDiffLoader } from "./components/RunDiffLoader.tsx";
 import { RunDiffView } from "./components/RunDiffView.tsx";
 import { traceIntegritySummary } from "./format.ts";
 import { RunHeader } from "./components/RunHeader.tsx";
@@ -74,11 +74,7 @@ export function App() {
 				setError(null);
 				return;
 			}
-			const { harness, trace } = parseTranscript(payload.text);
-			if (trace.steps.length === 0) {
-				setError("No steps parsed. Is this a Claude Code or Codex transcript?");
-				return;
-			}
+			const { harness, trace } = loadTranscript(payload);
 			const findings = detect(trace);
 			const timeline = buildTimeline(trace, findings);
 			setLoaded({

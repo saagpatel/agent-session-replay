@@ -104,6 +104,7 @@ function Cell({ step, side }: { step: DiffStep | null; side: "left" | "right" })
 			{failed ? <span className="rd-cell__fail">✕ {step.status === "interrupted" ? "interrupted" : "failed"}</span> : null}
 			{unknown ? (
 				<span className="rd-cell__unknown" title="No result recorded for this step on its own">
+					{step.summary === "fail" ? "runner reported failures · " : step.summary === "pass" ? "runner reported passes · " : ""}
 					? unclear
 				</span>
 			) : null}

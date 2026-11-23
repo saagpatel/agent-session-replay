@@ -111,6 +111,15 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	});
 	assert.match(mixedSessionError, /these files belong to different sessions/i);
 	assert.equal(mixedSessionLoaded, false);
+	const captureGap = JSON.stringify({ type: "data-flow-incomplete", sessionId: "session-a", uuid: "gap-1" });
+	const gapErrors: string[] = [];
+	await takeRunFiles([dropped("gap.jsonl", "gap.jsonl", captureGap)], {
+		onRun: () => assert.fail("a capture gap has no replayable steps"),
+		onError: (message) => gapErrors.push(message),
+		onClearError: () => assert.fail("the capture diagnostic should stay visible"),
+	});
+	assert.equal(gapErrors.length, 1);
+	assert.match(gapErrors[0]!, /Claude Code.*1 incomplete capture record/i);
 	const fragment = JSON.stringify({ type: "response_item", payload: { type: "reasoning" } });
 	for (const texts of [
 		[firstSession, firstSession + "\n" + otherSession],
@@ -153,6 +162,17 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	// The view renders both lanes, the flagged fork and its explanation.
 	const left = parseTranscript(cc).trace;
+	const response = (payload: Record<string, unknown>) => ({ type: "response_item", payload });
+	const chunk = (output: string) => [{ text: JSON.stringify({ chunk_id: "part", session_id: 42, output }) }];
+	const pending = parseTranscript(toJsonl([
+		response({ type: "function_call", name: "exec_command", call_id: "test", arguments: { cmd: "pytest" } }),
+		response({ type: "function_call_output", call_id: "test", output: chunk("") }),
+		response({ type: "function_call", name: "write_stdin", call_id: "poll", arguments: { session_id: 42 } }),
+		response({ type: "function_call_output", call_id: "poll", output: chunk("1 failed in 0.12s") }),
+	])).trace;
+	const pendingHtml = renderToStaticMarkup(<RunDiffView diff={diffRuns(pending, left)} leftFile="pending.jsonl" rightFile="cc.jsonl" />);
+	assert.match(pendingHtml, /runner reported failures/i);
+	assert.match(pendingHtml, /result unclear/);
 	const partialText = `${cc}\n{"type":"user"`;
 	const partialTrace = parseTranscript(partialText).trace;
 	assert.equal(partialTrace.malformed_lines, 1);
