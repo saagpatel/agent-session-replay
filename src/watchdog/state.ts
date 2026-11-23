@@ -18,6 +18,8 @@ interface SessionAlerts {
 	updatedMs: number;
 	/** mtime of the transcript when it was last parsed; unchanged -> skippable. */
 	processedMtimeMs?: number;
+	/** Whether this entry has been parsed with capture-integrity accounting. */
+	captureIntegrityChecked?: boolean;
 	/** Held findings or failed posts from the last pass: never skip these. */
 	pending?: boolean;
 	/** Exact JSON sent for unacknowledged findings, keyed by finding + severity. */
@@ -75,6 +77,8 @@ function parseSessionAlerts(sessionPath: string, value: unknown): SessionAlerts 
 		!isFiniteNonNegative(value.updatedMs) ||
 		(value.processedMtimeMs !== undefined &&
 			!isFiniteNonNegative(value.processedMtimeMs)) ||
+		(value.captureIntegrityChecked !== undefined &&
+			typeof value.captureIntegrityChecked !== "boolean") ||
 		(value.pending !== undefined && typeof value.pending !== "boolean")
 	) {
 		return null;
@@ -96,6 +100,9 @@ function parseSessionAlerts(sessionPath: string, value: unknown): SessionAlerts 
 		...(value.processedMtimeMs === undefined
 			? {}
 			: { processedMtimeMs: value.processedMtimeMs }),
+		...(value.captureIntegrityChecked === undefined
+			? {}
+			: { captureIntegrityChecked: value.captureIntegrityChecked }),
 		...(value.pending === undefined ? {} : { pending: value.pending }),
 		...(value.pendingPayloads === undefined ? {} : {
 			pendingPayloads: Object.fromEntries(Object.entries(value.pendingPayloads)) as Record<string, string>,
@@ -230,7 +237,8 @@ export function canSkip(
 	const entry = state.sessions[sessionPath];
 	// A retained payload alone does not force a re-parse: its finding can only
 	// recur through new transcript content, which changes mtime.
-	return entry?.processedMtimeMs === mtimeMs && !entry.pending;
+	return entry?.processedMtimeMs === mtimeMs &&
+		entry.captureIntegrityChecked === true && !entry.pending;
 }
 
 function payloadBytes(entry: SessionAlerts): number {
@@ -299,9 +307,11 @@ export function markProcessed(
 		updatedMs: nowMs,
 	};
 	const changed =
-		entry.processedMtimeMs !== mtimeMs || (entry.pending ?? false) !== pending;
+		entry.processedMtimeMs !== mtimeMs || entry.captureIntegrityChecked !== true ||
+		(entry.pending ?? false) !== pending;
 	if (changed) {
 		entry.processedMtimeMs = mtimeMs;
+		entry.captureIntegrityChecked = true;
 		entry.pending = pending;
 		entry.updatedMs = nowMs;
 	}

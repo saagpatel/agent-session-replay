@@ -732,6 +732,7 @@ test("weekly eviction checks a vanished finding in an unchanged in-window sessio
 	const state: WatchdogState = { sessions: {} };
 	retainPendingPayload(state, path, "grind_loop@warning", retainedEvent(path), now - STATE_MAX_AGE_MS - 1);
 	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
 	state.sessions[path]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -749,6 +750,7 @@ test("weekly eviction cannot infer a vanished finding from an unverifiable trans
 	const state: WatchdogState = { sessions: {} };
 	retainPendingPayload(state, path, "grind_loop@warning", retainedEvent(path), now - STATE_MAX_AGE_MS - 1);
 	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
 	state.sessions[path]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -780,6 +782,7 @@ for (const pending of [true, false]) {
 		const payload = retainedEvent(path);
 		retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
 		state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+		state.sessions[path]!.captureIntegrityChecked = true;
 		state.sessions[path]!.pending = pending;
 		saveState(config.statePath, state);
 		outcomeAdapter(config);
@@ -819,6 +822,63 @@ test("capture gaps stay visible across unchanged-session ticks", async (t) => {
 	assert.equal(secondTerminal.state, "partial");
 });
 
+test("legacy state rescans unchanged sessions once for capture integrity", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, JSON.stringify({
+		type: "data-flow-incomplete",
+		sessionId: "synthetic-session",
+		reason: "fixture capture gap",
+	}) + "\n");
+	const now = Date.now();
+	const legacyState = {
+		sessions: {
+			[path]: { findings: ["grind_loop@warning"], updatedMs: now, processedMtimeMs: statSync(path).mtimeMs, pending: false },
+		},
+	};
+	saveState(config.statePath, legacyState as WatchdogState);
+
+	const first = await tick(config, now);
+	assert.equal(first.skippedUnchanged, 0);
+	assert.equal(first.scannedSessions, 1);
+	assert.equal(first.incompleteRecords, 1);
+	assert.ok(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"));
+
+	const second = await tick(config, now + 1);
+	assert.equal(second.skippedUnchanged, 0);
+	assert.equal(second.scannedSessions, 1);
+	assert.equal(second.incompleteRecords, 1);
+});
+
+test("clean legacy state is checked once and keeps retained data", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, JSON.stringify({
+		type: "assistant",
+		sessionId: "synthetic-session",
+		uuid: "synthetic-message",
+		timestamp: ts(),
+		message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+	}) + "\n");
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path, key);
+	retainPendingPayload(state, path, key, payload, now);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+
+	const first = await tick(config, now);
+	assert.equal(first.scannedSessions, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+
+	const second = await tick(config, now + 1);
+	assert.equal(second.scannedSessions, 0);
+	assert.equal(second.skippedUnchanged, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+});
+
 function unsupportedCodexTranscript(): string {
 	return `${JSON.stringify({
 		timestamp: ts(),
@@ -837,6 +897,7 @@ test("weekly eviction keeps an alert when unsupported records make capture incom
 	const payload = retainedEvent(path, key);
 	retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
 	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
 	state.sessions[path]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -877,6 +938,7 @@ test("cap eviction checks vanished and out-of-window findings, keeping still-pre
 	writeFileSync(vanished!, ccGrindTranscript(5));
 	writeFileSync(active!, ccGrindTranscript(320));
 	state.sessions[active!]!.processedMtimeMs = statSync(active!).mtimeMs;
+	state.sessions[active!]!.captureIntegrityChecked = true;
 	state.sessions[active!]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -904,6 +966,7 @@ test("cap eviction keeps a pending alert when a damaged transcript hides its fin
 	mkdirSync(join(claudeRoot, "retained-project"), { recursive: true });
 	writeFileSync(damagedPath, damagedGrindTranscript());
 	state.sessions[damagedPath]!.processedMtimeMs = statSync(damagedPath).mtimeMs;
+	state.sessions[damagedPath]!.captureIntegrityChecked = true;
 	state.sessions[damagedPath]!.pending = false;
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	saveState(config.statePath, state);
@@ -939,6 +1002,7 @@ test("cap eviction keeps a pending alert when unsupported records hide its findi
 	const key = "grind_loop@warning";
 	// Make one retained payload correspond to the unsupported active session.
 	state.sessions[unsupportedPath]!.processedMtimeMs = statSync(unsupportedPath).mtimeMs;
+	state.sessions[unsupportedPath]!.captureIntegrityChecked = true;
 	state.sessions[unsupportedPath]!.pending = false;
 	writeCcSession(claudeRoot, ccGrindTranscript(320));
 	saveState(config.statePath, state);
