@@ -47,12 +47,36 @@ function words(command: string, allowChain = false): Token[] | null {
 	return out.length ? out : null;
 }
 
+/** A literal command that prints lines from exactly one named file. */
+export function outputReadPath(command: string): string | undefined {
+	const tokens = words(command)?.map((token) => token.text);
+	if (!tokens || tokens.length < 2) return undefined;
+	const [name, ...args] = tokens;
+	const file = args.pop();
+	if (!file?.startsWith("/")) return undefined;
+	if (args.at(-1) === "--") args.pop();
+	if (name === "cat" && args.length === 0) return file;
+	if (name === "head" || name === "tail") {
+		if (args.length === 0 || (args.length === 1 && /^-\d+$/.test(args[0]!)) ||
+			(args.length === 2 && args[0] === "-n" && /^\d+$/.test(args[1]!))) return file;
+	}
+	return undefined;
+}
+
+/** In a shell -c invocation, arguments after the script are positional parameters. */
+export function argvShellScript(argv: readonly unknown[]): string | undefined {
+	const [exe, flag, script] = argv;
+	return typeof exe === "string" && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(exe) &&
+		(flag === "-c" || flag === "-lc") && typeof script === "string" ? script : undefined;
+}
+
 /** Only a shell argv wrapper can contain shell text; other argv stay literal. */
 export function shellCommand(args: Args): string | undefined {
 	const value = args["command"] ?? args["cmd"];
 	if (typeof value === "string") return value;
 	if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) return undefined;
-	if (value.length === 3 && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(value[0] ?? "") && /^-l?c$/.test(value[1] ?? "")) return value[2];
+	const script = value.length === 3 ? argvShellScript(value) : undefined;
+	if (script !== undefined) return script;
 	return value.map((v: string) => `'${v.replaceAll("'", "'\\''")}'`).join(" ");
 }
 

@@ -89,6 +89,12 @@ export interface TickReport {
 	/** In-window sessions skipped: unchanged mtime and nothing pending. */
 	skippedUnchanged: number;
 	parseFailures: number;
+	/** Non-blank transcript lines that could not be parsed across scanned sessions. */
+	malformedLines: number;
+	/** Explicit transcript markers reporting incomplete capture. */
+	incompleteRecords: number;
+	/** Records whose format is not understood by the transcript parser. */
+	unsupportedRecords: number;
 	findings: number;
 	alertsPosted: number;
 	alertsDeduped: number;

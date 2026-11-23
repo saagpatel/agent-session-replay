@@ -68,6 +68,7 @@ export function ccEvents(
 			type: "user",
 			uuid: `r${i}`,
 			timestamp: ts(),
+			...(tool.name === "Bash" ? { toolUseResult: { exitCode: tool.error ? 1 : 0 } } : {}),
 			message: {
 				role: "user",
 				content: [

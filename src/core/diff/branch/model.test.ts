@@ -364,6 +364,31 @@ test("shell noise and directories keep labels but cannot preserve lineage", () =
 	assert.equal(moved.endStateComplete, false);
 });
 
+test("a conflicting receipt directory does not reconstruct shell or git paths", () => {
+	for (const [id, command, action] of [
+		["read", "cat x.ts", "read"],
+		["restore", "git restore x.ts", "run"],
+	] as const) {
+		const input = trace(
+			tool(id, "Bash", { command, workdir: "/work/first" }),
+		);
+		input.steps[0]!.attributes[ATTR.CODEX_RECEIPT_CWD] = "/work/other";
+
+		const graph = buildBranchGraph(input, {});
+		const nodes = graph.nodes.filter((node) => node.stepId === id);
+		assert.equal(nodes.length, 1);
+		assert.equal(nodes[0]?.action, action);
+		assert.equal(nodes[0]?.status, "unknown");
+		assert.ok(!nodes[0]?.target?.includes("/first/"));
+		assert.ok(!nodes[0]?.target?.includes("/other/"));
+	}
+});
+
+test("a literal argv call cannot add a shell stage to the branch graph", () => {
+	const input = trace(tool("argv", "exec_command", { cmd: ["npm", "run test"] }));
+	assert.deepEqual(buildBranchGraph(input, base).nodes.map((node) => node.action), ["run"]);
+});
+
 test("empty file creation is distinct from an absent file", () => {
 	const patch = tool("empty-patch", "apply_patch", {
 		input: "*** Begin Patch\n*** Add File: src/empty.ts\n*** End Patch",
@@ -410,6 +435,18 @@ test("unparsed writers cannot imply that unnamed files remain absent", () => {
 	);
 	assert.equal(graph.endStateComplete, false);
 	assert.equal(buildBranchGraph(trace(), {}).endStateComplete, true);
+});
+
+test("capture gaps make end-state lineage unknown while preserving observed edits", () => {
+	for (const diagnostic of [{ incomplete_records: 1 }, { malformed_lines: 1 }, { unsupported_records: 1 }]) {
+		const input = { ...trace(edit("observed", "base", "idea")), ...diagnostic };
+		const graph = buildBranchGraph(input, base);
+		assert.equal(graph.nodes[0]?.stepId, "observed");
+		assert.equal(graph.endStateComplete, false);
+		assert.equal(graph.endState["src/a.ts"], null);
+		assert.equal(graph.editEffects[0]?.lineage, "unknown");
+		assert.equal(graph.branches[0]?.structuralStatus, "unknown");
+	}
 });
 
 test("a failed edit is not evidence of a superseded insertion", () => {

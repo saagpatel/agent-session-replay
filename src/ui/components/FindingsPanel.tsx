@@ -1,4 +1,6 @@
 import type { Finding, Severity } from "../../core/detect/types.ts";
+import type { Trace } from "../../core/types.ts";
+import { traceIntegritySummary } from "../format.ts";
 
 const SEV_VAR: Record<Severity, string> = {
 	critical: "--sev-critical",
@@ -7,10 +9,12 @@ const SEV_VAR: Record<Severity, string> = {
 };
 
 export function FindingsPanel({
+	trace,
 	findings,
 	activeId,
 	onSelect,
 }: {
+	trace: Trace;
 	findings: readonly Finding[];
 	activeId: string | null;
 	onSelect: (f: Finding) => void;
@@ -23,7 +27,9 @@ export function FindingsPanel({
 			</div>
 			{findings.length === 0 ? (
 				<div className="findings__empty">
-					No findings — this run looks clean.
+					{traceIntegritySummary(trace)
+						? "No findings in the parsed records."
+						: "No findings — this run looks clean."}
 				</div>
 			) : (
 				<div className="findings__list">

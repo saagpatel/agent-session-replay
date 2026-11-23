@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { detect } from "../core/detect/engine.ts";
+import { decodeJsonl } from "../core/jsonl.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { buildEvent, eventIdFor } from "./policy.ts";
 import { TickFailure } from "./progress.ts";
@@ -162,7 +163,7 @@ function postedEvents(config: WatchdogConfig): NotificationEvent[] {
 	}
 }
 
-function writeCcSession(claudeRoot: string, text: string): string {
+function writeCcSession(claudeRoot: string, text: string | Buffer): string {
 	const proj = join(claudeRoot, "-Users-x-Projects-bridge-db");
 	mkdirSync(proj, { recursive: true });
 	const path = join(proj, "sess-grind.jsonl");
@@ -187,6 +188,14 @@ test("expected missing discovery roots stay silent in tick and terminal state", 
 	const report = await tick(config, Date.now());
 	assert.deepEqual(report.discoveryDiagnostics, []);
 	assert.equal(reportTerminal(report, config).state, "succeeded");
+});
+
+test("tick reports truncated JSONL input as partial capture", async () => {
+	const { config, claudeRoot } = fixture();
+	const truncated = `${ccGrindTranscript(5)}{"type":"assistant","sessionId":"sess-grind"`;
+	writeCcSession(claudeRoot, truncated);
+	const report = await tick(config, Date.now());
+	assert.equal(report.malformedLines, 1);
 });
 
 test("a grinding CC session posts one grind_loop alert; the next tick skips the unchanged file", async () => {
@@ -723,6 +732,7 @@ test("weekly eviction checks a vanished finding in an unchanged in-window sessio
 	const state: WatchdogState = { sessions: {} };
 	retainPendingPayload(state, path, "grind_loop@warning", retainedEvent(path), now - STATE_MAX_AGE_MS - 1);
 	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
 	state.sessions[path]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -740,6 +750,7 @@ test("weekly eviction cannot infer a vanished finding from an unverifiable trans
 	const state: WatchdogState = { sessions: {} };
 	retainPendingPayload(state, path, "grind_loop@warning", retainedEvent(path), now - STATE_MAX_AGE_MS - 1);
 	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
 	state.sessions[path]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -747,6 +758,211 @@ test("weekly eviction cannot infer a vanished finding from an unverifiable trans
 	assert.equal(report.retainedPayloads, 1);
 	assert.equal(pendingPayloadFor(loadState(config.statePath), path, "grind_loop@warning"), retainedEvent(path));
 	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+});
+
+test("weekly eviction keeps a pending alert when a windowed lookup hides its finding", async (t) => {
+	const { config, claudeRoot } = fixture({ maxSessionBytes: 1024 });
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, ccGrindTranscript(300));
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path);
+	retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(report.findings, 0);
+	assert.equal(report.retainedPayloads, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+});
+
+test("cap eviction keeps an alert after its windowed scan hid the finding", async (t) => {
+	const { config, codexRoot } = fixture({ maxSessionBytes: 1024, stallQuietSeconds: 0 });
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const path = Object.keys(state.sessions)[0];
+	if (!path) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(config.claudeProjectsDir, "retained-project"), { recursive: true });
+	writeFileSync(path, ccGrindTranscript(300));
+	const key = "grind_loop@warning";
+	const payload = state.sessions[path]!.pendingPayloads![key]!;
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
+	state.sessions[path]!.pending = true;
+	writeCodexSession(codexRoot, codexStallTranscript());
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(report.windowedSessions, 1);
+	assert.ok(report.findings > 0);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(report.malformedLines, 0);
+	assert.equal(report.incompleteRecords, 0);
+	assert.equal(report.unsupportedRecords, 0);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	const queriesPath = config.localReceiptStore + ".queries";
+	assert.equal(existsSync(queriesPath), true);
+	assert.ok(!readFileSync(queriesPath, "utf8").includes(eventIdFor(path, key)));
+});
+
+function damagedGrindTranscript(): Buffer {
+	const complete = ccGrindTranscript(300);
+	assert.ok(detect(parseClaudeCodeTranscript(complete)).some((finding) => finding.kind === "grind_loop"));
+	const damaged = Buffer.from(complete);
+	damaged[damaged.indexOf(Buffer.from("tool_use"))] = 0xff;
+	const damagedTrace = parseClaudeCodeTranscript(decodeJsonl(damaged));
+	assert.equal(damagedTrace.malformed_lines, 1);
+	assert.ok(!detect(damagedTrace).some((finding) => finding.kind === "grind_loop"));
+	return damaged;
+}
+
+for (const pending of [true, false]) {
+	test(`weekly eviction keeps a damaged session's alert after ${pending ? "a scan" : "an unchanged skip"}`, async (t) => {
+		const { config, claudeRoot } = fixture();
+		cleanupFixture(t, config);
+		const path = writeCcSession(claudeRoot, damagedGrindTranscript());
+		const now = Date.now();
+		const state: WatchdogState = { sessions: {} };
+		const key = "grind_loop@warning";
+		const payload = retainedEvent(path);
+		retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+		state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+		state.sessions[path]!.captureIntegrityChecked = true;
+		state.sessions[path]!.pending = pending;
+		saveState(config.statePath, state);
+		outcomeAdapter(config);
+
+		const report = await tick(config, now);
+		assert.equal(report.scannedSessions, pending ? 1 : 0);
+		assert.equal(report.skippedUnchanged, pending ? 0 : 1);
+		assert.equal(report.malformedLines, 1);
+		assert.equal(reportTerminal(report, config).state, "partial");
+		assert.equal(report.retainedPayloads, 1);
+		assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+		assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+
+		const next = await tick(config, now + 1);
+		assert.equal(next.scannedSessions, 1);
+		assert.equal(next.malformedLines, 1);
+		assert.equal(reportTerminal(next, config).state, "partial");
+	});
+}
+
+test("capture gaps stay visible across unchanged-session ticks", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	writeCcSession(claudeRoot, JSON.stringify({
+		type: "data-flow-incomplete",
+		sessionId: "synthetic-session",
+		reason: "fixture capture gap",
+	}) + "\n");
+	const now = Date.now();
+	const first = await tick(config, now);
+	const firstTerminal = reportTerminal(first, config);
+	assert.equal(firstTerminal.state, "partial");
+	const second = await tick(config, now + 1);
+	const secondTerminal = reportTerminal(second, config);
+	assert.equal(second.skippedUnchanged, 0);
+	assert.equal(second.scannedSessions, 1);
+	assert.equal(secondTerminal.state, "partial");
+});
+
+test("legacy state rescans unchanged sessions once for capture integrity", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, JSON.stringify({
+		type: "data-flow-incomplete",
+		sessionId: "synthetic-session",
+		reason: "fixture capture gap",
+	}) + "\n");
+	const now = Date.now();
+	const legacyState = {
+		sessions: {
+			[path]: { findings: ["grind_loop@warning"], updatedMs: now, processedMtimeMs: statSync(path).mtimeMs, pending: false },
+		},
+	};
+	saveState(config.statePath, legacyState as WatchdogState);
+
+	const first = await tick(config, now);
+	assert.equal(first.skippedUnchanged, 0);
+	assert.equal(first.scannedSessions, 1);
+	assert.equal(first.incompleteRecords, 1);
+	assert.ok(hasAlerted(loadState(config.statePath), path, "grind_loop@warning"));
+
+	const second = await tick(config, now + 1);
+	assert.equal(second.skippedUnchanged, 0);
+	assert.equal(second.scannedSessions, 1);
+	assert.equal(second.incompleteRecords, 1);
+});
+
+test("clean legacy state is checked once and keeps retained data", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCcSession(claudeRoot, JSON.stringify({
+		type: "assistant",
+		sessionId: "synthetic-session",
+		uuid: "synthetic-message",
+		timestamp: ts(),
+		message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+	}) + "\n");
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path, key);
+	retainPendingPayload(state, path, key, payload, now);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+
+	const first = await tick(config, now);
+	assert.equal(first.scannedSessions, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+
+	const second = await tick(config, now + 1);
+	assert.equal(second.scannedSessions, 0);
+	assert.equal(second.skippedUnchanged, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+});
+
+function unsupportedCodexTranscript(): string {
+	return `${JSON.stringify({
+		timestamp: ts(),
+		type: "world_state",
+		payload: { fixture: "synthetic" },
+	})}\n`;
+}
+
+test("weekly eviction keeps an alert when unsupported records make capture incomplete", async (t) => {
+	const { config, codexRoot } = fixture();
+	cleanupFixture(t, config);
+	const path = writeCodexSession(codexRoot, unsupportedCodexTranscript());
+	const now = Date.now();
+	const state: WatchdogState = { sessions: {} };
+	const key = "grind_loop@warning";
+	const payload = retainedEvent(path, key);
+	retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+	state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+	state.sessions[path]!.captureIntegrityChecked = true;
+	state.sessions[path]!.pending = false;
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	const terminal = reportTerminal(report, config);
+	assert.equal(report.skippedUnchanged, 1);
+	assert.equal(report.retainedPayloads, 1);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+	assert.equal(terminal.state, "partial");
+	assert.equal(terminal.destination_readback.evidence.unsupported_records, 1);
 });
 
 function fullRetention(config: WatchdogConfig, now: number): WatchdogState {
@@ -775,6 +991,7 @@ test("cap eviction checks vanished and out-of-window findings, keeping still-pre
 	writeFileSync(vanished!, ccGrindTranscript(5));
 	writeFileSync(active!, ccGrindTranscript(320));
 	state.sessions[active!]!.processedMtimeMs = statSync(active!).mtimeMs;
+	state.sessions[active!]!.captureIntegrityChecked = true;
 	state.sessions[active!]!.pending = false;
 	saveState(config.statePath, state);
 	outcomeAdapter(config);
@@ -790,6 +1007,66 @@ test("cap eviction checks vanished and out-of-window findings, keeping still-pre
 	const queries = readFileSync(config.localReceiptStore + ".queries", "utf8");
 	assert.ok(queries.includes(eventIdFor(vanished!, "grind_loop@warning")));
 	assert.ok(!queries.includes(eventIdFor(active!, "grind_loop@warning")));
+});
+
+test("cap eviction keeps a pending alert when a damaged transcript hides its finding", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const [damagedPath] = Object.keys(state.sessions);
+	if (!damagedPath) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(claudeRoot, "retained-project"), { recursive: true });
+	writeFileSync(damagedPath, damagedGrindTranscript());
+	state.sessions[damagedPath]!.processedMtimeMs = statSync(damagedPath).mtimeMs;
+	state.sessions[damagedPath]!.captureIntegrityChecked = true;
+	state.sessions[damagedPath]!.pending = false;
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+	const report = await tick(config, now);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(report.malformedLines, 1);
+	assert.equal(report.retentionCapReached, false);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), damagedPath, "grind_loop@warning"),
+		state.sessions[damagedPath]!.pendingPayloads!["grind_loop@warning"]);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), true);
+	assert.ok(!readFileSync(config.localReceiptStore + ".queries", "utf8").includes(
+		eventIdFor(damagedPath, "grind_loop@warning"),
+	));
+});
+
+test("cap eviction keeps a pending alert when unsupported records hide its finding", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const [unsupportedPath] = Object.keys(state.sessions);
+	if (!unsupportedPath) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(claudeRoot, "retained-project"), { recursive: true });
+	writeFileSync(unsupportedPath, `${JSON.stringify({
+		type: "system",
+		subtype: "api_error",
+		sessionId: "synthetic-session",
+		uuid: "synthetic-api-error",
+		timestamp: ts(),
+		error: "synthetic capture error",
+	})}\n`);
+	const key = "grind_loop@warning";
+	// Make one retained payload correspond to the unsupported active session.
+	state.sessions[unsupportedPath]!.processedMtimeMs = statSync(unsupportedPath).mtimeMs;
+	state.sessions[unsupportedPath]!.captureIntegrityChecked = true;
+	state.sessions[unsupportedPath]!.pending = false;
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+
+	const report = await tick(config, now);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), unsupportedPath, key),
+		state.sessions[unsupportedPath]!.pendingPayloads![key]);
+	assert.equal(reportTerminal(report, config).state, "partial");
+	assert.equal(reportTerminal(report, config).destination_readback.evidence.unsupported_records, 1);
+	assert.ok(!readFileSync(config.localReceiptStore + ".queries", "utf8").includes(eventIdFor(unsupportedPath, key)));
 });
 
 test("cap pressure keeps failed status lookups, reports retention, and logs one operator line", async (t) => {

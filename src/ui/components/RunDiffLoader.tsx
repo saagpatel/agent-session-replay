@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 
+import { harnessLabel } from "../../core/diff/run-diff.ts";
 import { type Harness, parseTranscript } from "../../core/parse.ts";
 import type { Trace } from "../../core/types.ts";
+import { traceIntegritySummary } from "../format.ts";
 import {
 	combine,
 	type DroppedFile,
@@ -13,6 +15,17 @@ export interface LoadedRun {
 	fileName: string;
 	harness: Harness;
 	trace: Trace;
+}
+
+export function loadTranscript({ name, text }: { name: string; text: string }): LoadedRun {
+	const { harness, trace } = parseTranscript(text);
+	if (trace.steps.length === 0) {
+		const integrity = traceIntegritySummary(trace);
+		throw new Error(integrity
+			? `${harnessLabel(trace)} transcript ${name} has no replayable steps. ${integrity}.`
+			: `No steps parsed from ${name}.`);
+	}
+	return { fileName: name, harness, trace };
 }
 
 interface SlotHandlers {
@@ -35,12 +48,7 @@ export async function takeRunFiles(
 			onError("No .jsonl transcript found. Drop a session folder or .jsonl files.");
 			return;
 		}
-		const { harness, trace } = parseTranscript(merged.text);
-		if (trace.steps.length === 0) {
-			onError(`No steps parsed from ${merged.name}. Is it a Claude Code or Codex transcript?`);
-			return;
-		}
-		onRun({ fileName: merged.name, harness, trace });
+		onRun(loadTranscript(merged));
 		onClearError();
 	} catch (e) {
 		onError(e instanceof Error ? e.message : String(e));
@@ -62,6 +70,7 @@ function RunSlot({
 }) {
 	const [over, setOver] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const integritySummary = run ? traceIntegritySummary(run.trace) : "";
 
 	const take = (files: DroppedFile[]) =>
 		takeRunFiles(files, { onRun, onError, onClearError });
@@ -102,6 +111,11 @@ function RunSlot({
 					<span className="rd-slot__meta">
 						{run.trace.run.model ?? "model unknown"} · {run.trace.steps.length} steps
 					</span>
+					{integritySummary ? (
+						<span className="rd-slot__hint" role="status">
+							⚠ Input may be incomplete. {integritySummary}
+						</span>
+					) : null}
 					<span className="rd-slot__hint">drop or click to replace</span>
 				</>
 			) : (

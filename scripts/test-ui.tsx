@@ -11,7 +11,8 @@ import {
 	ActionBundleReplayPreview,
 	DecisionFlightDeck,
 } from "../src/ui/components/DecisionFlightDeck.tsx";
-import { afrInput, readEntry, type DroppedFile } from "../src/ui/components/DropZone.tsx";
+import { afrInput, combine, droppedFiles, readEntry, type DroppedFile } from "../src/ui/components/DropZone.tsx";
+import { FindingsPanel } from "../src/ui/components/FindingsPanel.tsx";
 
 function dropped(path: string, name: string, text: string): DroppedFile {
 	const file = new File([text], name);
@@ -90,6 +91,73 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	const { diffRuns } = await import("../src/core/diff/run-diff.ts");
 	const { ccEvents, codexEvents, toJsonl } = await import("../src/core/diff/fixtures.ts");
 	const { parseTranscript } = await import("../src/core/parse.ts");
+	const validEvent = JSON.stringify({ type: "user", sessionId: "utf8-session", uuid: "u1", message: { content: "Synthetic task" } });
+	const validBytes = new TextEncoder().encode(`${validEvent}\n{"text":"`);
+	const invalidBytes = new Uint8Array([...validBytes, 0xff, ...new TextEncoder().encode("\"}\n")]);
+	const invalidFile = droppedFiles([new File([invalidBytes], "invalid-utf8.jsonl")])[0]!;
+	const invalidTrace = parseTranscript(await invalidFile.text()).trace;
+	assert.equal(invalidTrace.malformed_lines, 1, "invalid UTF-8 from a dropped JSONL file should count as malformed");
+	const firstSession = JSON.stringify({ type: "user", sessionId: "session-a", uuid: "u1", message: { content: "Synthetic task A" } });
+	const otherSession = JSON.stringify({ type: "user", sessionId: "session-b", uuid: "u2", message: { content: "Synthetic task B" } });
+	const mixedSessionFiles = [
+		dropped("session-a.jsonl", "session-a.jsonl", `${firstSession}\n`),
+		dropped("session-b.jsonl", "session-b.jsonl", `${otherSession}\n`),
+	];
+	let mixedSessionError = "";
+	let mixedSessionLoaded = false;
+	await takeRunFiles(mixedSessionFiles, {
+		onRun: () => { mixedSessionLoaded = true; },
+		onError: (message) => { mixedSessionError = message; },
+		onClearError: () => {},
+	});
+	assert.match(mixedSessionError, /these files belong to different sessions/i);
+	assert.equal(mixedSessionLoaded, false);
+	const captureGap = JSON.stringify({ type: "data-flow-incomplete", sessionId: "session-a", uuid: "gap-1" });
+	for (const [text, expected] of [
+		[firstSession, "No findings — this run looks clean."],
+		[firstSession + "\n" + captureGap, "No findings in the parsed records."],
+		[firstSession + "\n{", "No findings in the parsed records."],
+	] as const) {
+		const html = renderToStaticMarkup(
+			<FindingsPanel trace={parseTranscript(text).trace} findings={[]} activeId={null} onSelect={() => {}} />,
+		);
+		assert.ok(html.includes(expected), `Expected findings panel to say "${expected}". Got ${html}`);
+	}
+	const gapErrors: string[] = [];
+	await takeRunFiles([dropped("gap.jsonl", "gap.jsonl", captureGap)], {
+		onRun: () => assert.fail("a capture gap has no replayable steps"),
+		onError: (message) => gapErrors.push(message),
+		onClearError: () => assert.fail("the capture diagnostic should stay visible"),
+	});
+	assert.equal(gapErrors.length, 1);
+	assert.match(gapErrors[0]!, /Claude Code.*1 incomplete capture record/i);
+	const fragment = JSON.stringify({ type: "response_item", payload: { type: "reasoning" } });
+	for (const texts of [
+		[firstSession, firstSession + "\n" + otherSession],
+		[firstSession + "\n" + otherSession],
+		[firstSession, fragment],
+		[firstSession + "\n" + fragment],
+	]) {
+		const files = texts.map((text, i) => dropped("sample-" + i, "sample-" + i + ".jsonl", text));
+		await assert.rejects(combine(files), /different sessions|different harnesses/i);
+	}
+	const rollouts = ["a", "b"].map((id) => dropped(id, id + ".jsonl",
+		JSON.stringify({ type: "session_meta", payload: { id } })));
+	await assert.rejects(combine(rollouts), /these files belong to different sessions/i);
+	const mixedRollout = (await Promise.all(rollouts.map((file) => file.text()))).join("\n");
+	await assert.rejects(combine([dropped("mixed.jsonl", "mixed.jsonl", mixedRollout)]), /different sessions/i);
+	const sidechainTraces: import("../src/core/types.ts").Trace[] = [];
+	const sidechainMain = JSON.stringify({ type: "assistant", sessionId: "session-a", uuid: "a1", timestamp: "2026-06-20T10:00:00.000Z", message: { content: [{ type: "text", text: "Synthetic main session" }] } });
+	const sidechain = JSON.stringify({ type: "assistant", isSidechain: true, agentId: "agent-synthetic", uuid: "sa1", timestamp: "2026-06-20T10:00:01.000Z", message: { content: [{ type: "tool_use", id: "tool-synthetic", name: "Grep", input: { pattern: "synthetic" } }] } });
+	await takeRunFiles([
+		dropped("session-a.jsonl", "session-a.jsonl", `${sidechainMain}\n`),
+		dropped("session-a/subagents/agent-x.jsonl", "agent-x.jsonl", `${sidechain}\n`),
+	], {
+		onRun: (run) => { sidechainTraces.push(run.trace); },
+		onError: (message) => { throw new Error(message); },
+		onClearError: () => {},
+	});
+	assert.ok(sidechainTraces[0]?.steps.some((step) => step.subagent_id === "agent-synthetic"), "a main session and its sidechain should load together");
 
 	// A clean load clears a banner an earlier bad file left behind.
 	const log: string[] = [];
@@ -105,6 +173,24 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	// The view renders both lanes, the flagged fork and its explanation.
 	const left = parseTranscript(cc).trace;
+	const response = (payload: Record<string, unknown>) => ({ type: "response_item", payload });
+	const chunk = (output: string) => [{ text: JSON.stringify({ chunk_id: "part", session_id: 42, output }) }];
+	const pending = parseTranscript(toJsonl([
+		response({ type: "function_call", name: "exec_command", call_id: "test", arguments: { cmd: "pytest" } }),
+		response({ type: "function_call_output", call_id: "test", output: chunk("") }),
+		response({ type: "function_call", name: "write_stdin", call_id: "poll", arguments: { session_id: 42 } }),
+		response({ type: "function_call_output", call_id: "poll", output: chunk("1 failed in 0.12s") }),
+	])).trace;
+	const pendingHtml = renderToStaticMarkup(<RunDiffView diff={diffRuns(pending, left)} leftFile="pending.jsonl" rightFile="cc.jsonl" />);
+	assert.match(pendingHtml, /runner reported failures/i);
+	assert.match(pendingHtml, /result unclear/);
+	const partialText = `${cc}\n{"type":"user"`;
+	const partialTrace = parseTranscript(partialText).trace;
+	assert.equal(partialTrace.malformed_lines, 1);
+	const partialHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(partialTrace, left)} leftFile="partial.jsonl" rightFile="cc.jsonl" leftTrace={partialTrace} rightTrace={left} />,
+	);
+	assert.match(partialHtml, /Left input may be incomplete: 1 unparsed transcript line/);
 	const right = parseTranscript(
 		toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }, { kind: "exec-cell", command: "npm test", exit: 1 }])),
 	).trace;
@@ -132,6 +218,19 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(loader, /cc\.jsonl/);
+	const partialLoader = renderToStaticMarkup(
+		<RunDiffLoader
+			initial={{
+				left: { fileName: "partial.jsonl", harness: "claude-code", trace: partialTrace },
+				right: { fileName: "cc.jsonl", harness: "claude-code", trace: left },
+			}}
+			onCompare={noop}
+			onBack={noop}
+			onError={noop}
+			onClearError={noop}
+		/>,
+	);
+	assert.match(partialLoader, /Input may be incomplete\. 1 unparsed/);
 	// Run Diff is labelled experimental, with its known limits, on both screens.
 	assert.match(loader, /rd-experimental/);
 	assert.match(html, /rd-experimental/);

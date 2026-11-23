@@ -33,6 +33,7 @@ function trace(tools: Tool[]): Trace {
 			attributes: {
 				[ATTR.TOOL_NAME]: name,
 				[ATTR.TOOL_ARGS]: args,
+				...(["Bash", "shell", "shell_command", "exec_command"].includes(name) && status === "ok" ? { [ATTR.SHELL_EXIT_CODE]: 0 } : {}),
 			},
 		})),
 	};
@@ -486,6 +487,12 @@ test("unclassified tools, malformed data, and normalization caps are incomplete"
 	const malformed = trace([read(1, 2)]);
 	malformed.malformed_lines = 1;
 	assert.equal(alignEquivalent(malformed, malformed).equivalent, false);
+	for (const diagnostic of [{ unsupported_records: 1 }, { incomplete_records: 1 }]) {
+		const input = trace([read(1, 2)]);
+		const result = alignEquivalent({ ...input, ...diagnostic }, input);
+		assert.equal(result.incomplete, true);
+		assert.equal(result.equivalent, false);
+	}
 });
 
 test("alignment truncation cannot report equivalent even if the retained prefix matches", () => {

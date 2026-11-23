@@ -535,6 +535,17 @@ test("a yielded test takes the result of the write_stdin poll that finishes it",
 	assert.deepEqual(run(null), ["test:unknown"]);
 });
 
+test("an exec cell poll uses only its recorded session_id argument", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest"), chunks: [{ session_id: 42 }] },
+		{
+			input: 'text(await tools.write_stdin({chars:"session_id:42",session_id:17}));',
+			chunks: [{ exit_code: 0, output: "3 passed in 0.12s" }],
+		},
+	]));
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
 test("cosmetic-only forks never claim to explain different outcomes", () => {
 	const done = parseCodexEvents(
 		codexEvents(PROMPT, [{ kind: "shell", command: "cat README.md" }, { kind: "patch", file: "a.ts" }]),
@@ -798,7 +809,7 @@ test("passed needs both a clean exit and the runner's passing summary", () => {
 // ---- review regressions, round 4 -------------------------------------------
 
 /** A plain-format Codex function call and its string output. */
-function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; output: string }>) {
+function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; output: unknown }>) {
 	let t = 0;
 	const ts = () => `2026-10-01T13:00:${String(t++).padStart(2, "0")}.000Z`;
 	return parseCodexEvents([
@@ -814,22 +825,104 @@ function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; 
 	]);
 }
 
-test("a yielded plain-format command is settled by its write_stdin poll", () => {
-	const yielded = { name: "exec_command", args: { cmd: "pnpm test" }, output: "Wall time: 10s\nProcess running with session ID 123\nOutput:\n" };
-	const failing = plainCalls([
-		yielded,
-		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 1\nOutput:\nℹ tests 2\nℹ pass 1\nℹ fail 1" },
+test("a copied session ID after inline Output cannot steal another command's poll", () => {
+	const trace = plainCalls([
+		{ name: "exec_command", args: { cmd: "npm run build" }, output: "Process running with session ID 42\nOutput:\n" },
+		{ name: "exec_command", args: { cmd: "pytest -q" }, output: "Output: restored log\nProcess running with session ID 42\nOutput:\n" },
+		{ name: "write_stdin", args: { session_id: 42 }, output: "Process exited with code 0\nOutput:\n3 passed in 0.12s" },
 	]);
+	const run = diffRuns(trace, trace).left;
+	assert.equal(run.verdict, "unclear");
+	assert.deepEqual(run.steps.map(s => s.status), ["ok", "unknown"]);
+});
+
+test("a yielded plain-format command is settled by its structured write_stdin poll", () => {
+	const chunk = (value: Record<string, unknown>) => [{ text: JSON.stringify({ chunk_id: "plain", ...value }) }];
+	const run = (final: Record<string, unknown> | null) => plainCalls([
+		{ name: "exec_command", args: { cmd: "pnpm test" }, output: chunk({ session_id: 123 }) },
+		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: chunk({ session_id: 123 }) },
+		...(final ? [{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: chunk(final) }] : []),
+	]);
+	const failing = run({ exit_code: 1, output: "ℹ tests 2\nℹ pass 1\nℹ fail 1" });
 	assert.deepEqual(normalizeTrace(failing).map((s) => `${s.action}:${s.status}`), ["test:error"]);
 	assert.equal(diffRuns(failing, failing).left.verdict, "failed");
-	const passing = plainCalls([
-		yielded,
-		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 0\nOutput:\nℹ tests 2\nℹ pass 2\nℹ fail 0" },
-	]);
+	const passing = run({ exit_code: 0, output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" });
 	assert.equal(diffRuns(passing, passing).left.verdict, "passed");
-	const never = plainCalls([yielded]);
+	const never = plainCalls([{ name: "exec_command", args: { cmd: "pnpm test" }, output: chunk({ session_id: 123 }) }]);
 	assert.deepEqual(normalizeTrace(never).map((s) => s.status), ["unknown"]);
 	assert.equal(diffRuns(never, never).left.verdict, "unclear");
+});
+
+test("argv command arguments keep shell punctuation as literal data", () => {
+	const receipt = (command: string[]) => parseCodexEvents([{
+		type: "event_msg", payload: { type: "item_completed", item: {
+			type: "CommandExecution", id: "argv-call", command, exit_code: 1, aggregated_output: "",
+		} },
+	}]);
+	for (const [command, action] of [
+		[["grep", "no match; pytest -q", "/dev/null"], "search"],
+		[["npm", "run test"], "run"],
+		[["custom-sh", "-c", "pytest -q"], "run"],
+		[["bash", "-c", "grep pattern file", "; pytest"], "search"],
+	] as const) {
+		const trace = receipt([...command]);
+		assert.deepEqual(normalizeTrace(trace).map((s) => s.action), [action]);
+		assert.equal(diffRuns(trace, trace).left.verdict, "unfinished");
+	}
+	assert.equal(normalizeTrace(receipt(["cat", "flags|notes;draft"]))[0]?.target, "flags|notes;draft");
+});
+
+test("a background test does not use the shell's exit status", () => {
+	const verdict = (command: string) => {
+		const trace = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command, output: "3 passed in 0.12s" }]));
+		return diffRuns(trace, trace).left.verdict;
+	};
+	for (const command of ["pytest -q &", "pytest -q &wait", "pytest -q && true &"])
+		assert.equal(verdict(command), "unclear", command);
+	for (const command of ["pytest -q 2>&1", "pytest -k '&'", "pytest -k \\&", "pytest -q # notes &"])
+		assert.equal(verdict(command), "passed", command);
+});
+
+test("equivalent workdir spellings preserve receipt evidence", () => {
+	const trace = parseCodexEvents([
+		{ timestamp: "2026-10-01T13:00:00.000Z", type: "session_meta", payload: { id: "dirs", cwd: WORKSPACE_CODEX } },
+		{ timestamp: "2026-10-01T13:00:01.000Z", type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "d1", arguments: JSON.stringify({ cmd: "cat src/a.ts", workdir: "packages/api" }) } },
+		{ timestamp: "2026-10-01T13:00:02.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "d1", output: "Process exited with code 0\nOutput:\nx" } },
+		{ timestamp: "2026-10-01T13:00:03.000Z", type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "d1", command: "cat src/a.ts", cwd: `${WORKSPACE_CODEX}/packages/api/`, exit_code: 0, aggregated_output: "x" } } },
+	]);
+	assert.deepEqual(normalizeTrace(trace).map((s) => `${s.signature}:${s.status}`), ["read:packages/api/src/a.ts:ok"]);
+});
+
+test("an intermediate poll keeps its runner summary visible", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123 }] },
+		{ input: pollCall(123), chunks: [{ session_id: 123, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, "fail");
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("a pending pipeline summary stays visible without deciding the verdict", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, "fail");
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("a poll for another structured session does not update the waiting command", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123 }] },
+		{ input: pollCall(123), chunks: [{ session_id: 456, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, undefined);
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
 });
 
 test("the stage cap never drops a test run or the final stage", () => {
@@ -1210,6 +1303,205 @@ test("a piped command never takes the pipe's exit status (#112 item 4)", () => {
 	assert.deepEqual(resolveStatuses(teeMid, "single", "ok", false), ["unknown", "unknown"]);
 	// An unpiped command still owns its exit.
 	assert.deepEqual(resolveStatuses(classifyCommand("npm run build", null), "single", "error", false), ["error"]);
+});
+
+test("Bash |& is treated as a pipe", () => {
+	const failing = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q |& tail -n 5", output: "1 failed in 0.12s" }]),
+	);
+	assert.equal(diffRuns(failing, failing).left.verdict, "failed");
+	const passing = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q |& tail -n 5", output: "3 passed in 0.12s" }]),
+	);
+	assert.equal(diffRuns(passing, passing).left.verdict, "unclear");
+});
+
+test("runner summaries are recognized in piped pytest and unittest output", () => {
+	assert.equal(hasTestPasses("3 passed in 0.12s"), true);
+	assert.equal(hasTestFailures("1 failed, 2 passed in 0.31s"), true);
+	assert.equal(hasTestFailures("1 failed, 2 passed, 1 skipped in 0.31s"), true);
+	assert.equal(hasTestFailures("1 error in 0.31s"), true);
+	assert.equal(hasTestFailures("1 passed, 1 failed in 0.31s"), true);
+	assert.equal(hasTestFailures("1 skipped, 1 error, 2 failed, 3 passed in 0.31s"), true);
+	assert.equal(hasTestPasses("Ran 4 tests in 0.010s\n\nOK"), true);
+	assert.equal(hasTestFailures("Ran 4 tests in 0.010s\n\nFAILED (failures=1)"), true);
+	assert.equal(hasTestFailures("FAILED (failures=1)"), false);
+	assert.equal(hasTestPasses("Ran 0 tests in 0.010s\nOK"), false);
+	assert.equal(hasTestPasses("0 passed in 0.12s"), false);
+
+	const verdict = (command: string, output: string) => {
+		const trace = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command, output }]));
+		return diffRuns(trace, trace).left;
+	};
+	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").verdict, "unclear");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 failed, 2 passed in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 failed, 2 passed, 1 skipped in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "1 error in 0.31s").verdict, "failed");
+	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").steps[0]?.summary, "pass");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nOK").verdict, "unclear");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1)").verdict, "failed");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1, skipped=1)").verdict, "failed");
+	const downstream = verdict("pytest -q | printf 'not ok 1\\n'", "not ok 1");
+	assert.equal(downstream.verdict, "unclear");
+	for (const command of [
+		"pytest -q | echo '3 passed in 0.12s'",
+		"pytest -q | cat old-results.log",
+		"pytest -q | tail -n 5 old-results.log",
+	]) {
+		assert.equal(verdict(command, "3 passed in 0.12s").steps[0]?.summary, undefined, command);
+	}
+});
+
+test("a passing runner summary cannot replace missing exit evidence", () => {
+	const trace = plainCalls([
+		{ name: "exec_command", args: { cmd: "pytest -q" }, output: "Output:\n3 passed in 0.12s" },
+	]);
+	assert.equal(normalizeTrace(trace)[0]?.summary, "pass");
+	assert.equal(normalizeTrace(trace)[0]?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("Claude verdicts require an evidenced test exit", () => {
+	const pass = "3 passed in 0.12s";
+	for (const [exit, output, verdict] of [
+		[0, pass, "passed"], [7, pass, "failed"], [undefined, pass, "unclear"],
+		[undefined, "1 failed, 2 passed in 0.31s", "unclear"],
+	] as const) {
+		const events = ccEvents(PROMPT, [{ name: "Bash", command: "pytest -q", output }]);
+		const result = events.find((event) => event["uuid"] === "r0")!;
+		if (exit === undefined) {
+			delete result["toolUseResult"];
+			const message = result["message"] as { content: Record<string, unknown>[] };
+			delete message.content[0]!["is_error"];
+		} else result["toolUseResult"] = { exitCode: exit };
+		const trace = parseClaudeCodeEvents(events);
+		assert.equal(diffRuns(trace, trace).left.verdict, verdict);
+	}
+});
+
+test("a rejected Claude test tool call is not reported as a failed test run", () => {
+	const events = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "Tool use rejected by user" },
+	]);
+	delete events.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const trace = parseClaudeCodeEvents(events);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "unclear");
+	assert.equal(result.steps[0]?.status, "unknown");
+	assert.match(String(trace.steps.find((step) => step.kind === "tool_call")?.attributes["tool.error.message"]), /Tool use rejected by user/);
+	assert.equal(result.steps[0]?.error, undefined);
+
+	const contradictory = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "Tool use rejected by user" },
+	]);
+	contradictory.find((event) => event["uuid"] === "r0")!["toolUseResult"] = { exitCode: 0 };
+	const contradictoryTrace = parseClaudeCodeEvents(contradictory);
+	assert.equal(diffRuns(contradictoryTrace, contradictoryTrace).left.verdict, "unclear");
+
+	const compound = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q && cat README.md", error: "Tool use rejected by user" },
+	]);
+	delete compound.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const compoundTrace = parseClaudeCodeEvents(compound);
+	const compoundResult = diffRuns(compoundTrace, compoundTrace).left;
+	assert.equal(compoundResult.verdict, "unclear");
+	assert.equal(compoundResult.steps.find((step) => step.action === "test")?.status, "unknown");
+	assert.equal(compoundResult.steps.find((step) => step.action === "test")?.error, undefined);
+	assert.equal(compoundResult.steps.find((step) => step.action === "read")?.error, undefined);
+
+	const summaryInCompound = ccEvents(PROMPT, [
+		{ name: "Bash", command: "cat old-results.log; pytest -q", error: "1 failed, 2 passed in 0.31s" },
+	]);
+	delete summaryInCompound.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const summaryTrace = parseClaudeCodeEvents(summaryInCompound);
+	const summaryResult = diffRuns(summaryTrace, summaryTrace).left;
+	assert.equal(summaryResult.verdict, "unclear");
+	assert.equal(summaryResult.steps.find((step) => step.action === "test")?.status, "unknown");
+});
+
+test("a failing summary without a numeric exit stays unclear for a standalone test", () => {
+	const events = ccEvents(PROMPT, [
+		{ name: "Bash", command: "pytest -q", error: "1 failed in 0.12s" },
+	]);
+	delete events.find((event) => event["uuid"] === "r0")!["toolUseResult"];
+	const trace = parseClaudeCodeEvents(events);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "unclear");
+	assert.equal(result.steps.find((item) => item.action === "test")?.status, "unknown");
+});
+
+test("a background test keeps its summary without borrowing an exit status", () => {
+	const traceFor = (path: string) => {
+		const events = ccEvents(PROMPT, [
+			{ name: "Bash", command: "python -m unittest tests.test_dates" },
+			{ name: "Bash", command: `tail -n 5 ${path}`, output: "Ran 4 tests in 0.010s\n\nOK" },
+		]);
+		const launchResult = events.find((event) => event["uuid"] === "r0")!;
+		launchResult["toolUseResult"] = { backgroundTaskId: "job-a", outputFile: "/tmp/example/job-a.output" };
+		return parseClaudeCodeEvents(events);
+	};
+	const matching = traceFor("/tmp/example/job-a.output");
+	const test = normalizeTrace(matching).find((step) => step.action === "test");
+	assert.equal(test?.summary, "pass");
+	assert.equal(test?.status, "unknown");
+	assert.equal(diffRuns(matching, matching).left.verdict, "unclear");
+	const different = traceFor("/tmp/example/other.output");
+	assert.equal(normalizeTrace(different).find((step) => step.action === "test")?.summary, undefined);
+});
+
+test("definitely skipped test commands do not replace the last evidenced test", () => {
+	const trace = parseClaudeCodeEvents(
+		ccEvents(PROMPT, [
+			{ name: "Bash", command: "pytest -q", output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" },
+			{ name: "Bash", command: "false && pytest -q" },
+		]),
+	);
+	const result = diffRuns(trace, trace).left;
+	assert.equal(result.verdict, "passed");
+	assert.match(result.verdictReason, /pytest/);
+	assert.doesNotMatch(result.verdictReason, /false &&/);
+	const prior = plainCalls([{ name: "exec_command", args: { cmd: "pnpm test" }, output: "Process exited with code 0\nOutput:\nℹ fail 0" }]);
+	for (const input of [
+		'if (false) { text(await tools.exec_command({cmd:"pytest -q"})); }',
+		'if (false) await tools.exec_command({cmd:"pytest -q"});',
+	]) {
+		const dead = rawCell(input, parts("Script completed\nOutput:\n"));
+		const combined = { ...prior, steps: [...prior.steps, ...dead.steps] };
+		const verdict = diffRuns(combined, combined).left;
+		assert.equal(verdict.verdict, "passed");
+		assert.match(verdict.verdictReason, /pnpm test/);
+	}
+	const stages = classifyCommand("pytest; false && pytest", null).filter((part) => part.action === "test");
+	assert.deepEqual(stages.map((part) => part.executed), [undefined, false]);
+	assert.equal(classifyCommand("true || pytest -q", null).at(-1)?.executed, false);
+	assert.equal(classifyCommand("false || false && pytest -q", null).at(-1)?.executed, false);
+	assert.notEqual(classifyCommand("true || false && pytest", null).at(-1)?.executed, false);
+	assert.equal(classifyCommand("false || pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("true && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("maybe || false && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("maybe && true || pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("false # comment && pytest -q", null).at(-1)?.executed, undefined);
+	assert.equal(classifyCommand("false \\&& pytest -q", null).at(-1)?.executed, undefined);
+});
+
+test("regex braces keep Codex cell call execution unknown", () => {
+	const cell = rawCell(
+		'{ if (false) { const pattern = /{/; } text(await tools.exec_command({cmd:"pytest -q"})); }',
+		parts("Script completed\nOutput:\n", JSON.stringify({ chunk_id: "1", exit_code: 0, test_passes: true })),
+	);
+	const testStep = normalizeTrace(cell).find((item) => item.action === "test");
+	assert.equal(testStep?.executed, undefined);
+	assert.equal(testStep?.status, "unknown");
+});
+
+test("nested template literals keep Codex cell call execution unknown", () => {
+	const cell = rawCell(
+		'{ if (false) { const s = `outer ${`{`}`; } text(await tools.exec_command({cmd:"pytest"})); }',
+		parts("Script completed\nOutput:\n", JSON.stringify({ chunk_id: "1", exit_code: 0, test_passes: true })),
+	);
+	const testStep = normalizeTrace(cell).find((item) => item.action === "test");
+	assert.equal(testStep?.executed, undefined);
+	assert.equal(testStep?.status, "unknown");
 });
 
 test("a file in an unknown directory is never named or vouched for", () => {

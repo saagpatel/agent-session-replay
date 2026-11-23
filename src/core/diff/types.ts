@@ -83,6 +83,8 @@ export interface DiffStep {
 	/** Short human label: "edit src/parse.ts", "test pnpm test". */
 	label: string;
 	status: DiffStatus;
+	/** False only when shell syntax proves this invocation was skipped. */
+	executed?: boolean;
 	/**
 	 * For a test run: what the runner's own summary line said, when the step's
 	 * output had one that could be tied to this test alone.

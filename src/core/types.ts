@@ -87,6 +87,10 @@ export interface Trace {
 	/** Parse metadata (not part of the plumbline data model): count of non-blank
 	 * transcript lines that failed to parse, so the UI can flag under-reporting. */
 	malformed_lines?: number;
+	/** Records with a transcript event type the parser does not interpret. */
+	unsupported_records?: number;
+	/** Explicit markers reporting that transcript capture was incomplete. */
+	incomplete_records?: number;
 	/** Parser-known event IDs deliberately omitted from steps (for parent links). */
 	external_parent_ids?: string[];
 }
@@ -110,6 +114,12 @@ export const ATTR = {
 	TOOL_RESULT_KIND: "tool.result.kind",
 	/** UUIDs of Claude user events whose tool results were merged into this step. */
 	CLAUDE_RESULT_EVENT_UUIDS: "claude.result_event_uuids",
+	/** Process exit recorded by the harness for a direct shell command. */
+	SHELL_EXIT_CODE: "tool.exit_code",
+	/** At least two explicit exits attributed to this command disagree. */
+	SHELL_EXIT_CONFLICT: "tool.exit_conflict",
+	CLAUDE_BACKGROUND_TASK_ID: "claude.background_task_id",
+	CLAUDE_BACKGROUND_OUTPUT_FILE: "claude.background_output_file",
 	/** Whether an Agent result conveys completed output or only a launch receipt. */
 	CLAUDE_AGENT_RESULT_KIND: "claude.agent_result_kind",
 	/** Kind of a parser-observed parent event omitted from steps. */
@@ -131,6 +141,8 @@ export const ATTR = {
 	 * yielded command has a session_id and no exit_code yet.
 	 */
 	EXEC_RESULTS: "codex.exec.results",
+	/** Working directory reported by a Codex CommandExecution receipt. */
+	CODEX_RECEIPT_CWD: "codex.command_execution.cwd",
 	/** The exec cell's script ran to completion. */
 	EXEC_COMPLETED: "codex.exec.completed",
 	/**

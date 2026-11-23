@@ -8,14 +8,15 @@ import { detect } from "../core/detect/engine.ts";
 import { diffRuns } from "../core/diff/run-diff.ts";
 import type { RunDiff } from "../core/diff/types.ts";
 import type { Finding } from "../core/detect/types.ts";
-import { type Harness, parseTranscript } from "../core/parse.ts";
+import type { Harness } from "../core/parse.ts";
 import type { Step, Trace } from "../core/types.ts";
 import { buildTimeline, type TimelineView } from "../core/view/timeline.ts";
 import { DecisionFlightDeck } from "./components/DecisionFlightDeck.tsx";
 import { DropZone, type DropPayload } from "./components/DropZone.tsx";
 import { FindingsPanel } from "./components/FindingsPanel.tsx";
-import { type LoadedRun, RunDiffLoader } from "./components/RunDiffLoader.tsx";
+import { type LoadedRun, loadTranscript, RunDiffLoader } from "./components/RunDiffLoader.tsx";
 import { RunDiffView } from "./components/RunDiffView.tsx";
+import { traceIntegritySummary } from "./format.ts";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { StepInspector } from "./components/StepInspector.tsx";
 import { Waterfall } from "./components/Waterfall.tsx";
@@ -73,11 +74,7 @@ export function App() {
 				setError(null);
 				return;
 			}
-			const { harness, trace } = parseTranscript(payload.text);
-			if (trace.steps.length === 0) {
-				setError("No steps parsed. Is this a Claude Code or Codex transcript?");
-				return;
-			}
+			const { harness, trace } = loadTranscript(payload);
 			const findings = detect(trace);
 			const timeline = buildTimeline(trace, findings);
 			setLoaded({
@@ -148,6 +145,7 @@ export function App() {
 			if (opener?.isConnected) opener.focus();
 		});
 	}, []);
+	const integritySummary = loaded?.mode === "session" ? traceIntegritySummary(loaded.trace) : "";
 
 	return (
 		<div className="app">
@@ -181,12 +179,9 @@ export function App() {
 									? `${loaded.diff.rows.length} aligned rows`
 									: loaded.bundle.name}
 						</span>
-						{loaded.mode === "session" && loaded.trace.malformed_lines ? (
-							<span
-								className="chip chip--warn"
-								title={`${loaded.trace.malformed_lines} transcript line(s) could not be parsed and were skipped — this view may under-report`}
-							>
-								⚠ {loaded.trace.malformed_lines} unparsed
+						{loaded.mode === "session" && integritySummary ? (
+							<span className="chip chip--warn" title={`${integritySummary} — this view may under-report`}>
+								⚠ {integritySummary}
 							</span>
 						) : null}
 						<button
@@ -221,6 +216,7 @@ export function App() {
 							/>
 						</div>
 						<FindingsPanel
+							trace={loaded.trace}
 							findings={loaded.findings}
 							activeId={focusedFindingId}
 							onSelect={focusFinding}

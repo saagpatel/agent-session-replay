@@ -23,26 +23,39 @@ const CODEX_TYPES = new Set([
 /** Claude Code events carry one of these top-level `type`s. */
 const CC_TYPES = new Set(["assistant", "user", "system"]);
 
-/** Sniff the harness from the first handful of parseable events. */
+export function recordHarness(record: unknown): Harness {
+	if (typeof record !== "object" || record === null || !("type" in record)) return "unknown";
+	const type = record.type;
+	if (typeof type !== "string") return "unknown";
+	if (CODEX_TYPES.has(type) && "payload" in record) return "codex";
+	if (type === "data-flow-incomplete") {
+		return "sessionId" in record && typeof record.sessionId === "string" && record.sessionId.trim().length > 0 &&
+			"uuid" in record && typeof record.uuid === "string" && record.uuid.trim().length > 0
+			? "claude-code" : "unknown";
+	}
+	if (!("sessionId" in record || "uuid" in record)) return "unknown";
+	if (CC_TYPES.has(type)) return "claude-code";
+	if (type === "permission-mode" && "permissionMode" in record && typeof record.permissionMode === "string")
+		return "claude-code";
+	if (type === "mode" && "mode" in record && typeof record.mode === "string") return "claude-code";
+	return "unknown";
+}
+
+/** Sniff the harness from the first identifiable event. */
 export function detectHarness(text: string): Harness {
-	const events = parseJsonl(text).slice(0, 25);
-	for (const ev of events) {
-		if (typeof ev !== "object" || ev === null) continue;
-		const e = ev as Record<string, unknown>;
-		const type = typeof e["type"] === "string" ? (e["type"] as string) : "";
-		// Codex: envelope { timestamp, type, payload } with a known type.
-		if (CODEX_TYPES.has(type) && "payload" in e) return "codex";
-		// Claude Code: an event type plus a session/uuid marker.
-		if (CC_TYPES.has(type) && ("sessionId" in e || "uuid" in e))
-			return "claude-code";
+	for (const ev of parseJsonl(text)) {
+		const harness = recordHarness(ev);
+		if (harness !== "unknown") return harness;
 	}
 	return "unknown";
 }
 
 export interface ParsedTranscript {
-	harness: Harness;
+	harness: Exclude<Harness, "unknown">;
 	trace: Trace;
 }
+
+export class UnsupportedTranscriptError extends Error {}
 
 /**
  * Parse any supported transcript, auto-detecting the harness. `subagentTexts`
@@ -57,9 +70,8 @@ export function parseTranscript(
 	if (harness === "codex") {
 		return { harness, trace: parseCodexTranscript(mainText) };
 	}
-	// Default to the Claude Code parser (also handles the "unknown" best-effort).
-	return {
-		harness: harness === "claude-code" ? "claude-code" : harness,
-		trace: parseClaudeCodeTranscript(mainText, subagentTexts),
-	};
+	if (harness === "claude-code") {
+		return { harness, trace: parseClaudeCodeTranscript(mainText, subagentTexts) };
+	}
+	throw new UnsupportedTranscriptError("Unsupported transcript format. Expected a Claude Code or Codex transcript.");
 }

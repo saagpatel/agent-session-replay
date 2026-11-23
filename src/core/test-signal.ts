@@ -11,10 +11,16 @@
  * reads as a failure.
  */
 
+const PYTEST_COUNT = String.raw`\d+ (?:failed|errors?|passed|skipped|xfailed|xpassed|deselected|warnings?)`;
+const UNITTEST_COUNT = String.raw`(?:failures|errors|skipped|expected failures|unexpected successes)=\d+`;
+const UNITTEST_SUCCESS_COUNT = String.raw`(?:skipped|expected failures)=\d+`;
 const FAIL_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail [1-9]/m, // node --test
 	/^# fail [1-9]/m, // node --test (TAP)
 	/^=+ .*\b[1-9]\d* (?:failed|errors?)\b.*=+[ \t]*$/m, // pytest
+	// pytest -q: one positive failure or error count anywhere in the outcome list.
+	new RegExp(String.raw`^(?=[^\r\n]*\b[1-9]\d* (?:failed|errors?)\b)[ \t]*${PYTEST_COUNT}(?:, ${PYTEST_COUNT})* in \d+(?:\.\d+)?s[ \t]*$`, "m"),
+	new RegExp(String.raw`^Ran \d+ tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?FAILED \((?:${UNITTEST_COUNT}, )*(?:failures|errors|unexpected successes)=[1-9]\d*(?:, ${UNITTEST_COUNT})*\)[ \t]*$`, "m"),
 	/^[ \t]*Tests?[ \t]+.*\b[1-9]\d* failed\b/m, // vitest
 	/^Tests:[ \t]+[1-9]\d* failed/m, // jest
 	/^[ \t]*[1-9]\d* failing[ \t]*$/m, // mocha
@@ -28,6 +34,8 @@ const PASS_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail 0[ \t]*$/m, // node --test
 	/^# fail 0[ \t]*$/m, // node --test (TAP)
 	/^=+ .*\b\d+ passed\b.*=+[ \t]*$/m, // pytest
+	new RegExp(String.raw`^(?=[^\r\n]*\b[1-9]\d* passed\b)[ \t]*${PYTEST_COUNT}(?:, ${PYTEST_COUNT})* in \d+(?:\.\d+)?s[ \t]*$`, "m"), // pytest -q
+	new RegExp(String.raw`^Ran [1-9]\d* tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?OK(?: \(${UNITTEST_SUCCESS_COUNT}(?:, ${UNITTEST_SUCCESS_COUNT})*\))?[ \t]*$`, "m"), // unittest
 	/^[ \t]*Tests?[ \t]+\d+ passed\b/m, // vitest
 	/^Tests:[ \t]+\d+ passed, \d+ total/m, // jest
 	/^[ \t]*\d+ passing\b/m, // mocha

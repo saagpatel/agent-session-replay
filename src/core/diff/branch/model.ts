@@ -1,6 +1,6 @@
 /** Evidence-only branch reconstruction; no filesystem access or execution. */
 import { ATTR, type ExecPart, type Trace } from "../../types.ts";
-import { shellCommand, shellEvidence, type ShellEvidence } from "../../shell-evidence.ts";
+import { argvShellScript, shellCommand, shellEvidence, type ShellEvidence } from "../../shell-evidence.ts";
 import {
 	classifyCommand,
 	literalExecCalls,
@@ -8,7 +8,7 @@ import {
 	splitStages,
 } from "../normalize.ts";
 import type { DiffAction, DiffStatus } from "../types.ts";
-import { lineagePath, workingDirectory } from "./path.ts";
+import { commandWorkdir, lineagePath, workingDirectory } from "./path.ts";
 import type {
 	Branch,
 	BranchGraph,
@@ -179,6 +179,18 @@ function operations(trace: Trace): Operation[] {
 			const invalidArgs = (args["env"] && Object.keys(Object(args["env"])).length) ||
 				["workdir", "working_directory", "cwd"].some((key) => key in args && typeof args[key] !== "string");
 			const unparsed = !SHELL_TOOLS.has(name) || !allowed || invalidArgs ? fullCommand || name || "empty shell command" : undefined;
+			const receiptCwd = str(step.attributes[ATTR.CODEX_RECEIPT_CWD]);
+			if (receiptCwd !== undefined && commandWorkdir(cwd, args, receiptCwd) === null) {
+				for (const label of own)
+					add(label.action, label.target, { unparsed: "conflicting command directories" }, "unknown");
+				continue;
+			}
+			const argv = args["command"] ?? args["cmd"];
+			if (Array.isArray(argv) && (argv.length !== 3 || argvShellScript(argv) === undefined)) {
+				for (const label of own)
+					add(label.action, label.target, { command: fullCommand, evidence: allowed ?? undefined, unparsed }, label.status);
+				continue;
+			}
 			const stages = splitStages(fullCommand);
 			if (!stages.length) stages.push(fullCommand);
 			const consumed = new Set<number>();
@@ -345,6 +357,9 @@ export function buildBranchGraph(
 		]))
 			invalidate(path);
 	};
+	const hasCaptureGap = (trace.incomplete_records ?? 0) > 0 ||
+		(trace.malformed_lines ?? 0) > 0 || (trace.unsupported_records ?? 0) > 0;
+	if (hasCaptureGap) invalidateTree();
 	const effectFor = (op: Operation, file: string): Effect => {
 		const effect: Effect = {
 			node: ref(op.node),
@@ -783,7 +798,7 @@ export function buildBranchGraph(
 			forkAfterStepId: null,
 			rejoinAtStepId: null,
 			nodes: [],
-			structuralStatus: "retained",
+			structuralStatus: hasCaptureGap ? "unknown" : "retained",
 			reasons: ["Run end-state lineage; artifact claim not checked.", ...unparsedReasons],
 		},
 	];
