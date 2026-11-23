@@ -40,6 +40,13 @@ const EPOCH = "1970-01-01T00:00:00Z";
 const SUMMARY_MAX = 600;
 const PLAN_MAX = 2000;
 const ERROR_MAX = 500;
+const SUPPORTED_ENVELOPE_TYPES = new Set([
+	"session_meta",
+	"turn_context",
+	"compacted",
+	"response_item",
+	"event_msg",
+]);
 
 /** Codex tool name -> coarse result kind. */
 const RESULT_KIND: Record<string, string> = {
@@ -59,14 +66,14 @@ const RESULT_KIND: Record<string, string> = {
  * non-zero code is a failed call. Only the header is searched, so a command
  * that prints an old log containing the phrase is never misread.
  */
-const EXIT_RE = /Process exited with code (\d+)/;
+const EXIT_RE = /^Process exited with code (\d+)\s*$/m;
 const HEADER_MAX = 400;
 /** A plain-format command that yielded before exiting. */
 const RUNNING_RE = /Process running with session ID (\w+)/;
 
 function legacyExit(raw: unknown): RegExpExecArray | null {
 	if (typeof raw !== "string") return null;
-	const header = (raw.split(/\nOutput:/)[0] ?? "").slice(0, HEADER_MAX);
+	const header = raw.slice(0, HEADER_MAX).split(/^(?:Final output|Output):/m, 1)[0] ?? "";
 	return EXIT_RE.exec(header);
 }
 
@@ -262,6 +269,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	const events = rawEvents.map(asObj);
 	const steps: Step[] = [];
 	const toolSteps = new Map<string, Step>();
+	const receipts: { step: Step; item: Json; ts: string }[] = [];
 
 	let runId = "unknown";
 	let version: string | undefined;
@@ -287,6 +295,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	let lastComposite: string | null = null;
 	let prevModel: string | undefined;
 	let modeSeq = 0;
+	let unsupportedRecords = 0;
 
 	const mergeOutput = (
 		callId: string,
@@ -314,15 +323,19 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		// A plain-format command still running reports a session to poll instead
 		// of an exit code; record it like a yielded exec-cell chunk.
 		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
-		if (running?.[1])
-			step.attributes[ATTR.EXEC_RESULTS] = [
-				{
-					exit_code: null,
-					session_id: running[1],
-					test_failures: hasTestFailures(output),
-					test_passes: hasTestPasses(output),
-				},
-			];
+		const shell = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" || step.attributes[ATTR.TOOL_NAME] === "write_stdin";
+		if (shell && m) step.attributes[ATTR.SHELL_EXIT_CODE] = Number(m[1]);
+		if (running || (shell && !results.length && !m && step.status !== "error")) {
+			step.attributes[ATTR.EXEC_RESULTS] = [{
+				exit_code: null,
+				session_id: running?.[1] ?? null,
+				test_failures: hasTestFailures(output),
+				test_passes: hasTestPasses(output),
+			}];
+		}
+		if (shell && !m && step.status !== "error" && !results.some((r) => r.exit_code !== null)) {
+			delete step.status;
+		}
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
 		if (Array.isArray(rawOutput) && step.attributes[ATTR.TOOL_NAME] === "exec")
@@ -376,6 +389,10 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 			version ??= str(p["cli_version"]);
 			originator ??= str(p["originator"]);
 			cwd ??= str(p["cwd"]);
+			return;
+		}
+		if (etype && !SUPPORTED_ENVELOPE_TYPES.has(etype)) {
+			unsupportedRecords += 1;
 			return;
 		}
 
@@ -451,15 +468,21 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				pendingReasoning = true;
 			} else if (ptype === "function_call") {
 				const callId = str(p["call_id"]) ?? `call${idx}`;
-				const step = toolStep(
-					str(p["name"]) ?? "",
-					callId,
-					parseArgs(p["arguments"]),
-					ts,
-					idx,
-				);
-				steps.push(step);
+				const name = str(p["name"]) ?? "";
+				const args = parseArgs(p["arguments"]);
+				const itemId = str(p["id"]);
+				const existing = toolSteps.get(callId) ?? (itemId ? toolSteps.get(itemId) : undefined);
+				const step = existing ?? toolStep(name, callId, args, ts, idx);
+				if (existing) {
+					step.step_id = callId;
+					step.started_at = ts;
+					step.attributes[ATTR.TOOL_CALL_ID] = callId;
+					step.attributes[ATTR.TOOL_NAME] = name;
+					step.attributes[ATTR.TOOL_ARGS] = args;
+					step.attributes[ATTR.TOOL_RESULT_KIND] = RESULT_KIND[name] ?? "other";
+				} else steps.push(step);
 				toolSteps.set(callId, step);
+				if (itemId) toolSteps.set(itemId, step);
 			} else if (ptype === "function_call_output") {
 				mergeOutput(str(p["call_id"]) ?? "", p["output"], ts);
 			} else if (ptype === "local_shell_call") {
@@ -543,9 +566,49 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				outStatus = "completed";
 				const last = str(p["last_agent_message"]);
 				if (last) outSummary = last;
+			} else if (ptype === "turn_aborted") {
+				outStatus = "aborted";
+				outSummary = undefined;
+			} else if (ptype === "item_completed") {
+				const item = asObj(p["item"]);
+				if (item["type"] !== "CommandExecution") return;
+				const callId = str(item["call_id"]) ?? str(item["id"]) ?? `command${idx}`;
+				let step = toolSteps.get(callId);
+				if (!step) {
+					step = toolStep("exec_command", callId, { cmd: item["command"] }, ts, idx);
+					steps.push(step);
+					toolSteps.set(callId, step);
+				}
+				receipts.push({ step, item, ts });
 			}
 		}
 	});
+
+	// A receipt and a call/output pair can describe the same command in either order.
+	for (const { step, item, ts } of receipts) {
+		const prior = (step.attributes[ATTR.EXEC_RESULTS] as ExecResult[] | undefined)?.[0];
+		const receiptExit = item["exit_code"];
+		const priorExit = step.attributes[ATTR.SHELL_EXIT_CODE] ?? prior?.exit_code;
+		// A numeric failure in either representation is contrary evidence.
+		const exit = typeof priorExit === "number" && priorExit !== 0 ? priorExit :
+			typeof receiptExit === "number" ? receiptExit : typeof priorExit === "number" ? priorExit : null;
+		const output = str(item["aggregated_output"]) ?? "";
+		const failed = step.attributes[ATTR.TEST_FAILURES] === true || hasTestFailures(output);
+		const passed = !failed && (step.attributes[ATTR.TEST_PASSES] === true || hasTestPasses(output));
+		step.ended_at = ts;
+		if (exit !== null) step.attributes[ATTR.SHELL_EXIT_CODE] = exit;
+		step.attributes[ATTR.EXEC_RESULTS] = [{ exit_code: exit, session_id: null, test_failures: failed, test_passes: passed }];
+		if (failed) {
+			step.attributes[ATTR.TEST_FAILURES] = true;
+			delete step.attributes[ATTR.TEST_PASSES];
+		} else if (passed) step.attributes[ATTR.TEST_PASSES] = true;
+		if (exit === null) delete step.status;
+		else if (exit === 0) step.status = "ok";
+		else {
+			step.status = "error";
+			if (output && !step.attributes[ATTR.TOOL_ERROR]) step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
+		}
+	}
 
 	const run: Run = {
 		run_id: runId,
@@ -574,7 +637,12 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	steps.sort((a, b) =>
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
-	return { plumbline_version: PLUMBLINE_VERSION, run, steps };
+	return {
+		plumbline_version: PLUMBLINE_VERSION,
+		run,
+		steps,
+		...(unsupportedRecords ? { unsupported_records: unsupportedRecords } : {}),
+	};
 }
 
 /** Parse raw Codex rollout text into a Trace. */
