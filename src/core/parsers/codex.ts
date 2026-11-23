@@ -51,6 +51,7 @@ const SUPPORTED_ENVELOPE_TYPES = new Set([
 /** Codex tool name -> coarse result kind. */
 const RESULT_KIND: Record<string, string> = {
 	exec_command: "bash",
+	shell_command: "bash",
 	shell: "bash",
 	local_shell: "bash",
 	local_shell_call: "bash",
@@ -160,7 +161,7 @@ function execResults(v: unknown): { results: ExecResult[]; aggregateExits: numbe
 
 /** Combine observations of one shell process. A nonzero exit survives later
  * success, and an exitless receipt cannot disconnect a pending poll. */
-function mergeShellResult(step: Step, incoming: ExecResult, storeChunk: boolean): void {
+function mergeShellResult(step: Step, incoming: ExecResult, source: "chunk" | "output" | "receipt"): void {
 	const attrs = step.attributes;
 	const results = attrs[ATTR.EXEC_RESULTS] as ExecResult[] | undefined;
 	const prior = results?.length === 1 ? results[0] : undefined;
@@ -169,7 +170,10 @@ function mergeShellResult(step: Step, incoming: ExecResult, storeChunk: boolean)
 		incoming.exit_code ?? (typeof priorExit === "number" ? priorExit : null);
 	const failed = incoming.test_failures || prior?.test_failures === true || attrs[ATTR.TEST_FAILURES] === true;
 	const passed = !failed && (incoming.test_passes || prior?.test_passes === true || attrs[ATTR.TEST_PASSES] === true);
-	if (storeChunk || prior) {
+	// A receipt updates step-level evidence. Keep the yielded chunk so its own
+	// output can still be matched to write_stdin by session ID.
+	const keepYield = source === "receipt" && prior?.exit_code === null && prior.session_id !== null;
+	if (!keepYield && (source !== "output" || prior)) {
 		attrs[ATTR.EXEC_RESULTS] = [{
 			exit_code: exit,
 			session_id: exit === null ? incoming.session_id ?? prior?.session_id ?? null : null,
@@ -185,6 +189,15 @@ function mergeShellResult(step: Step, incoming: ExecResult, storeChunk: boolean)
 		attrs[ATTR.SHELL_EXIT_CODE] = exit;
 		if (step.status !== "error") step.status = exit === 0 ? "ok" : "error";
 	} else if (step.status !== "error") delete step.status;
+}
+
+function recordCommandEnd(step: Step, ts: string): void {
+	const end = Date.parse(ts);
+	const start = Date.parse(step.started_at);
+	const current = step.ended_at ? Date.parse(step.ended_at) : Number.NaN;
+	if (current < start) delete step.ended_at;
+	if (Number.isFinite(end) && end >= start && (!Number.isFinite(current) || end > current))
+		step.ended_at = ts;
 }
 
 /** The header an exec cell's output starts with. */
@@ -335,7 +348,10 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const step = toolSteps.get(callId);
 		if (!step) return;
 		const output = outputText(rawOutput);
-		step.ended_at = when;
+		const toolName = str(step.attributes[ATTR.TOOL_NAME]);
+		const shell = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" || toolName === "write_stdin";
+		if (shell) recordCommandEnd(step, when);
+		else step.ended_at = when;
 		if (status === "incomplete" || status === "failed") step.status = "error";
 		// A legacy string output carries its exit code in the header; current
 		// exec cells (a list of parts) carry one JSON chunk per inner command.
@@ -348,8 +364,6 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
 		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
 		const aggregateExits = fansOut ? parsed.aggregateExits : [];
-		const toolName = str(step.attributes[ATTR.TOOL_NAME]);
-		const shell = step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" || toolName === "write_stdin";
 		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
 		if (shell && results.length <= 1) {
 			const incoming = results[0];
@@ -359,7 +373,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				session_id: running?.[1] ?? incoming?.session_id ?? null,
 				test_failures: incoming?.test_failures ?? hasTestFailures(output),
 				test_passes: incoming?.test_passes ?? hasTestPasses(output),
-			}, !m && (step.status !== "error" || !!incoming || !!running));
+			}, !m && (step.status !== "error" || !!incoming || !!running) ? "chunk" : "output");
 		} else if (results.length) {
 			step.attributes[ATTR.EXEC_RESULTS] = results;
 		} else if (running) {
@@ -593,10 +607,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				const callId = str(item["call_id"]) ?? itemId ?? `command${idx}`;
 				let step = toolSteps.get(callId) ?? (itemId ? toolSteps.get(itemId) : undefined);
 				if (!step) {
-					const args: Json = { cmd: item["command"] };
-					const workdir = str(item["cwd"]);
-					if (workdir) args["workdir"] = workdir;
-					step = toolStep("exec_command", callId, args, ts, idx);
+					step = toolStep("exec_command", callId, { cmd: item["command"] }, ts, idx);
 					steps.push(step);
 				}
 				toolSteps.set(callId, step);
@@ -610,13 +621,20 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	for (const { step, item, ts } of receipts) {
 		const exit = item["exit_code"];
 		const output = str(item["aggregated_output"]) ?? "";
-		step.ended_at = ts;
+		recordCommandEnd(step, ts);
+		const workdir = str(item["cwd"]);
+		const args = asObj(step.attributes[ATTR.TOOL_ARGS]);
+		const hasCallDirectory = [args["workdir"], args["working_directory"], args["cwd"]]
+			.some((value) => value !== undefined && value !== null && value !== "");
+		if (workdir) step.attributes[ATTR.CODEX_RECEIPT_CWD] = workdir;
+		if (workdir && !hasCallDirectory)
+			step.attributes[ATTR.TOOL_ARGS] = { ...args, workdir };
 		mergeShellResult(step, {
 			exit_code: typeof exit === "number" ? exit : null,
 			session_id: null,
 			test_failures: hasTestFailures(output),
 			test_passes: hasTestPasses(output),
-		}, true);
+		}, "receipt");
 		if (typeof exit === "number" && exit !== 0 && output && !step.attributes[ATTR.TOOL_ERROR])
 			step.attributes[ATTR.TOOL_ERROR] = truncate(output, ERROR_MAX);
 	}

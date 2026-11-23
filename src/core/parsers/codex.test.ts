@@ -5,6 +5,7 @@ import { ATTR, type Step } from "../types.ts";
 import { parseCodexEvents } from "./codex.ts";
 import { normalizeTrace } from "../diff/normalize.ts";
 import { runVerdict } from "../diff/run-diff.ts";
+import { toWaitTrace } from "../wait-anatomy/export.ts";
 
 /** Build a Codex rollout envelope { timestamp, type, payload }. */
 let clock = 0;
@@ -850,6 +851,134 @@ test("CommandExecution aliases correlate a receipt and local shell call by item 
 	]);
 	assert.equal(byKind(trace.steps, "tool_call").length, 1);
 	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "failed");
+});
+
+test("shell_command results retain explicit exits", () => {
+	for (const [exit, summary, verdict] of [
+		[0, "3 passed in 0.12s", "passed"],
+		[7, "1 failed in 0.12s", "failed"],
+	] as const) {
+		const trace = parseCodexEvents([
+			responseItem({ type: "function_call", name: "shell_command", call_id: "shell-command", arguments: { command: "pytest -q" } }),
+			responseItem({ type: "function_call_output", call_id: "shell-command", output: `Process exited with code ${exit}\nOutput:\n${summary}` }),
+		]);
+		assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, verdict);
+	}
+});
+
+test("a yielded command keeps its poll exit and summary when a receipt also arrives", () => {
+	const passed = "3 passed in 0.12s";
+	const failed = "1 failed in 0.12s";
+	const command = [
+		responseItem({ type: "function_call", name: "exec_command", call_id: "yielded", arguments: { cmd: "pytest -q" } }, "2026-01-01T00:00:01Z"),
+		responseItem({ type: "function_call_output", call_id: "yielded", output: "Process running with session ID 42" }, "2026-01-01T00:00:02Z"),
+	];
+	for (const [pollExit, pollSummary, receiptExit, receiptSummary, verdict, summary] of [
+		[7, failed, 0, passed, "failed", "fail"],
+		[0, passed, 7, failed, "passed", "pass"],
+		[0, passed, 0, "", "passed", "pass"],
+		[0, "", 0, passed, "passed", "pass"],
+		[0, "", 7, failed, "unclear", undefined],
+	] as const) {
+		const poll = [
+			responseItem({ type: "function_call", name: "write_stdin", call_id: "poll", arguments: { session_id: 42 } }, "2026-01-01T00:00:03Z"),
+			responseItem({ type: "function_call_output", call_id: "poll", output: `Process exited with code ${pollExit}\nOutput:\n${pollSummary}` }, "2026-01-01T00:00:04Z"),
+		];
+		const receipt = eventMsg({ type: "item_completed", item: {
+			type: "CommandExecution", id: "yielded", command: "pytest -q", exit_code: receiptExit, aggregated_output: receiptSummary,
+		} });
+		for (const records of [[...command, ...poll, receipt], [...command, receipt, ...poll]]) {
+			const trace = parseCodexEvents(records);
+			const normalized = normalizeTrace(trace);
+			assert.equal(normalized.length, 1);
+			assert.equal(normalized[0]?.summary, summary);
+			assert.equal(runVerdict(trace, normalized).verdict, verdict);
+		}
+	}
+});
+
+test("a yielded command receipt settles the command when no poll arrives", () => {
+	const trace = parseCodexEvents([
+		responseItem({ type: "function_call", name: "exec_command", call_id: "yielded-only", arguments: { cmd: "pytest -q" } }),
+		responseItem({ type: "function_call_output", call_id: "yielded-only", output: "Process running with session ID 43\nOutput:\n" }),
+		eventMsg({ type: "item_completed", item: {
+			id: "yielded-only", type: "CommandExecution", command: "pytest -q", exit_code: 0,
+			aggregated_output: "3 passed in 0.12s",
+		} }),
+	]);
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "passed");
+});
+
+test("a standalone CommandExecution receipt can settle a command without a poll", () => {
+	const trace = parseCodexEvents([
+		eventMsg({ type: "item_completed", item: {
+			id: "receipt-only", type: "CommandExecution", command: "pytest -q", exit_code: 0,
+			aggregated_output: "3 passed in 0.12s",
+		} }),
+	]);
+	assert.equal(runVerdict(trace, normalizeTrace(trace)).verdict, "passed");
+});
+
+test("a paired receipt cwd is retained whether the receipt or call comes first", () => {
+	const ts = "2026-01-01T00:00:00Z";
+	const receipt = ev("event_msg", { type: "item_completed", item: {
+		type: "CommandExecution", id: "paired-read", command: "cat a.txt", cwd: "/work/sub",
+		exit_code: 0, aggregated_output: "contents",
+	} }, ts);
+	for (const directoryArgs of [{}, { workdir: "" }, { workdir: null }, { cwd: "" }, { working_directory: null }]) {
+		const call = responseItem({ type: "function_call", name: "exec_command", call_id: "paired-read", arguments: { cmd: "cat a.txt", ...directoryArgs } }, ts);
+		for (const records of [[receipt, call], [call, receipt]]) {
+			const trace = parseCodexEvents([sessionMeta({ cwd: "/work" }), ...records]);
+			assert.deepEqual(normalizeTrace(trace).map((step) => step.target), ["sub/a.txt"]);
+		}
+	}
+});
+
+test("a conflicting receipt cwd stays alongside the explicit call directory", () => {
+	const ts = "2026-01-01T00:00:00Z";
+	const receipt = ev("event_msg", { type: "item_completed", item: {
+		type: "CommandExecution", id: "conflicting-read", command: "cat a.txt", cwd: "/work/sub",
+		exit_code: 0, aggregated_output: "contents",
+	} }, ts);
+	const call = responseItem({ type: "function_call", name: "exec_command", call_id: "conflicting-read", arguments: { cmd: "cat a.txt", workdir: "/work/other" } }, ts);
+	for (const records of [[receipt, call], [call, receipt]]) {
+		const trace = parseCodexEvents([sessionMeta({ cwd: "/work" }), ...records]);
+		const step = trace.steps.find((candidate) => candidate.step_id === "conflicting-read");
+		assert.equal((step?.attributes[ATTR.TOOL_ARGS] as Record<string, unknown>)?.["workdir"], "/work/other");
+		assert.equal(step?.attributes[ATTR.CODEX_RECEIPT_CWD], "/work/sub");
+		const [read] = normalizeTrace(trace);
+		assert.equal(read?.target, null);
+		assert.equal(read?.status, "unknown");
+	}
+});
+
+test("an earlier receipt cannot move a command end before its output", () => {
+	const trace = parseCodexEvents([
+		ev("event_msg", { type: "item_completed", item: {
+			type: "CommandExecution", id: "timed-command", command: "pytest -q", exit_code: 0,
+			aggregated_output: "3 passed in 0.12s",
+		} }, "2026-01-01T00:00:01Z"),
+		responseItem({ type: "function_call", name: "exec_command", call_id: "timed-command", arguments: { cmd: "pytest -q" } }, "2026-01-01T00:00:02Z"),
+		responseItem({ type: "function_call_output", call_id: "timed-command", output: "Process exited with code 0\nOutput:\n3 passed in 0.12s" }, "2026-01-01T00:00:03Z"),
+	]);
+	const command = trace.steps.find((step) => step.step_id === "timed-command");
+	assert.equal(command?.started_at, "2026-01-01T00:00:02Z");
+	assert.equal(command?.ended_at, "2026-01-01T00:00:03Z");
+	assert.ok(toWaitTrace(trace).waitTrace.spans.some((span) => span.id === "timed-command"));
+});
+
+test("an early command output and receipt leave the command end unset", () => {
+	const trace = parseCodexEvents([
+		ev("event_msg", { type: "item_completed", item: {
+			type: "CommandExecution", id: "early-command", command: "pytest -q", exit_code: 0,
+			aggregated_output: "3 passed in 0.12s",
+		} }, "2026-01-01T00:00:01Z"),
+		responseItem({ type: "function_call", name: "exec_command", call_id: "early-command", arguments: { cmd: "pytest -q" } }, "2026-01-01T00:00:02Z"),
+		responseItem({ type: "function_call_output", call_id: "early-command", output: "Process exited with code 0\nOutput:\n3 passed in 0.12s" }, "2026-01-01T00:00:01.500Z"),
+	]);
+	const command = trace.steps.find((step) => step.step_id === "early-command");
+	assert.equal(command?.ended_at, undefined);
+	assert.ok(!toWaitTrace(trace).waitTrace.spans.some((span) => span.id === "early-command"));
 });
 
 test("noise events and malformed entries produce no steps and never throw", () => {
