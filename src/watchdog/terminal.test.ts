@@ -16,6 +16,7 @@ const clean: TickReport = {
 	skippedUnchanged: 3,
 	parseFailures: 0,
 	malformedLines: 0,
+	incompleteRecords: 0,
 	findings: 1,
 	alertsPosted: 0,
 	alertsDeduped: 1,
@@ -73,6 +74,18 @@ test("malformed transcript lines mark terminal result partial and are exposed", 
 	);
 	assert.equal(event.state, "partial");
 	assert.equal(event.destination_readback.evidence.malformed_lines, 1);
+});
+
+test("explicit incomplete-capture markers mark terminal result partial and are exposed", () => {
+	const event = terminalStateForReport(
+		{ ...clean, incompleteRecords: 1 },
+		"/fixture/local-notifier",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+	);
+	assert.equal(event.state, "partial");
+	assert.equal(event.destination_readback.evidence.incomplete_records, 1);
 });
 
 test("unexpected discovery gaps make the terminal result partial and actionable", () => {

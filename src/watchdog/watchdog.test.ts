@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { detect } from "../core/detect/engine.ts";
+import { decodeJsonl } from "../core/jsonl.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { buildEvent, eventIdFor } from "./policy.ts";
 import { TickFailure } from "./progress.ts";
@@ -162,7 +163,7 @@ function postedEvents(config: WatchdogConfig): NotificationEvent[] {
 	}
 }
 
-function writeCcSession(claudeRoot: string, text: string): string {
+function writeCcSession(claudeRoot: string, text: string | Buffer): string {
 	const proj = join(claudeRoot, "-Users-x-Projects-bridge-db");
 	mkdirSync(proj, { recursive: true });
 	const path = join(proj, "sess-grind.jsonl");
@@ -757,6 +758,67 @@ test("weekly eviction cannot infer a vanished finding from an unverifiable trans
 	assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
 });
 
+function damagedGrindTranscript(): Buffer {
+	const complete = ccGrindTranscript(300);
+	assert.ok(detect(parseClaudeCodeTranscript(complete)).some((finding) => finding.kind === "grind_loop"));
+	const damaged = Buffer.from(complete);
+	damaged[damaged.indexOf(Buffer.from("tool_use"))] = 0xff;
+	const damagedTrace = parseClaudeCodeTranscript(decodeJsonl(damaged));
+	assert.equal(damagedTrace.malformed_lines, 1);
+	assert.ok(!detect(damagedTrace).some((finding) => finding.kind === "grind_loop"));
+	return damaged;
+}
+
+for (const pending of [true, false]) {
+	test(`weekly eviction keeps a damaged session's alert after ${pending ? "a scan" : "an unchanged skip"}`, async (t) => {
+		const { config, claudeRoot } = fixture();
+		cleanupFixture(t, config);
+		const path = writeCcSession(claudeRoot, damagedGrindTranscript());
+		const now = Date.now();
+		const state: WatchdogState = { sessions: {} };
+		const key = "grind_loop@warning";
+		const payload = retainedEvent(path);
+		retainPendingPayload(state, path, key, payload, now - STATE_MAX_AGE_MS - 1);
+		state.sessions[path]!.processedMtimeMs = statSync(path).mtimeMs;
+		state.sessions[path]!.pending = pending;
+		saveState(config.statePath, state);
+		outcomeAdapter(config);
+
+		const report = await tick(config, now);
+		assert.equal(report.scannedSessions, pending ? 1 : 0);
+		assert.equal(report.skippedUnchanged, pending ? 0 : 1);
+		assert.equal(report.malformedLines, 1);
+		assert.equal(reportTerminal(report, config).state, "partial");
+		assert.equal(report.retainedPayloads, 1);
+		assert.equal(pendingPayloadFor(loadState(config.statePath), path, key), payload);
+		assert.equal(existsSync(config.localReceiptStore + ".queries"), false);
+
+		const next = await tick(config, now + 1);
+		assert.equal(next.scannedSessions, 1);
+		assert.equal(next.malformedLines, 1);
+		assert.equal(reportTerminal(next, config).state, "partial");
+	});
+}
+
+test("capture gaps stay visible across unchanged-session ticks", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	writeCcSession(claudeRoot, JSON.stringify({
+		type: "data-flow-incomplete",
+		sessionId: "synthetic-session",
+		reason: "fixture capture gap",
+	}) + "\n");
+	const now = Date.now();
+	const first = await tick(config, now);
+	const firstTerminal = reportTerminal(first, config);
+	assert.equal(firstTerminal.state, "partial");
+	const second = await tick(config, now + 1);
+	const secondTerminal = reportTerminal(second, config);
+	assert.equal(second.skippedUnchanged, 0);
+	assert.equal(second.scannedSessions, 1);
+	assert.equal(secondTerminal.state, "partial");
+});
+
 function fullRetention(config: WatchdogConfig, now: number): WatchdogState {
 	const state: WatchdogState = { sessions: {} };
 	let i = 0;
@@ -798,6 +860,32 @@ test("cap eviction checks vanished and out-of-window findings, keeping still-pre
 	const queries = readFileSync(config.localReceiptStore + ".queries", "utf8");
 	assert.ok(queries.includes(eventIdFor(vanished!, "grind_loop@warning")));
 	assert.ok(!queries.includes(eventIdFor(active!, "grind_loop@warning")));
+});
+
+test("cap eviction keeps a pending alert when a damaged transcript hides its finding", async (t) => {
+	const { config, claudeRoot } = fixture();
+	cleanupFixture(t, config);
+	const now = Date.now() + 1000;
+	const state = fullRetention(config, now);
+	const [damagedPath] = Object.keys(state.sessions);
+	if (!damagedPath) throw new Error("expected a retained payload candidate");
+	mkdirSync(join(claudeRoot, "retained-project"), { recursive: true });
+	writeFileSync(damagedPath, damagedGrindTranscript());
+	state.sessions[damagedPath]!.processedMtimeMs = statSync(damagedPath).mtimeMs;
+	state.sessions[damagedPath]!.pending = false;
+	writeCcSession(claudeRoot, ccGrindTranscript(320));
+	saveState(config.statePath, state);
+	outcomeAdapter(config);
+	const report = await tick(config, now);
+	assert.equal(report.alertsPosted, 1);
+	assert.equal(report.malformedLines, 1);
+	assert.equal(report.retentionCapReached, false);
+	assert.equal(pendingPayloadFor(loadState(config.statePath), damagedPath, "grind_loop@warning"),
+		state.sessions[damagedPath]!.pendingPayloads!["grind_loop@warning"]);
+	assert.equal(existsSync(config.localReceiptStore + ".queries"), true);
+	assert.ok(!readFileSync(config.localReceiptStore + ".queries", "utf8").includes(
+		eventIdFor(damagedPath, "grind_loop@warning"),
+	));
 });
 
 test("cap pressure keeps failed status lookups, reports retention, and logs one operator line", async (t) => {

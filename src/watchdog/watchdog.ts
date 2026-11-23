@@ -243,6 +243,7 @@ async function tickWithProgress(
 		skippedUnchanged: 0,
 		parseFailures: 0,
 		malformedLines: 0,
+		incompleteRecords: 0,
 		findings: 0,
 		alertsPosted: 0,
 		alertsDeduped: 0,
@@ -255,6 +256,17 @@ async function tickWithProgress(
 		acceptedEventIds: [],
 	};
 	let dirty = false;
+	const coverageCounted = new Set<string>();
+	const recordCoverage = (path: string, trace: Trace): boolean => {
+		const captureGap = (trace.malformed_lines ?? 0) > 0 ||
+			(trace.incomplete_records ?? 0) > 0;
+		if (captureGap && !coverageCounted.has(path)) {
+			report.malformedLines += trace.malformed_lines ?? 0;
+			report.incompleteRecords += trace.incomplete_records ?? 0;
+			coverageCounted.add(path);
+		}
+		return captureGap;
+	};
 
 	const cutoffMs = nowMs - config.windowMinutes * 60 * 1000;
 	const scan = scanSessions(
@@ -297,7 +309,13 @@ async function tickWithProgress(
 		if (!observedKeys.has(session.path)) {
 			try {
 				const { trace } = parseSession(session, config.maxSessionBytes);
-				observedKeys.set(session.path, new Set(detect(trace).map(findingKey)));
+				const captureGap = recordCoverage(session.path, trace);
+				observedKeys.set(session.path, captureGap
+					? undefined
+					: new Set(detect(trace).map(findingKey)));
+				if (captureGap) {
+					dirty = markProcessed(state, session.path, session.mtimeMs, true, nowMs) || dirty;
+				}
 			} catch {
 				// A coverage/budget failure cannot prove an older finding disappeared.
 				observedKeys.set(session.path, undefined);
@@ -374,10 +392,11 @@ async function tickWithProgress(
 		report.scannedSessions += 1;
 
 		let trace: Trace;
+		let captureGap: boolean;
 		try {
 			const parsed = parseSession(session, config.maxSessionBytes);
 			trace = parsed.trace;
-			report.malformedLines += trace.malformed_lines ?? 0;
+			captureGap = recordCoverage(session.path, trace);
 			if (parsed.windowed) report.windowedSessions += 1;
 		} catch (err) {
 			if (err instanceof TranscriptBudgetError) {
@@ -423,7 +442,9 @@ async function tickWithProgress(
 		}
 
 		const findings = detect(trace);
-		observedKeys.set(session.path, new Set(findings.map(findingKey)));
+		observedKeys.set(session.path, captureGap
+			? undefined
+			: new Set(findings.map(findingKey)));
 		report.findings += findings.length;
 		const quietMs = nowMs - session.mtimeMs;
 		// Retain unresolved payloads until status proves safe eviction or a final
@@ -482,7 +503,7 @@ async function tickWithProgress(
 				state,
 				session.path,
 				session.mtimeMs,
-				held > 0 || failed > 0,
+				held > 0 || failed > 0 || captureGap,
 				nowMs,
 			) || dirty;
 	}

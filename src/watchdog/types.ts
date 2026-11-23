@@ -91,6 +91,8 @@ export interface TickReport {
 	parseFailures: number;
 	/** Non-blank transcript lines that could not be parsed across scanned sessions. */
 	malformedLines: number;
+	/** Explicit transcript markers reporting incomplete capture. */
+	incompleteRecords: number;
 	findings: number;
 	alertsPosted: number;
 	alertsDeduped: number;
