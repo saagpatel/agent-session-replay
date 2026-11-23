@@ -10,8 +10,11 @@ test("quiet pytest accepts a positive pass count alongside skipped tests", () =>
 	assert.equal(hasTestPasses("2 passed, 1 skipped, 1 failed in 0.12s"), false);
 });
 
-test("unittest accepts a completed run with a skipped count", () => {
+test("unittest accepts successful summaries with skipped and expected failure counts", () => {
 	assert.equal(hasTestPasses("Ran 2 tests in 0.010s\n\nOK (skipped=1)"), true);
+	assert.equal(hasTestPasses("Ran 2 tests in 0.010s\n\nOK (expected failures=1)"), true);
+	assert.equal(hasTestPasses("Ran 3 tests in 0.010s\n\nOK (skipped=1, expected failures=1)"), true);
+	assert.equal(hasTestPasses("Ran 3 tests in 0.010s\n\nOK (skipped=1, failures=1)"), false);
 	assert.equal(hasTestPasses("Ran 0 tests in 0.010s\n\nOK (skipped=1)"), false);
 	assert.equal(hasTestPasses("OK (skipped=1)"), false);
 });
