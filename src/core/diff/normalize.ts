@@ -12,6 +12,7 @@
  */
 
 import { ATTR, type ExecPart, type ExecResult, type Step, type Trace } from "../types.ts";
+import { argvShellScript } from "../shell-evidence.ts";
 import {
 	clipForDisplay,
 	type DiffAction,
@@ -19,6 +20,7 @@ import {
 	type DiffStep,
 	isFailure,
 } from "./types.ts";
+import { commandWorkdir } from "./branch/path.ts";
 
 type Json = Record<string, unknown>;
 
@@ -184,11 +186,12 @@ interface NormalizationCoverage {
 	truncated: boolean;
 }
 const READ_CMDS = new Set(["cat", "sed", "head", "tail", "nl", "less", "bat"]);
+const PLAIN_ARG = /^[\w./:+-]+$/;
 const SEARCH_CMDS = new Set(["rg", "grep", "find", "ls", "fd", "tree", "ag"]);
 
 /** Make a path comparable across worktrees: strip the run's cwd, else keep the tail. */
-export function relPath(path: string, cwd: string | null | undefined): string {
-	let p = path.trim().replace(/^["']|["']$/g, "");
+export function relPath(path: string, cwd: string | null | undefined, literal = false): string {
+	let p = literal ? path : path.trim().replace(/^["']|["']$/g, "");
 	if (cwd) {
 		const base = cwd.endsWith("/") ? cwd : `${cwd}/`;
 		if (p.startsWith(base)) return p.slice(base.length) || ".";
@@ -276,12 +279,12 @@ function cdTo(where: Where, arg: string | undefined): string | null {
  * when a relative path's directory is unknown (a dynamic `cd` or workdir):
  * the file is then never named, rather than credited to the wrong path.
  */
-function resolveIn(file: string, where: Where): string | null {
-	const f = file.trim().replace(/^["']|["']$/g, "");
-	if (f.startsWith("/")) return relPath(f, where.root);
+function resolveIn(file: string, where: Where, literal = false): string | null {
+	const f = literal ? file : file.trim().replace(/^["']|["']$/g, "");
+	if (f.startsWith("/")) return relPath(f, where.root, literal);
 	if (where.lost) return null;
-	if (!where.dir) return relPath(f, where.root);
-	return relPath(joinPath(where.dir, f), where.root);
+	if (!where.dir) return relPath(f, where.root, literal);
+	return relPath(joinPath(where.dir, f), where.root, literal);
 }
 
 /** A file part whose location is unknown: no target, and never a known result. */
@@ -315,7 +318,7 @@ function coreCommand(cmd: string): string {
 }
 
 /** Path-looking arguments of a read command (`sed -n 1,80p src/a.ts` -> [src/a.ts]). */
-function fileArgs(ws: string[]): string[] {
+function fileArgs(ws: string[], literal = false): string[] {
 	return ws
 		.slice(1)
 		.filter(
@@ -323,7 +326,7 @@ function fileArgs(ws: string[]): string[] {
 				w.length > 0 &&
 				!w.startsWith("-") &&
 				!/^[\d,]+p?$/.test(w) &&
-				!/[|<>$`]/.test(w) &&
+				(literal || !/[|<>$`]/.test(w)) &&
 				!/^[\d+]?[sy]\//.test(w), // sed scripts
 		);
 }
@@ -341,6 +344,7 @@ interface Classified {
 	last?: boolean;
 	/** False only when shell syntax proves this invocation was skipped. */
 	executed?: boolean;
+	background?: boolean;
 	/** A downstream stage can synthesize output instead of passing runner output through. */
 	summarySource?: boolean;
 }
@@ -350,7 +354,7 @@ function classifyStage(stage: string, where: Where, coverage?: NormalizationCove
 	const cmds = pipeline(stage);
 	// A pipeline exits with its last command's status, so the command that
 	// feeds it never owns that status (`npm run build | grep -q ERROR`).
-	const base = classifyFirst(stage, where, coverage).map((c) =>
+	const base = classifyFirst(cmds, where, coverage).map((c) =>
 		cmds.length > 1 ? { ...c, piped: true } : c,
 	);
 	// `… | tee f` also writes f, after the command that feeds it; tee owns the
@@ -370,14 +374,20 @@ function passesRunnerOutput(command: string): boolean {
 }
 
 /** Classify a stage by the first command of its pipeline. */
-function classifyFirst(stage: string, where: Where, coverage?: NormalizationCoverage): Classified[] {
-	const cmds = pipeline(stage);
-	const first = cmds[0] ?? "";
-	const toks = tokens(first);
-	const ws = commandWords(toks);
-	while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
-	const test = TEST_RE.exec(ws.join(" ").replace(RUNNER_PREFIX, ""));
-	if (test) {
+function classifyFirst(
+	cmds: string[],
+	where: Where,
+	coverage?: NormalizationCoverage,
+	argv?: string[],
+): Classified[] {
+	const toks = argv ? argv.map((text) => ({ text, quoted: !PLAIN_ARG.test(text) })) : tokens(cmds[0] ?? "");
+	const ws = argv ?? commandWords(toks);
+	while (!argv && ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] ?? "")) ws.shift();
+	// A single argv word cannot supply several runner keywords.
+	const runnerWords = argv ? ws.map((w) => PLAIN_ARG.test(w) ? w : "\0") : ws;
+	const candidate = runnerWords.join(" ").replace(RUNNER_PREFIX, "");
+	const test = TEST_RE.exec(candidate);
+	if (test && (!argv || candidate.length === test[0].length || candidate[test[0].length] === " ")) {
 		// `pnpm run test` and `pnpm test` are one suite; `test:unit` is another.
 		const target = test[0].replace(/\s+run\s+/, " ").replace(/\s+/g, " ");
 		const piped = cmds.length > 1;
@@ -392,21 +402,21 @@ function classifyFirst(stage: string, where: Where, coverage?: NormalizationCove
 	const head = (ws[0] ?? "").replace(/^.*\//, "");
 	// `cat > f <<EOF`, `printf … > f`, `echo … >> f`, `… | tee f`: writing a file.
 	// Only unquoted redirects count: `echo "==> Building"` writes nothing.
-	const into = WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
+	const into = !argv && WRITE_CMDS.has(head) ? redirectTarget(toks) : undefined;
 	if (into && !into.startsWith("/dev/")) return [located("write", resolveIn(into, where))];
 	if (!head || NOISE_CMDS.has(head)) return [];
 	// sed fails closed: only `sed -n '<range>p' file…` is a read.
 	const sedRead = head === "sed" ? plainSedRead(withoutLeadingEnv(toks)) : null;
 	if (READ_CMDS.has(head) && (head !== "sed" || sedRead !== null)) {
 		// A read also reads the file on its stdin (`cat < src/a.ts`).
-		const readWords = commandWords(toks, true);
-		while (readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
-		const files = sedRead ?? fileArgs(readWords);
+		const readWords = argv ?? commandWords(toks, true);
+		while (!argv && readWords.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(readWords[0] ?? "")) readWords.shift();
+		const files = sedRead ?? fileArgs(readWords, Boolean(argv));
 		if (files.length === 0) return [{ action: "read", target: null, note: head }];
 		if (coverage && files.length > MAX_STAGES) coverage.truncated = true;
 		return files
 			.slice(0, MAX_STAGES)
-			.map((f) => located("read", resolveIn(f, where)));
+			.map((f) => located("read", resolveIn(f, where, Boolean(argv))));
 	}
 	// Read-only git inspection is a read of repo state, not a command that changes it.
 	if (head === "git" && GIT_READS.has(ws[1] ?? "") && !(ws[1] === "branch" && branchMutates(ws.slice(2))))
@@ -416,6 +426,7 @@ function classifyFirst(stage: string, where: Where, coverage?: NormalizationCove
 	// Scripts and tools are not parsed further: the full command (env and
 	// redirects aside) is the target, so `npm run build` and `npm run lint`
 	// never share a signature.
+	if (argv) return [{ action: "run", target: argv.map((w) => PLAIN_ARG.test(w) ? w : JSON.stringify(w)).join(" ") }];
 	const full = commandWords(withoutLeadingEnv(toks), true);
 	return [{ action: "run", target: full.join(" ").replace(/\s+/g, " ").trim() }];
 }
@@ -427,15 +438,16 @@ const CONTROL_RE = /^(?:(?:if|then|else|elif|fi|for|while|until|do|done|case|esa
 type Chain = "single" | "seq" | "and" | "mixed";
 
 /**
- * Split a shell script into stages on `;`, `&&`, `||` and newlines outside
+ * Split a shell script into stages on `;`, `&`, `&&`, `||` and newlines outside
  * quotes (`node -e "a; b"` stays whole), keeping the separators. A newline
  * separates like `;`. Heredoc bodies are skipped, line continuations joined,
  * and comment lines dropped.
  */
-function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
+function splitWithSeps(script: string): { stages: string[]; seps: string[]; background: boolean[] } {
 	const text = script.replace(/\\\r?\n/g, " ");
 	const stages: string[] = [];
 	const seps: string[] = [];
+	const background: boolean[] = [];
 	let quote: string | null = null;
 	let cur = "";
 	// Delimiter of a heredoc opened on the current line, outside quotes.
@@ -444,6 +456,7 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 		const t = cur.trim();
 		if (t && !t.startsWith("#")) {
 			stages.push(t);
+			background.push(sep === "&");
 			if (sep) seps.push(sep);
 		} else if (sep && seps.length === stages.length && stages.length > 0) {
 			// An empty or comment stage: keep the stronger separator before it.
@@ -478,6 +491,10 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 				continue;
 			}
 		}
+		if (ch === "\\") {
+			cur += ch + (text[++i] ?? "");
+			continue;
+		}
 		if (ch === "\n") {
 			flush(";");
 			if (heredoc) {
@@ -496,8 +513,8 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 			}
 			continue;
 		}
-		if (ch === "#" && cur.trim() === "") {
-			// A comment runs to the end of the line.
+		if (ch === "#" && (!cur || (/[ \t]/.test(text[i - 1] ?? "") && text[i - 2] !== "\\"))) {
+			// At a word boundary, the rest of the line is a comment.
 			const nl = text.indexOf("\n", i);
 			i = (nl < 0 ? text.length : nl) - 1;
 			continue;
@@ -508,15 +525,28 @@ function splitWithSeps(script: string): { stages: string[]; seps: string[] } {
 			continue;
 		}
 		const two = text.slice(i, i + 2);
-		if (ch === ";" || two === "&&" || two === "||") {
-			flush(ch === ";" ? ";" : two);
-			if (ch !== ";") i++;
+		if (two === ">&" || two === "<&" || two === "&>" || two === "|&") {
+			cur += two;
+			i++;
+			continue;
+		}
+		if (two === "&&" || two === "||") {
+			flush(two);
+			i++;
+			continue;
+		}
+		if (ch === ";" || ch === "&") {
+			flush(ch);
 			continue;
 		}
 		cur += ch;
 	}
 	flush(null);
-	return { stages, seps: seps.slice(0, Math.max(0, stages.length - 1)) };
+	// A trailing & backgrounds the entire preceding AND-OR list.
+	for (let i = stages.length - 2; i >= 0; i--) {
+		if (background[i + 1] && (seps[i] === "&&" || seps[i] === "||")) background[i] = true;
+	}
+	return { stages, seps: seps.slice(0, Math.max(0, stages.length - 1)), background };
 }
 
 export function splitStages(line: string): string[] {
@@ -553,7 +583,7 @@ function commandParts(
 ): CommandParts {
 	const core = coreCommand(cmd);
 	const where = whereFor(root, workdir);
-	const { stages: raw, seps } = splitWithSeps(core);
+	const { stages: raw, seps, background } = splitWithSeps(core);
 	// Shell control flow (`if npm test; then …`) decides what ran by itself, so
 	// such scripts never hand their exit status to one stage.
 	const control = raw.some((x) => CONTROL_RE.test(x));
@@ -584,6 +614,7 @@ function commandParts(
 		else if (stage) printing++;
 		for (const c of classifyStage(stage, where, coverage)) {
 			if (!mayRun && c.action === "test") c.executed = false;
+			if (background[i] && c.action === "test") c.background = true;
 			parts.push(last ? c : { ...c, last });
 		}
 	});
@@ -601,26 +632,18 @@ function commandParts(
 	};
 }
 
+function argvCommandParts(argv: string[], root: string | null | undefined, workdir: string | null | undefined, coverage?: NormalizationCoverage): CommandParts {
+	const script = argvShellScript(argv);
+	if (script !== undefined) return commandParts(script, root, workdir, coverage);
+	const parts = classifyFirst([], whereFor(root, workdir), coverage, argv);
+	return { parts, chain: "single", solo: parts.length === 1 && parts[0]?.action === "test" };
+}
+
 export function classifyCommand(
 	cmd: string,
 	cwd: string | null | undefined,
 ): Classified[] {
 	return commandParts(cmd, cwd).parts;
-}
-
-/** Pull the shell command out of the many shapes Codex and CC record. */
-function commandOf(args: unknown): string | undefined {
-	const a = asObj(args);
-	const cmd = a["cmd"] ?? a["command"];
-	if (typeof cmd === "string") return cmd;
-	if (Array.isArray(cmd)) {
-		const parts = cmd.filter((x): x is string => typeof x === "string");
-		// ["bash", "-lc", "<script>"] -> the script
-		if (parts.length >= 3 && /sh$/.test(parts[0] ?? "") && /^-l?c$/.test(parts[1] ?? ""))
-			return parts.slice(2).join(" ");
-		return parts.join(" ");
-	}
-	return undefined;
 }
 
 /** Files a patch touches: Add is a write; Update and Delete are edits. */
@@ -1088,6 +1111,8 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 	const printed = Array.isArray(rawParts) ? (rawParts as ExecPart[]) : [];
 	const completed = step.attributes[ATTR.EXEC_COMPLETED] === true;
 	const linear = straightLine(masked, calls) && printed.length === calls.length;
+	const pollCalls = linear && calls.some((call) => call[1] === "write_stdin")
+		? execLiteralCalls(input) : undefined;
 	const patches = calls.filter((c) => c[1] === "apply_patch").length;
 	const patchFailed =
 		!completed && patches === 1 && /apply_patch|patch rejected/i.test(String(step.attributes[ATTR.TOOL_ERROR] ?? ""));
@@ -1115,8 +1140,9 @@ function codexExecCell(step: Step, input: string, cwd: string | null | undefined
 					if (part.action === "test") part.executed = false;
 			out.push(unit);
 		} else if (tool === "write_stdin") {
-			const session = /\bsession_id["']?\s*:\s*["']?([\w-]+)/.exec(body)?.[1];
-			if (session) out.push({ parts: [], chain: "single", ...res, pollOf: session });
+			const session = pollCalls?.[i]?.arguments()?.["session_id"];
+			if (typeof session === "number" || typeof session === "string")
+				out.push({ parts: [], chain: "single", ...res, pollOf: String(session) });
 		} else if (tool === "apply_patch") {
 			const patch = exactLiteralArg(body, null).value ?? "";
 			const parts = patchTargets(patch, cwd, coverage);
@@ -1213,17 +1239,12 @@ function toolUnits(step: Step, cwd: string | null | undefined, coverage?: Normal
 				if (typeof session === "number" || typeof session === "string")
 					return [{ parts: [], chain: "single", ...yieldedOr(step), pollOf: String(session) }];
 			}
-			const cmd = commandOf(args);
-			if (cmd !== undefined) {
-				// The first workdir field actually given; an empty string is not one.
-				const raw = [args["workdir"], args["working_directory"], args["cwd"]].find(
-					(v) => v !== undefined && v !== null && v !== "",
-				);
-				const receiptCwd = str(step.attributes[ATTR.CODEX_RECEIPT_CWD]);
-				const workdir = receiptCwd !== undefined && raw !== receiptCwd
-					? null : raw === undefined ? undefined : (str(raw) ?? null);
-				return [{ ...commandParts(cmd, cwd, workdir, coverage), ...yieldedOr(step) }];
-			}
+			const command = args["cmd"] ?? args["command"];
+			const workdir = commandWorkdir(cwd, args, str(step.attributes[ATTR.CODEX_RECEIPT_CWD]));
+			if (typeof command === "string")
+				return [{ ...commandParts(command, cwd, workdir, coverage), ...yieldedOr(step) }];
+			if (Array.isArray(command) && command.every((word) => typeof word === "string"))
+				return [{ ...argvCommandParts(command, cwd, workdir, coverage), ...yieldedOr(step) }];
 			return one([{ action: "other", target: name || null }]);
 		}
 	}
@@ -1300,7 +1321,7 @@ export function resolveStatuses(
 	// Which parts the exit status speaks for directly.
 	const owns = (i: number): boolean => {
 		const c = parts[i] as Classified;
-		if (!known || c.piped) return false;
+		if (!known || c.piped || c.background) return false;
 		// An `&&` chain that succeeded ran every stage successfully.
 		if (chain === "and") return result === "ok";
 		if (chain === "mixed") return false;
@@ -1320,7 +1341,8 @@ export function resolveStatuses(
 	// A failing summary speaks for the test only when nothing else could have
 	// printed it (`cat old.log; npm test` could).
 	if (
-		solo && testFailures && parts[0]?.executed !== false && parts[0]?.summarySource !== false &&
+		solo && testFailures && parts[0]?.executed !== false && parts[0]?.background !== true && parts[0]?.summarySource !== false &&
+		result !== "pending" &&
 		((failedResult && hasFailedExit) || (hasCleanExit && result === "ok") || parts[0]?.piped === true)
 	)
 		out[0] = failedResult ? (result as DiffStatus) : "error";
@@ -1405,16 +1427,22 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			if (unit.pollOf !== undefined) {
 				const waiting = pending.get(unit.pollOf);
 				if (!waiting) continue;
-				// Test summaries can arrive in any poll; keep them all.
-				waiting.unit.testFailures ||= unit.testFailures;
-				waiting.unit.testPasses ||= unit.testPasses;
-				if (unit.exitCode === undefined) continue;
+				if (unit.result === "pending" && unit.sessionId !== unit.pollOf) continue;
 				const { unit: orig, steps } = waiting;
+				// Test summaries can arrive in any poll; keep them all.
+				orig.testFailures ||= unit.testFailures;
+				orig.testPasses ||= unit.testPasses;
 				// A matching receipt can fill a missing summary only for the same exit.
-				if (!orig.testFailures && !orig.testPasses && waiting.receipt?.exitCode === unit.exitCode) {
+				if (!orig.testFailures && !orig.testPasses && waiting.receipt && waiting.receipt.exitCode === unit.exitCode) {
 					orig.testFailures = waiting.receipt.testFailures;
 					orig.testPasses = waiting.receipt.testPasses;
 				}
+				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses, orig.solo);
+				steps.forEach((d, i) => {
+					const sum = sums[i];
+					if (sum) d.summary = sum;
+				});
+				if (unit.exitCode === undefined) continue;
 				const statuses = resolveStatuses(
 					orig.parts,
 					orig.chain,
@@ -1424,12 +1452,9 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 					unit.exitCode === 0,
 					typeof unit.exitCode === "number" && unit.exitCode !== 0,
 				);
-				const sums = summaries(orig.parts, orig.testFailures, orig.testPasses, orig.solo);
 				steps.forEach((d, i) => {
 					d.status = statuses[i] ?? "unknown";
-					const sum = sums[i];
-					if (sum) d.summary = sum;
-					else delete d.summary;
+					if (!sums[i]) delete d.summary;
 					if (isFailure(d.status) && error) d.error = clip(error.trim(), ERROR_MAX);
 					else delete d.error;
 				});
@@ -1440,8 +1465,9 @@ export function normalizeTrace(trace: Trace): DiffStep[] {
 			if (parts.length === 0) continue;
 			// A paired receipt supplies provisional evidence for a plain shell call.
 			// Keep the yielded chunk itself available for a later matching poll.
-			const receipt = unit.result === "pending" && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash"
+			const candidate = unit.result === "pending" && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash"
 				? stepResult(step) : undefined;
+			const receipt = typeof candidate?.exitCode === "number" ? candidate : undefined;
 			const evidence = receipt ?? unit;
 			const statuses = resolveStatuses(
 				parts,

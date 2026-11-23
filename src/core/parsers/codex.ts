@@ -22,6 +22,7 @@
  */
 
 import { literalExecCalls } from "../diff/normalize.ts";
+import { commandWorkdir } from "../diff/branch/path.ts";
 import { commitHeader, isCommitCommand } from "../shell-evidence.ts";
 import { parseJsonlWithStats } from "../jsonl.ts";
 import { hasTestFailures, hasTestPasses } from "../test-signal.ts";
@@ -69,9 +70,6 @@ const RESULT_KIND: Record<string, string> = {
  */
 const EXIT_RE = /^Process exited with code (\d+)\s*$/m;
 const HEADER_MAX = 400;
-/** A plain-format command that yielded before exiting. */
-const RUNNING_RE = /Process running with session ID (\w+)/;
-
 function legacyExit(raw: unknown): RegExpExecArray | null {
 	if (typeof raw !== "string") return null;
 	const header = raw.slice(0, HEADER_MAX).split(/^(?:Final output|Output):/m, 1)[0] ?? "";
@@ -198,6 +196,24 @@ function recordCommandEnd(step: Step, ts: string): void {
 	if (current < start) delete step.ended_at;
 	if (Number.isFinite(end) && end >= start && (!Number.isFinite(current) || end > current))
 		step.ended_at = ts;
+}
+
+function receiptMatchesCall(step: Step, receiptCommand: unknown): boolean {
+	if (step.attributes[ATTR.TOOL_RESULT_KIND] !== "bash") return false;
+	const args = asObj(step.attributes[ATTR.TOOL_ARGS]);
+	const command = args["cmd"] ?? args["command"];
+	if (typeof command === "string" && typeof receiptCommand === "string")
+		return command === receiptCommand;
+	if (Array.isArray(command) && Array.isArray(receiptCommand))
+		return command.length === receiptCommand.length &&
+			command.every((part, i) => typeof part === "string" && part === receiptCommand[i]);
+	const argv = Array.isArray(command) ? command : receiptCommand;
+	const text = typeof command === "string" ? command : receiptCommand;
+	if (!Array.isArray(argv) || typeof text !== "string") return false;
+	// Only plain words can be compared across representations without interpreting shell syntax.
+	if (!/^[ \t]*[\w./:@%+-]+(?:[ \t]+[\w./:@%+-]+)*[ \t]*$/.test(text)) return false;
+	const words = text.trim().split(/[ \t]+/);
+	return argv.length === words.length && argv.every((part, i) => part === words[i]);
 }
 
 /** The header an exec cell's output starts with. */
@@ -364,23 +380,17 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		const input = String(asObj(step.attributes[ATTR.TOOL_ARGS])["input"] ?? "");
 		const fansOut = /\bPromise\s*\.\s*(?:all|allSettled|race|any)\b/.test(input) && /\btools\./.test(input);
 		const aggregateExits = fansOut ? parsed.aggregateExits : [];
-		const running = typeof rawOutput === "string" && !m ? RUNNING_RE.exec(rawOutput) : null;
 		if (shell && results.length <= 1) {
 			const incoming = results[0];
 			const exit = m ? Number(m[1]) : incoming?.exit_code;
 			mergeShellResult(step, {
 				exit_code: exit ?? null,
-				session_id: running?.[1] ?? incoming?.session_id ?? null,
+				session_id: incoming?.session_id ?? null,
 				test_failures: incoming?.test_failures ?? hasTestFailures(output),
 				test_passes: incoming?.test_passes ?? hasTestPasses(output),
-			}, !m && (step.status !== "error" || !!incoming || !!running) ? "chunk" : "output");
+			}, !m && (step.status !== "error" || !!incoming) ? "chunk" : "output");
 		} else if (results.length) {
 			step.attributes[ATTR.EXEC_RESULTS] = results;
-		} else if (running) {
-			step.attributes[ATTR.EXEC_RESULTS] = [{
-				exit_code: null, session_id: running[1]!,
-				test_failures: hasTestFailures(output), test_passes: hasTestPasses(output),
-			}];
 		}
 		if (!m && /^Script completed\b/.test(output.trimStart()))
 			step.attributes[ATTR.EXEC_COMPLETED] = true;
@@ -619,16 +629,18 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 
 	// A receipt and a call/output pair can describe the same command in either order.
 	for (const { step, item, ts } of receipts) {
+		if (!receiptMatchesCall(step, item["command"])) continue;
 		const exit = item["exit_code"];
 		const output = str(item["aggregated_output"]) ?? "";
-		recordCommandEnd(step, ts);
 		const workdir = str(item["cwd"]);
 		const args = asObj(step.attributes[ATTR.TOOL_ARGS]);
-		const hasCallDirectory = [args["workdir"], args["working_directory"], args["cwd"]]
-			.some((value) => value !== undefined && value !== null && value !== "");
-		if (workdir) step.attributes[ATTR.CODEX_RECEIPT_CWD] = workdir;
-		if (workdir && !hasCallDirectory)
-			step.attributes[ATTR.TOOL_ARGS] = { ...args, workdir };
+		if (workdir) {
+			step.attributes[ATTR.CODEX_RECEIPT_CWD] = workdir;
+			if (commandWorkdir(cwd, args, workdir) === null) continue;
+			if (commandWorkdir(cwd, args, undefined) === undefined)
+				step.attributes[ATTR.TOOL_ARGS] = { ...args, workdir };
+		}
+		recordCommandEnd(step, ts);
 		mergeShellResult(step, {
 			exit_code: typeof exit === "number" ? exit : null,
 			session_id: null,

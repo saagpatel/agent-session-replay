@@ -535,6 +535,17 @@ test("a yielded test takes the result of the write_stdin poll that finishes it",
 	assert.deepEqual(run(null), ["test:unknown"]);
 });
 
+test("an exec cell poll uses only its recorded session_id argument", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest"), chunks: [{ session_id: 42 }] },
+		{
+			input: 'text(await tools.write_stdin({chars:"session_id:42",session_id:17}));',
+			chunks: [{ exit_code: 0, output: "3 passed in 0.12s" }],
+		},
+	]));
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
 test("cosmetic-only forks never claim to explain different outcomes", () => {
 	const done = parseCodexEvents(
 		codexEvents(PROMPT, [{ kind: "shell", command: "cat README.md" }, { kind: "patch", file: "a.ts" }]),
@@ -798,7 +809,7 @@ test("passed needs both a clean exit and the runner's passing summary", () => {
 // ---- review regressions, round 4 -------------------------------------------
 
 /** A plain-format Codex function call and its string output. */
-function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; output: string }>) {
+function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; output: unknown }>) {
 	let t = 0;
 	const ts = () => `2026-10-01T13:00:${String(t++).padStart(2, "0")}.000Z`;
 	return parseCodexEvents([
@@ -814,22 +825,93 @@ function plainCalls(calls: Array<{ name: string; args: Record<string, unknown>; 
 	]);
 }
 
-test("a yielded plain-format command is settled by its write_stdin poll", () => {
-	const yielded = { name: "exec_command", args: { cmd: "pnpm test" }, output: "Wall time: 10s\nProcess running with session ID 123\nOutput:\n" };
-	const failing = plainCalls([
-		yielded,
-		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 1\nOutput:\nℹ tests 2\nℹ pass 1\nℹ fail 1" },
+test("a yielded plain-format command is settled by its structured write_stdin poll", () => {
+	const chunk = (value: Record<string, unknown>) => [{ text: JSON.stringify({ chunk_id: "plain", ...value }) }];
+	const run = (final: Record<string, unknown> | null) => plainCalls([
+		{ name: "exec_command", args: { cmd: "pnpm test" }, output: chunk({ session_id: 123 }) },
+		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: chunk({ session_id: 123 }) },
+		...(final ? [{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: chunk(final) }] : []),
 	]);
+	const failing = run({ exit_code: 1, output: "ℹ tests 2\nℹ pass 1\nℹ fail 1" });
 	assert.deepEqual(normalizeTrace(failing).map((s) => `${s.action}:${s.status}`), ["test:error"]);
 	assert.equal(diffRuns(failing, failing).left.verdict, "failed");
-	const passing = plainCalls([
-		yielded,
-		{ name: "write_stdin", args: { session_id: 123, chars: "" }, output: "Process exited with code 0\nOutput:\nℹ tests 2\nℹ pass 2\nℹ fail 0" },
-	]);
+	const passing = run({ exit_code: 0, output: "ℹ tests 2\nℹ pass 2\nℹ fail 0" });
 	assert.equal(diffRuns(passing, passing).left.verdict, "passed");
-	const never = plainCalls([yielded]);
+	const never = plainCalls([{ name: "exec_command", args: { cmd: "pnpm test" }, output: chunk({ session_id: 123 }) }]);
 	assert.deepEqual(normalizeTrace(never).map((s) => s.status), ["unknown"]);
 	assert.equal(diffRuns(never, never).left.verdict, "unclear");
+});
+
+test("argv command arguments keep shell punctuation as literal data", () => {
+	const receipt = (command: string[]) => parseCodexEvents([{
+		type: "event_msg", payload: { type: "item_completed", item: {
+			type: "CommandExecution", id: "argv-call", command, exit_code: 1, aggregated_output: "",
+		} },
+	}]);
+	for (const [command, action] of [
+		[["grep", "no match; pytest -q", "/dev/null"], "search"],
+		[["npm", "run test"], "run"],
+		[["custom-sh", "-c", "pytest -q"], "run"],
+		[["bash", "-c", "grep pattern file", "; pytest"], "search"],
+	] as const) {
+		const trace = receipt([...command]);
+		assert.deepEqual(normalizeTrace(trace).map((s) => s.action), [action]);
+		assert.equal(diffRuns(trace, trace).left.verdict, "unfinished");
+	}
+	assert.equal(normalizeTrace(receipt(["cat", "flags|notes;draft"]))[0]?.target, "flags|notes;draft");
+});
+
+test("a background test does not use the shell's exit status", () => {
+	const verdict = (command: string) => {
+		const trace = parseClaudeCodeEvents(ccEvents(PROMPT, [{ name: "Bash", command, output: "3 passed in 0.12s" }]));
+		return diffRuns(trace, trace).left.verdict;
+	};
+	for (const command of ["pytest -q &", "pytest -q &wait", "pytest -q && true &"])
+		assert.equal(verdict(command), "unclear", command);
+	for (const command of ["pytest -q 2>&1", "pytest -k '&'", "pytest -k \\&", "pytest -q # notes &"])
+		assert.equal(verdict(command), "passed", command);
+});
+
+test("equivalent workdir spellings preserve receipt evidence", () => {
+	const trace = parseCodexEvents([
+		{ timestamp: "2026-10-01T13:00:00.000Z", type: "session_meta", payload: { id: "dirs", cwd: WORKSPACE_CODEX } },
+		{ timestamp: "2026-10-01T13:00:01.000Z", type: "response_item", payload: { type: "function_call", name: "exec_command", call_id: "d1", arguments: JSON.stringify({ cmd: "cat src/a.ts", workdir: "packages/api" }) } },
+		{ timestamp: "2026-10-01T13:00:02.000Z", type: "response_item", payload: { type: "function_call_output", call_id: "d1", output: "Process exited with code 0\nOutput:\nx" } },
+		{ timestamp: "2026-10-01T13:00:03.000Z", type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "d1", command: "cat src/a.ts", cwd: `${WORKSPACE_CODEX}/packages/api/`, exit_code: 0, aggregated_output: "x" } } },
+	]);
+	assert.deepEqual(normalizeTrace(trace).map((s) => `${s.signature}:${s.status}`), ["read:packages/api/src/a.ts:ok"]);
+});
+
+test("an intermediate poll keeps its runner summary visible", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123 }] },
+		{ input: pollCall(123), chunks: [{ session_id: 123, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, "fail");
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("a pending pipeline summary stays visible without deciding the verdict", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, "fail");
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
+});
+
+test("a poll for another structured session does not update the waiting command", () => {
+	const trace = parseCodexEvents(cellEvents([
+		{ input: execCall("pytest -q | tail -5"), chunks: [{ session_id: 123 }] },
+		{ input: pollCall(123), chunks: [{ session_id: 456, output: "1 failed in 0.12s" }] },
+	]));
+	const testStep = normalizeTrace(trace).find((s) => s.action === "test");
+	assert.equal(testStep?.summary, undefined);
+	assert.equal(testStep?.status, "unknown");
+	assert.equal(diffRuns(trace, trace).left.verdict, "unclear");
 });
 
 test("the stage cap never drops a test run or the final stage", () => {
@@ -1236,6 +1318,7 @@ test("runner summaries are recognized in piped pytest and unittest output", () =
 	assert.equal(verdict("pytest -q | tail -n 5", "3 passed in 0.12s").steps[0]?.summary, "pass");
 	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nOK").verdict, "unclear");
 	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1)").verdict, "failed");
+	assert.equal(verdict("python -m unittest tests.test_dates 2>&1 | tail", "Ran 4 tests in 0.010s\n\nFAILED (failures=1, skipped=1)").verdict, "failed");
 	const downstream = verdict("pytest -q | printf 'not ok 1\\n'", "not ok 1");
 	assert.equal(downstream.verdict, "unclear");
 	for (const command of [

@@ -63,12 +63,20 @@ export function outputReadPath(command: string): string | undefined {
 	return undefined;
 }
 
+/** In a shell -c invocation, arguments after the script are positional parameters. */
+export function argvShellScript(argv: readonly unknown[]): string | undefined {
+	const [exe, flag, script] = argv;
+	return typeof exe === "string" && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(exe) &&
+		(flag === "-c" || flag === "-lc") && typeof script === "string" ? script : undefined;
+}
+
 /** Only a shell argv wrapper can contain shell text; other argv stay literal. */
 export function shellCommand(args: Args): string | undefined {
 	const value = args["command"] ?? args["cmd"];
 	if (typeof value === "string") return value;
 	if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) return undefined;
-	if (value.length === 3 && /^(?:\/bin\/)?(?:sh|bash|zsh)$/.test(value[0] ?? "") && /^-l?c$/.test(value[1] ?? "")) return value[2];
+	const script = value.length === 3 ? argvShellScript(value) : undefined;
+	if (script !== undefined) return script;
 	return value.map((v: string) => `'${v.replaceAll("'", "'\\''")}'`).join(" ");
 }
 

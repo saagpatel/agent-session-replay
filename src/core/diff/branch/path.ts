@@ -18,6 +18,21 @@ export function workingDirectory(root: string | null | undefined, args: Record<s
 	return absolute(value.startsWith("/") ? value : base ? `${base}/${value}` : "");
 }
 
+/** An omitted workdir inherits the workspace. A disputed workdir stays unknown. */
+export function commandWorkdir(
+	root: string | null | undefined,
+	args: Record<string, unknown>,
+	receipt: string | undefined,
+): string | null | undefined {
+	const call = [args["workdir"], args["working_directory"], args["cwd"]]
+		.find((value) => value !== undefined && value !== null && value !== "");
+	if (call === undefined) return receipt;
+	if (typeof call !== "string") return null;
+	if (receipt === undefined) return call;
+	const directory = workingDirectory(root, { cwd: call });
+	return directory !== null && directory === workingDirectory(root, { cwd: receipt }) ? directory : null;
+}
+
 /** External absolute paths never alias workspace-relative paths. */
 export function lineagePath(path: string, root: string | null | undefined, directory = root): string | null {
 	const base = root ? absolute(root) : null;
