@@ -11,7 +11,8 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { detect } from "../src/core/detect/engine.ts";
-import { parseTranscript } from "../src/core/parse.ts";
+import { decodeJsonl } from "../src/core/jsonl.ts";
+import { parseTranscript, UnsupportedTranscriptError } from "../src/core/parse.ts";
 import { ATTR, type Step } from "../src/core/types.ts";
 
 const path = process.argv[2];
@@ -20,15 +21,23 @@ if (!path) {
 	process.exit(1);
 }
 
-const mainText = readFileSync(path, "utf8");
+const mainText = decodeJsonl(readFileSync(path));
 const subDir = join(path.replace(/\.jsonl$/, ""), "subagents");
 const subTexts = existsSync(subDir)
 	? readdirSync(subDir)
 			.filter((f) => f.endsWith(".jsonl"))
-			.map((f) => readFileSync(join(subDir, f), "utf8"))
+			.map((f) => decodeJsonl(readFileSync(join(subDir, f))))
 	: [];
 
-const { harness, trace } = parseTranscript(mainText, subTexts);
+let parsed;
+try {
+	parsed = parseTranscript(mainText, subTexts);
+} catch (error) {
+	if (!(error instanceof UnsupportedTranscriptError)) throw error;
+	console.error(error.message);
+	process.exit(1);
+}
+const { harness, trace } = parsed;
 
 const num = (s: Step, k: string): number =>
 	typeof s.attributes[k] === "number" ? (s.attributes[k] as number) : 0;
@@ -75,6 +84,7 @@ console.log("model          :", trace.run.model);
 console.log("span           :", trace.run.started_at, "->", trace.run.ended_at);
 console.log("outcome        :", trace.run.outcome?.status);
 console.log("total steps    :", trace.steps.length);
+if (trace.malformed_lines) console.log("unparsed lines :", trace.malformed_lines);
 console.log("steps by kind  :", JSON.stringify(byKind));
 console.log("subagents      :", subagents);
 console.log("tool errors    :", errors);

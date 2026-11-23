@@ -23,10 +23,9 @@ const CODEX_TYPES = new Set([
 /** Claude Code events carry one of these top-level `type`s. */
 const CC_TYPES = new Set(["assistant", "user", "system"]);
 
-/** Sniff the harness from the first handful of parseable events. */
+/** Sniff the harness from the first identifiable event. */
 export function detectHarness(text: string): Harness {
-	const events = parseJsonl(text).slice(0, 25);
-	for (const ev of events) {
+	for (const ev of parseJsonl(text)) {
 		if (typeof ev !== "object" || ev === null) continue;
 		const e = ev as Record<string, unknown>;
 		const type = typeof e["type"] === "string" ? (e["type"] as string) : "";
@@ -40,9 +39,11 @@ export function detectHarness(text: string): Harness {
 }
 
 export interface ParsedTranscript {
-	harness: Harness;
+	harness: Exclude<Harness, "unknown">;
 	trace: Trace;
 }
+
+export class UnsupportedTranscriptError extends Error {}
 
 /**
  * Parse any supported transcript, auto-detecting the harness. `subagentTexts`
@@ -57,9 +58,8 @@ export function parseTranscript(
 	if (harness === "codex") {
 		return { harness, trace: parseCodexTranscript(mainText) };
 	}
-	// Default to the Claude Code parser (also handles the "unknown" best-effort).
-	return {
-		harness: harness === "claude-code" ? "claude-code" : harness,
-		trace: parseClaudeCodeTranscript(mainText, subagentTexts),
-	};
+	if (harness === "claude-code") {
+		return { harness, trace: parseClaudeCodeTranscript(mainText, subagentTexts) };
+	}
+	throw new UnsupportedTranscriptError("Unsupported transcript format. Expected a Claude Code or Codex transcript.");
 }
