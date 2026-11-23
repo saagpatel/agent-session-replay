@@ -89,6 +89,8 @@ export interface TickReport {
 	/** In-window sessions skipped: unchanged mtime and nothing pending. */
 	skippedUnchanged: number;
 	parseFailures: number;
+	/** Non-blank transcript lines that could not be parsed across scanned sessions. */
+	malformedLines: number;
 	findings: number;
 	alertsPosted: number;
 	alertsDeduped: number;

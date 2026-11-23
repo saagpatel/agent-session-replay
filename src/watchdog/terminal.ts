@@ -86,7 +86,7 @@ export function terminalStateForReport(
 	invocation: AutomationInvocation = invocationProvenance(),
 ): AutomationTerminalState {
 	const coverageFailure =
-		report.parseFailures > 0 || report.skippedOversize > 0;
+		report.parseFailures > 0 || report.malformedLines > 0 || report.skippedOversize > 0;
 	const readbackFailure =
 		report.alertsPosted !== report.acceptedEventIds.length;
 	const notificationFailures = report.postFailures + report.terminalFailures;
@@ -154,6 +154,7 @@ export function terminalStateForReport(
 				retained_payload_bytes: report.retainedPayloadBytes,
 				retention_cap_reached: report.retentionCapReached,
 				parse_failures: report.parseFailures,
+				malformed_lines: report.malformedLines,
 				windowed_sessions: report.windowedSessions,
 				skipped_oversize: report.skippedOversize,
 			},

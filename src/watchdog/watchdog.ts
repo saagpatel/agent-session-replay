@@ -11,6 +11,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 import { detect } from "../core/detect/engine.ts";
+import { decodeJsonl } from "../core/jsonl.ts";
 import { parseClaudeCodeTranscript } from "../core/parsers/claude-code.ts";
 import { parseCodexTranscript } from "../core/parsers/codex.ts";
 import type { Trace } from "../core/types.ts";
@@ -135,7 +136,7 @@ function readBounded(path: string, byteBudget: number): BoundedRead {
 				);
 		}
 		return {
-			text: bytes.toString("utf8"),
+			text: decodeJsonl(bytes),
 			readBytes: snapshotSize,
 			windowed: startOffset > 0,
 		};
@@ -241,6 +242,7 @@ async function tickWithProgress(
 		skippedOversize: 0,
 		skippedUnchanged: 0,
 		parseFailures: 0,
+		malformedLines: 0,
 		findings: 0,
 		alertsPosted: 0,
 		alertsDeduped: 0,
@@ -375,6 +377,7 @@ async function tickWithProgress(
 		try {
 			const parsed = parseSession(session, config.maxSessionBytes);
 			trace = parsed.trace;
+			report.malformedLines += trace.malformed_lines ?? 0;
 			if (parsed.windowed) report.windowedSessions += 1;
 		} catch (err) {
 			if (err instanceof TranscriptBudgetError) {

@@ -189,6 +189,14 @@ test("expected missing discovery roots stay silent in tick and terminal state", 
 	assert.equal(reportTerminal(report, config).state, "succeeded");
 });
 
+test("tick reports truncated JSONL input as partial capture", async () => {
+	const { config, claudeRoot } = fixture();
+	const truncated = `${ccGrindTranscript(5)}{"type":"assistant","sessionId":"sess-grind"`;
+	writeCcSession(claudeRoot, truncated);
+	const report = await tick(config, Date.now());
+	assert.equal(report.malformedLines, 1);
+});
+
 test("a grinding CC session posts one grind_loop alert; the next tick skips the unchanged file", async () => {
 	const { config, claudeRoot } = fixture();
 	const path = writeCcSession(claudeRoot, ccGrindTranscript(320));

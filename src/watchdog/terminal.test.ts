@@ -15,6 +15,7 @@ const clean: TickReport = {
 	skippedOversize: 0,
 	skippedUnchanged: 3,
 	parseFailures: 0,
+	malformedLines: 0,
 	findings: 1,
 	alertsPosted: 0,
 	alertsDeduped: 1,
@@ -60,6 +61,18 @@ test("clean tick emits exact succeeded terminal contract without destination mut
 	assert.equal(event.destination_readback.required, false);
 	assert.equal(event.destination_readback.verified, false);
 	assert.equal(event.destination_readback.evidence.windowed_sessions, 0);
+});
+
+test("malformed transcript lines mark terminal result partial and are exposed", () => {
+	const event = terminalStateForReport(
+		{ ...clean, malformedLines: 1 },
+		"/fixture/local-notifier",
+		false,
+		"2026-07-14T10:00:00.000Z",
+		25,
+	);
+	assert.equal(event.state, "partial");
+	assert.equal(event.destination_readback.evidence.malformed_lines, 1);
 });
 
 test("unexpected discovery gaps make the terminal result partial and actionable", () => {
