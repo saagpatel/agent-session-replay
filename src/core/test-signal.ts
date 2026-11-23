@@ -32,8 +32,8 @@ const PASS_PATTERNS: readonly RegExp[] = [
 	/^[ \t]*ℹ fail 0[ \t]*$/m, // node --test
 	/^# fail 0[ \t]*$/m, // node --test (TAP)
 	/^=+ .*\b\d+ passed\b.*=+[ \t]*$/m, // pytest
-	/^[ \t]*[1-9]\d* passed in \d+(?:\.\d+)?s[ \t]*$/m, // pytest -q
-	/^Ran [1-9]\d* tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?OK[ \t]*$/m, // unittest
+	new RegExp(String.raw`^(?=[^\r\n]*\b[1-9]\d* passed\b)[ \t]*${PYTEST_COUNT}(?:, ${PYTEST_COUNT})* in \d+(?:\.\d+)?s[ \t]*$`, "m"), // pytest -q
+	/^Ran [1-9]\d* tests? in \d+(?:\.\d+)?s\r?\n(?:\r?\n)?OK(?: \(skipped=\d+\))?[ \t]*$/m, // unittest
 	/^[ \t]*Tests?[ \t]+\d+ passed\b/m, // vitest
 	/^Tests:[ \t]+\d+ passed, \d+ total/m, // jest
 	/^[ \t]*\d+ passing\b/m, // mocha
