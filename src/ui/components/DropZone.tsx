@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 
 import type { AfrInput } from "../../core/afr/parse.ts";
+import { decodeJsonl, parseJsonl } from "../../core/jsonl.ts";
 
 const JSONL = /\.jsonl?$/i;
 const AFR_TRACE = "trace.afr.jsonl";
@@ -27,7 +28,10 @@ function droppedFile(file: File, path: string): DroppedFile {
 		name: file.name,
 		path,
 		size: file.size,
-		text: () => file.text(),
+		text: async () => {
+			if (!JSONL.test(file.name) || file.name.endsWith(".afr.json")) return file.text();
+			return decodeJsonl(new Uint8Array(await file.arrayBuffer()));
+		},
 	};
 }
 
@@ -95,8 +99,29 @@ export async function combine(
 	jsonl.sort((a, b) => b.size - a.size); // largest = the main transcript
 	const texts = await Promise.all(jsonl.map((f) => f.text()));
 	const main = jsonl[0]?.name ?? "session";
-	const name = jsonl.length === 1 ? main : `${main} +${jsonl.length - 1}`;
-	return { name, text: texts.join("\n") };
+	if (texts.length === 1) return { name: main, text: texts[0]! };
+	const sessionIds = new Set<string>();
+	for (const text of texts) {
+		for (const line of text.split("\n")) {
+			if (!line.trim()) continue;
+			const record = parseJsonl(line)[0];
+			if (typeof record !== "object" || record === null) continue;
+			if ("sessionId" in record && typeof record.sessionId === "string") {
+				sessionIds.add(`claude:${record.sessionId}`);
+				break;
+			}
+			if ("type" in record && record.type === "session_meta" && "payload" in record &&
+				typeof record.payload === "object" && record.payload && "id" in record.payload &&
+				typeof record.payload.id === "string") {
+				sessionIds.add(`codex:${record.payload.id}`);
+				break;
+			}
+		}
+	}
+	if (sessionIds.size > 1) {
+		throw new Error("These files belong to different sessions. Drop one session at a time.");
+	}
+	return { name: `${main} +${jsonl.length - 1}`, text: texts.join("\n") };
 }
 
 function parentPath(path: string): string {

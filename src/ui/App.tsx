@@ -16,6 +16,7 @@ import { DropZone, type DropPayload } from "./components/DropZone.tsx";
 import { FindingsPanel } from "./components/FindingsPanel.tsx";
 import { type LoadedRun, RunDiffLoader } from "./components/RunDiffLoader.tsx";
 import { RunDiffView } from "./components/RunDiffView.tsx";
+import { traceIntegritySummary } from "./format.ts";
 import { RunHeader } from "./components/RunHeader.tsx";
 import { StepInspector } from "./components/StepInspector.tsx";
 import { Waterfall } from "./components/Waterfall.tsx";
@@ -148,6 +149,7 @@ export function App() {
 			if (opener?.isConnected) opener.focus();
 		});
 	}, []);
+	const integritySummary = loaded?.mode === "session" ? traceIntegritySummary(loaded.trace) : "";
 
 	return (
 		<div className="app">
@@ -181,12 +183,9 @@ export function App() {
 									? `${loaded.diff.rows.length} aligned rows`
 									: loaded.bundle.name}
 						</span>
-						{loaded.mode === "session" && loaded.trace.malformed_lines ? (
-							<span
-								className="chip chip--warn"
-								title={`${loaded.trace.malformed_lines} transcript line(s) could not be parsed and were skipped — this view may under-report`}
-							>
-								⚠ {loaded.trace.malformed_lines} unparsed
+						{loaded.mode === "session" && integritySummary ? (
+							<span className="chip chip--warn" title={`${integritySummary} — this view may under-report`}>
+								⚠ {integritySummary}
 							</span>
 						) : null}
 						<button

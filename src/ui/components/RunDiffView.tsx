@@ -20,6 +20,7 @@ import { foldRows } from "../../core/diff/fold.ts";
 import { provenlyDifferent } from "../../core/diff/rank.ts";
 import { isFailure } from "../../core/diff/types.ts";
 import type { Trace } from "../../core/types.ts";
+import { traceIntegritySummary } from "../format.ts";
 
 export type RunDiffMode = "linear" | "equivalence" | "preservation";
 
@@ -40,7 +41,7 @@ const ACTION_VAR: Record<DiffAction, string> = {
 
 /** What Run Diff marks unknown and why; mirrored in the README. */
 const KNOWN_LIMITS = [
-	"A run passed only when its last test run exited cleanly and printed the runner's passing summary. Piped or chained tests (`npm test | tail`, `npm test; git diff`) are unclear: the exit status belongs to another command.",
+	"A passing test needs its own clean exit and passing summary. In `npm test | tail`, the exit belongs to tail. An observed runner failure can still show that the tests failed.",
 	"Codex `exec` cells are read only when they are straight-line, with each tool call printing its own result once. Branches, `Promise.all`, unprinted calls or extra prints make every call in the cell unknown.",
 	"A piped command's own result is unknown (`npm run build | grep x` exits with grep's status), as is anything before the end of a `;` chain or in a directory a dynamic `cd` hides. Commands built by joining strings show as unparsed.",
 	"A patch counts as applied only when its own output confirms it. A tool call whose result never arrived, such as a cut-off run or a yielded command never polled, is unknown.",
@@ -629,6 +630,13 @@ export function RunDiffView({
 
 	return (
 		<main className="rd">
+			{[leftTrace, rightTrace].map((trace, index) => {
+				if (!trace) return null;
+				const summary = traceIntegritySummary(trace);
+				if (!summary) return null;
+				const lane = index === 0 ? "Left" : "Right";
+				return <p key={lane} className="chip chip--warn" role="status">⚠ {lane} input may be incomplete: {summary}</p>;
+			})}
 			<ModeSwitch mode={shown} tracesReady={tracesReady} onChange={setMode} />
 			{shown === "equivalence" && leftTrace && rightTrace ? (
 				<WorkEquivalence
