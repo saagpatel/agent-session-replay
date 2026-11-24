@@ -1303,3 +1303,14 @@ test("a sole Bash result with a nonzero exit overrides a passing test summary", 
 		assert.equal(diffRuns(trace, trace).left.verdict, expected);
 	}
 });
+
+
+test("a batched Bash result keeps its error on the flagged sibling", () => {
+	const calls = ["ok", "bad"].map(id => ({type: "tool_use", id, name: "Bash", input: {command: "npm test"}}));
+	const results = ["ok", "bad"].map(id => ({type: "tool_result", tool_use_id: id, is_error: id === "bad", content: "fixture"}));
+	const trace = parseClaudeCodeEvents([
+		{type: "assistant", uuid:"a", message:{content:calls}},
+		{type: "user", uuid:"r", toolUseResult:{exitCode:7}, message:{content:results}},
+	]);
+	assert.deepEqual(trace.steps.filter(s => s.kind === "tool_call").map(s => [s.step_id,s.status]), [["ok","ok"],["bad","error"]]);
+});
