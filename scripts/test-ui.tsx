@@ -147,6 +147,13 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	// The view renders both lanes, the flagged fork and its explanation.
 	const left = parseTranscript(cc).trace;
+	const partialText = `${cc}\n{"type":"user"`;
+	const partialTrace = parseTranscript(partialText).trace;
+	assert.equal(partialTrace.malformed_lines, 1);
+	const partialHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(partialTrace, left)} leftFile="partial.jsonl" rightFile="cc.jsonl" leftTrace={partialTrace} rightTrace={left} />,
+	);
+	assert.match(partialHtml, /Left input may be incomplete: 1 unparsed transcript line/);
 	const right = parseTranscript(
 		toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }, { kind: "exec-cell", command: "npm test", exit: 1 }])),
 	).trace;
@@ -174,6 +181,19 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(loader, /cc\.jsonl/);
+	const partialLoader = renderToStaticMarkup(
+		<RunDiffLoader
+			initial={{
+				left: { fileName: "partial.jsonl", harness: "claude-code", trace: partialTrace },
+				right: { fileName: "cc.jsonl", harness: "claude-code", trace: left },
+			}}
+			onCompare={noop}
+			onBack={noop}
+			onError={noop}
+			onClearError={noop}
+		/>,
+	);
+	assert.match(partialLoader, /Input may be incomplete\. 1 unparsed/);
 	// Run Diff is labelled experimental, with its known limits, on both screens.
 	assert.match(loader, /rd-experimental/);
 	assert.match(html, /rd-experimental/);
