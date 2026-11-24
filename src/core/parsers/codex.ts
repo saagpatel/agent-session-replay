@@ -545,6 +545,9 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 				outStatus = "completed";
 				const last = str(p["last_agent_message"]);
 				if (last) outSummary = last;
+			} else if (ptype === "turn_aborted") {
+				outStatus = "aborted";
+				outSummary = undefined;
 			}
 		}
 	});

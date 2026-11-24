@@ -674,3 +674,15 @@ test("a legacy shell header wins over exit_code text inside a successful read", 
 	assert.equal(read?.status, "ok");
 	assert.equal(read?.attributes[ATTR.EXEC_RESULTS], undefined);
 });
+
+
+test("turn_aborted overrides an earlier completed turn", () => {
+	const { run } = parseCodexEvents([
+		sessionMeta(),
+		eventMsg({ type: "task_complete", turn_id: "first", last_agent_message: "finished earlier" }),
+		eventMsg({ type: "task_started", turn_id: "second" }),
+		eventMsg({ type: "turn_aborted", turn_id: "second" }),
+	]);
+	assert.equal(run.outcome?.status, "aborted");
+	assert.equal(run.outcome?.summary, null);
+});
