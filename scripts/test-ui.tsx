@@ -93,6 +93,16 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	const firstSession = JSON.stringify({ type: "user", sessionId: "session-a", uuid: "u1", message: { content: "Synthetic task A" } });
 	const otherSession = JSON.stringify({ type: "user", sessionId: "session-b", uuid: "u2", message: { content: "Synthetic task B" } });
+	const singleFile = [dropped("mixed.jsonl", "mixed.jsonl", [firstSession, otherSession].join("\n"))];
+	let singleError = "";
+	let singleLoaded = false;
+	await takeRunFiles(singleFile, {
+		onRun: () => { singleLoaded = true; },
+		onError: (message) => { singleError = message; },
+		onClearError: () => {},
+	});
+	assert.match(singleError, /these files belong to different sessions/i);
+	assert.equal(singleLoaded, false);
 	const mixedSessionFiles = [
 		dropped("session-a.jsonl", "session-a.jsonl", `${firstSession}\n`),
 		dropped("session-b.jsonl", "session-b.jsonl", `${otherSession}\n`),
@@ -120,6 +130,7 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		onError: (message) => { throw new Error(message); },
 		onClearError: () => {},
 	});
+	assert.ok(sidechainTraces[0]?.steps.some((step) => step.step_id === "a1"), "the main assistant step survives the import");
 	assert.ok(sidechainTraces[0]?.steps.some((step) => step.subagent_id === "agent-synthetic"), "a main session and its sidechain should load together");
 
 	// A clean load clears a banner an earlier bad file left behind.
