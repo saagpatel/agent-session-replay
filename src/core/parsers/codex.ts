@@ -264,6 +264,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	const toolSteps = new Map<string, Step>();
 
 	let runId = "unknown";
+	let unsupportedRecords = 0;
 	let version: string | undefined;
 	let originator: string | undefined;
 	let cwd: string | undefined;
@@ -518,6 +519,7 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 		}
 
 		if (etype === "event_msg") {
+            if (!ptype || ptype === "item_completed") unsupportedRecords++;
 			if (ptype === "token_count") {
 				const usage = asObj(asObj(p["info"])["total_token_usage"]);
 				if (Object.keys(usage).length === 0) return;
@@ -574,7 +576,9 @@ export function parseCodexEvents(rawEvents: readonly unknown[]): Trace {
 	steps.sort((a, b) =>
 		a.started_at < b.started_at ? -1 : a.started_at > b.started_at ? 1 : 0,
 	);
-	return { plumbline_version: PLUMBLINE_VERSION, run, steps };
+	return { plumbline_version: PLUMBLINE_VERSION, run, steps,
+		...(unsupportedRecords ? { unsupported_records: unsupportedRecords } : {}),
+	};
 }
 
 /** Parse raw Codex rollout text into a Trace. */

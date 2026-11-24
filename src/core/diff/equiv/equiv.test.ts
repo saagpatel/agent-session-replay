@@ -1050,3 +1050,30 @@ test("expand round-trips every synthetic case and every existing fixture builder
 		}
 	}
 });
+
+
+test("Work Equivalence discloses unhandled Codex completion records", () => {
+	const calls = codexEvents("Inspect the sample", [
+		{kind: "shell", command: "cat first.txt"},
+		{kind: "shell", command: "cat second.txt"},
+	]);
+	const clean = parseCodexEvents(calls);
+	const secondCall = calls.findIndex(event => (event.payload as {call_id?: string})?.call_id === "call_1");
+	assert.ok(secondCall > 0);
+	assert.deepEqual(clean.steps.filter(s => s.kind === "tool_call").map(s => s.step_id), ["call_0", "call_1"]);
+	assert.equal(alignEquivalent(clean, clean).incomplete, false);
+	for (const payload of [
+		{type: "item_completed", item: {type: "new_item"}},
+		{type: "item_completed", item: {type: "command_execution"}},
+		{item: {type: "new_item"}},
+	]) {
+		const partial = parseCodexEvents([...calls.slice(0, secondCall), {type: "event_msg", payload}, ...calls.slice(secondCall)]);
+		assert.deepEqual(partial.steps.filter(s => s.kind === "tool_call"), clean.steps.filter(s => s.kind === "tool_call"));
+		for (const [left, right] of [[clean, partial], [partial, clean]] as const) {
+			const result = alignEquivalent(left, right);
+			assert.equal(result.incomplete, true);
+			assert.equal(result.equivalent, false);
+			assert.ok(result.incompleteReasons.includes("unsupported-records"));
+		}
+	}
+});
