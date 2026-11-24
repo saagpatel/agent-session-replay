@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 
+import { parseJsonl } from "../../core/jsonl.ts";
 import type { AfrInput } from "../../core/afr/parse.ts";
 
 const JSONL = /\.jsonl?$/i;
@@ -95,6 +96,18 @@ export async function combine(
 	jsonl.sort((a, b) => b.size - a.size); // largest = the main transcript
 	const texts = await Promise.all(jsonl.map((f) => f.text()));
 	const main = jsonl[0]?.name ?? "session";
+	const ids = new Set<string>();
+	for (const text of texts) {
+		for (const row of parseJsonl(text)) {
+			if (!row || typeof row !== "object") continue;
+			const event = row as Record<string, unknown>;
+			const payload = event.payload;
+			const id = event.type === "session_meta" && payload && typeof payload === "object" && "id" in payload
+				? payload.id : event.sessionId;
+			if (typeof id === "string" && id.trim()) ids.add(id);
+			if (ids.size > 1) throw new Error("These files belong to different sessions. Drop one session at a time.");
+		}
+	}
 	const name = jsonl.length === 1 ? main : `${main} +${jsonl.length - 1}`;
 	return { name, text: texts.join("\n") };
 }
