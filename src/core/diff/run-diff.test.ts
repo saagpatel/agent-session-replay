@@ -1291,3 +1291,26 @@ test("an escaped key leaves the call unparsed, never a file at the workspace roo
 	assert.deepEqual(steps.map((s) => `${s.action}:${s.note}`), ["run:unparsed command"]);
 	assert.ok(steps.every((s) => s.action !== "write"));
 });
+
+
+test("a sole Bash result with a nonzero exit overrides a passing test summary", () => {
+	for (const [exitCode, expected] of [[7, "failed"], [0, "passed"]] as const) {
+		const events = ccEvents(PROMPT, [{ name: "Bash", command: "npm test" }]);
+		const row = events.find((event) => event.uuid === "r0");
+		assert.ok(row);
+		row.toolUseResult = { exitCode };
+		const trace = parseClaudeCodeEvents(events);
+		assert.equal(diffRuns(trace, trace).left.verdict, expected);
+	}
+});
+
+
+test("a batched Bash result keeps its error on the flagged sibling", () => {
+	const calls = ["ok", "bad"].map(id => ({type: "tool_use", id, name: "Bash", input: {command: "npm test"}}));
+	const results = ["ok", "bad"].map(id => ({type: "tool_result", tool_use_id: id, is_error: id === "bad", content: "fixture"}));
+	const trace = parseClaudeCodeEvents([
+		{type: "assistant", uuid:"a", message:{content:calls}},
+		{type: "user", uuid:"r", toolUseResult:{exitCode:7}, message:{content:results}},
+	]);
+	assert.deepEqual(trace.steps.filter(s => s.kind === "tool_call").map(s => [s.step_id,s.status]), [["ok","ok"],["bad","error"]]);
+});
