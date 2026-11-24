@@ -181,6 +181,7 @@ const INCOMPLETE_PLAIN: Record<string, string> = {
 	"unclassified-step": "A read, edit, or write could not be tied to a file.",
 	"unknown-mutator-status": "An edit, write, test, run, or similar step has no recorded result.",
 	"alignment-truncated": "The runs are long enough that alignment stopped before the end.",
+	"unsupported-records": "The transcript contains completion records the parser could not represent.",
 	"malformed-transcript": "The transcript has lines that could not be parsed.",
 	"exec-source-coverage-unknown": "A Codex exec cell may hide steps, so coverage is not proven.",
 };

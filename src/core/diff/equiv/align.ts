@@ -62,6 +62,7 @@ export function alignEquivalent(leftTrace: Trace, rightTrace: Trace): Equivalent
 	const reasons = new Set([...candidateLeft.incompleteReasons, ...candidateRight.incompleteReasons,
 		...left.incompleteReasons, ...right.incompleteReasons]);
 	if (aligned.truncated.left || aligned.truncated.right) reasons.add("alignment-truncated");
+	if (leftTrace.unsupported_records || rightTrace.unsupported_records) reasons.add("unsupported-records");
 	if (leftTrace.malformed_lines || rightTrace.malformed_lines) reasons.add("malformed-transcript");
 	// Unknown command steps are already marked by normalization. Exec cells can
 	// also omit capped inner stages, whose raw source cannot safely be re-parsed

@@ -1050,3 +1050,23 @@ test("expand round-trips every synthetic case and every existing fixture builder
 		}
 	}
 });
+
+
+test("Work Equivalence discloses unhandled Codex completion records", () => {
+    const header = {type: "session_meta", payload: {id: "fixture", cwd: "/fixture"}};
+    const clean = parseCodexEvents([header]);
+    assert.equal(alignEquivalent(clean, clean).incomplete, false);
+    for (const payload of [
+        {type: "item_completed", item: {type: "new_item"}},
+        {type: "item_completed", item: {type: "command_execution"}},
+        {item: {type: "new_item"}},
+    ]) {
+        const partial = parseCodexEvents([header, {type: "event_msg", payload}]);
+        for (const [left, right] of [[clean, partial], [partial, clean]] as const) {
+            const result = alignEquivalent(left, right);
+            assert.equal(result.incomplete, true);
+            assert.equal(result.equivalent, false);
+            assert.ok(result.incompleteReasons.includes("unsupported-records"));
+        }
+    }
+});
