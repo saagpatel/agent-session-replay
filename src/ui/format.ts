@@ -1,6 +1,15 @@
 /** Display formatters for the instrument readouts. Pure, no locale surprises. */
 
-import type { StepKind } from "../core/types.ts";
+import type { StepKind, Trace } from "../core/types.ts";
+
+export function traceIntegritySummary(trace: Trace): string {
+	const malformed = trace.malformed_lines ?? 0;
+	const unsupported = trace.unsupported_records ?? 0;
+	return [
+		malformed ? `${malformed} unparsed transcript line${malformed === 1 ? "" : "s"}` : "",
+		unsupported ? `${unsupported} unsupported record${unsupported === 1 ? "" : "s"}` : "",
+	].filter(Boolean).join(", ");
+}
 
 /** Compact token/number readout: 14.9M, 161k, 4,210. */
 export function fmtCompact(n: number): string {

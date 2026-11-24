@@ -20,6 +20,7 @@ import { foldRows } from "../../core/diff/fold.ts";
 import { provenlyDifferent } from "../../core/diff/rank.ts";
 import { isFailure } from "../../core/diff/types.ts";
 import type { Trace } from "../../core/types.ts";
+import { traceIntegritySummary } from "../format.ts";
 
 export type RunDiffMode = "linear" | "equivalence" | "preservation";
 
@@ -630,6 +631,13 @@ export function RunDiffView({
 
 	return (
 		<main className="rd">
+			{[leftTrace, rightTrace].map((trace, index) => {
+				if (!trace) return null;
+				const summary = traceIntegritySummary(trace);
+				if (!summary) return null;
+				const lane = index === 0 ? "Left" : "Right";
+				return <p key={lane} className="chip chip--warn" role="status">⚠ {lane} input may be incomplete: {summary}</p>;
+			})}
 			<ModeSwitch mode={shown} tracesReady={tracesReady} onChange={setMode} />
 			{shown === "equivalence" && leftTrace && rightTrace ? (
 				<WorkEquivalence

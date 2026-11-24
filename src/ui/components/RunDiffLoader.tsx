@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 
 import { type Harness, parseTranscript } from "../../core/parse.ts";
 import type { Trace } from "../../core/types.ts";
+import { traceIntegritySummary } from "../format.ts";
 import {
 	combine,
 	type DroppedFile,
@@ -62,6 +63,7 @@ function RunSlot({
 }) {
 	const [over, setOver] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const integritySummary = run ? traceIntegritySummary(run.trace) : "";
 
 	const take = (files: DroppedFile[]) =>
 		takeRunFiles(files, { onRun, onError, onClearError });
@@ -102,6 +104,11 @@ function RunSlot({
 					<span className="rd-slot__meta">
 						{run.trace.run.model ?? "model unknown"} · {run.trace.steps.length} steps
 					</span>
+					{integritySummary ? (
+						<span className="rd-slot__hint" role="status">
+							⚠ Input may be incomplete. {integritySummary}
+						</span>
+					) : null}
 					<span className="rd-slot__hint">drop or click to replace</span>
 				</>
 			) : (

@@ -147,6 +147,19 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 
 	// The view renders both lanes, the flagged fork and its explanation.
 	const left = parseTranscript(cc).trace;
+	const partialText = `${cc}\n{"type":"user"`;
+	const partialTrace = parseTranscript(partialText).trace;
+	assert.equal(partialTrace.malformed_lines, 1);
+	const unsupportedTrace = { ...left, unsupported_records: 2 };
+	const rightWarning = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(left, unsupportedTrace)} leftFile="left.jsonl" rightFile="right.jsonl" leftTrace={left} rightTrace={unsupportedTrace} />,
+	);
+	assert.match(rightWarning, /Right input may be incomplete: 2 unsupported records/);
+	assert.doesNotMatch(rightWarning, /Left input may be incomplete/);
+	const partialHtml = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(partialTrace, left)} leftFile="partial.jsonl" rightFile="cc.jsonl" leftTrace={partialTrace} rightTrace={left} />,
+	);
+	assert.match(partialHtml, /Left input may be incomplete: 1 unparsed transcript line/);
 	const right = parseTranscript(
 		toJsonl(codexEvents("fix it", [{ kind: "patch", file: "src/b.ts" }, { kind: "exec-cell", command: "npm test", exit: 1 }])),
 	).trace;
@@ -174,6 +187,27 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(loader, /cc\.jsonl/);
+	const partialLoader = renderToStaticMarkup(
+		<RunDiffLoader
+			initial={{
+				left: { fileName: "partial.jsonl", harness: "claude-code", trace: partialTrace },
+				right: { fileName: "other.jsonl", harness: "claude-code", trace: unsupportedTrace },
+			}}
+			onCompare={noop}
+			onBack={noop}
+			onError={noop}
+			onClearError={noop}
+		/>,
+	);
+	assert.ok(partialLoader.includes('aria-label="Left run:'));
+	assert.ok(partialLoader.includes('aria-label="Right run:'));
+	const leftSlot = partialLoader.split('aria-label="Left run:')[1]!.split("</div>")[0]!;
+	const rightSlot = partialLoader.split('aria-label="Right run:')[1]!.split("</div>")[0]!;
+	assert.match(leftSlot, /Input may be incomplete\. 1 unparsed/);
+	assert.doesNotMatch(leftSlot, /2 unsupported records/);
+	assert.match(rightSlot, /Input may be incomplete\. 2 unsupported records/);
+	assert.doesNotMatch(rightSlot, /1 unparsed/);
+	assert.doesNotMatch(loader, /Input may be incomplete/);
 	// Run Diff is labelled experimental, with its known limits, on both screens.
 	assert.match(loader, /rd-experimental/);
 	assert.match(html, /rd-experimental/);
