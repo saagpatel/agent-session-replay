@@ -214,6 +214,7 @@ function mergeResult(
 	toolSteps: Map<string, Step>,
 	block: Json,
 	ev: Json,
+	soleResult: boolean,
 ): void {
 	const step = toolSteps.get(str(block["tool_use_id"]) ?? "");
 	if (!step) return;
@@ -226,7 +227,10 @@ function mergeResult(
 	const result = asObj(ev["toolUseResult"]);
 	let status: StepStatus = "ok";
 	if (result["interrupted"]) status = "interrupted";
-	else if (block["is_error"]) status = "error";
+	else if (block["is_error"] || (
+		soleResult && step.attributes[ATTR.TOOL_RESULT_KIND] === "bash" &&
+		Number.isInteger(result["exitCode"]) && result["exitCode"] !== 0
+	)) status = "error";
 	step.status = status;
 	step.ended_at = str(ev["timestamp"]) ?? step.ended_at ?? null;
 
@@ -501,7 +505,7 @@ export function parseClaudeCodeEvents(rawEvents: readonly unknown[]): Trace {
 		const results = kind === "user"
 			? contentBlocks(event).filter((block) => block["type"] === "tool_result")
 			: [];
-		for (const block of results) mergeResult(toolSteps, block, event);
+		for (const block of results) mergeResult(toolSteps, block, event, results.length === 1);
 		if (!id || stepIds.has(id)) continue;
 		if (results.length) {
 			if (results.some((block) => !toolSteps.has(str(block["tool_use_id"]) ?? ""))) {

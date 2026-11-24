@@ -1291,3 +1291,15 @@ test("an escaped key leaves the call unparsed, never a file at the workspace roo
 	assert.deepEqual(steps.map((s) => `${s.action}:${s.note}`), ["run:unparsed command"]);
 	assert.ok(steps.every((s) => s.action !== "write"));
 });
+
+
+test("a sole Bash result with a nonzero exit overrides a passing test summary", () => {
+	for (const [exitCode, expected] of [[7, "failed"], [0, "passed"]] as const) {
+		const events = ccEvents(PROMPT, [{ name: "Bash", command: "npm test" }]);
+		const row = events.find((event) => event.uuid === "r0");
+		assert.ok(row);
+		row.toolUseResult = { exitCode };
+		const trace = parseClaudeCodeEvents(events);
+		assert.equal(diffRuns(trace, trace).left.verdict, expected);
+	}
+});
