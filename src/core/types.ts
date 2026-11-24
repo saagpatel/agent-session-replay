@@ -87,7 +87,7 @@ export interface Trace {
 	/** Parse metadata (not part of the plumbline data model): count of non-blank
 	 * transcript lines that failed to parse, so the UI can flag under-reporting. */
 	malformed_lines?: number;
-	/** Codex completion records this parser could not represent. */
+	/** Codex events this parser skipped because it could not represent them. */
 	unsupported_records?: number;
 	/** Parser-known event IDs deliberately omitted from steps (for parent links). */
 	external_parent_ids?: string[];
