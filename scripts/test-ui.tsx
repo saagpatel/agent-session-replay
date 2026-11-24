@@ -150,6 +150,12 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 	const partialText = `${cc}\n{"type":"user"`;
 	const partialTrace = parseTranscript(partialText).trace;
 	assert.equal(partialTrace.malformed_lines, 1);
+	const unsupportedTrace = { ...left, unsupported_records: 2 };
+	const rightWarning = renderToStaticMarkup(
+		<RunDiffView diff={diffRuns(left, unsupportedTrace)} leftFile="left.jsonl" rightFile="right.jsonl" leftTrace={left} rightTrace={unsupportedTrace} />,
+	);
+	assert.match(rightWarning, /Right input may be incomplete: 2 unsupported records/);
+	assert.doesNotMatch(rightWarning, /Left input may be incomplete/);
 	const partialHtml = renderToStaticMarkup(
 		<RunDiffView diff={diffRuns(partialTrace, left)} leftFile="partial.jsonl" rightFile="cc.jsonl" leftTrace={partialTrace} rightTrace={left} />,
 	);
@@ -185,7 +191,7 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		<RunDiffLoader
 			initial={{
 				left: { fileName: "partial.jsonl", harness: "claude-code", trace: partialTrace },
-				right: { fileName: "cc.jsonl", harness: "claude-code", trace: left },
+				right: { fileName: "other.jsonl", harness: "claude-code", trace: unsupportedTrace },
 			}}
 			onCompare={noop}
 			onBack={noop}
@@ -194,6 +200,8 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 		/>,
 	);
 	assert.match(partialLoader, /Input may be incomplete\. 1 unparsed/);
+	assert.match(partialLoader, /Input may be incomplete\. 2 unsupported records/);
+	assert.doesNotMatch(loader, /Input may be incomplete/);
 	// Run Diff is labelled experimental, with its known limits, on both screens.
 	assert.match(loader, /rd-experimental/);
 	assert.match(html, /rd-experimental/);
