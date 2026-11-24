@@ -199,8 +199,14 @@ assert.match(invalidReport, /privacyReport\.ok: expected a valid value/);
 			onClearError={noop}
 		/>,
 	);
-	assert.match(partialLoader, /Input may be incomplete\. 1 unparsed/);
-	assert.match(partialLoader, /Input may be incomplete\. 2 unsupported records/);
+	assert.ok(partialLoader.includes('aria-label="Left run:'));
+	assert.ok(partialLoader.includes('aria-label="Right run:'));
+	const leftSlot = partialLoader.split('aria-label="Left run:')[1]!.split("</div>")[0]!;
+	const rightSlot = partialLoader.split('aria-label="Right run:')[1]!.split("</div>")[0]!;
+	assert.match(leftSlot, /Input may be incomplete\. 1 unparsed/);
+	assert.doesNotMatch(leftSlot, /2 unsupported records/);
+	assert.match(rightSlot, /Input may be incomplete\. 2 unsupported records/);
+	assert.doesNotMatch(rightSlot, /1 unparsed/);
 	assert.doesNotMatch(loader, /Input may be incomplete/);
 	// Run Diff is labelled experimental, with its known limits, on both screens.
 	assert.match(loader, /rd-experimental/);
